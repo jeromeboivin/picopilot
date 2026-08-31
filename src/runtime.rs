@@ -11,6 +11,13 @@ use github_copilot_sdk::{
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActiveModelOptions {
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub context_tier: Option<String>,
+}
+
 pub struct AppRuntime {
     pub client: Client,
     pub permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
@@ -18,6 +25,36 @@ pub struct AppRuntime {
     pub session: github_copilot_sdk::session::Session,
     pub models: Vec<Model>,
     pub working_directory: PathBuf,
+    pub active_model_options: ActiveModelOptions,
+}
+
+fn apply_active_model_options(config: &mut ResumeSessionConfig, options: &ActiveModelOptions) {
+    config.model = options.model.clone();
+    config.reasoning_effort = options.reasoning_effort.clone();
+    config.context_tier = options.context_tier.clone();
+}
+
+#[cfg(test)]
+mod tests {
+    use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
+
+    use super::{apply_active_model_options, ActiveModelOptions};
+
+    #[test]
+    fn resume_configuration_restores_active_model_options() {
+        let mut config = ResumeSessionConfig::new(SessionId::from("session-1"));
+        let options = ActiveModelOptions {
+            model: Some("gpt-5".to_string()),
+            reasoning_effort: Some("high".to_string()),
+            context_tier: Some("long_context".to_string()),
+        };
+
+        apply_active_model_options(&mut config, &options);
+
+        assert_eq!(config.model.as_deref(), Some("gpt-5"));
+        assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(config.context_tier.as_deref(), Some("long_context"));
+    }
 }
 
 #[derive(Debug)]
@@ -51,6 +88,19 @@ impl std::error::Error for ResumeError {
 }
 
 impl AppRuntime {
+    pub fn set_active_model_options(
+        &mut self,
+        model: String,
+        reasoning_effort: Option<String>,
+        context_tier: Option<String>,
+    ) {
+        self.active_model_options = ActiveModelOptions {
+            model: Some(model),
+            reasoning_effort,
+            context_tier,
+        };
+    }
+
     pub async fn resume(&mut self, session_id: SessionId) -> Result<(), ResumeError> {
         self.session
             .disconnect()
@@ -76,14 +126,16 @@ impl AppRuntime {
     }
 
     fn resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
-        ResumeSessionConfig::new(session_id)
+        let mut config = ResumeSessionConfig::new(session_id)
             .with_client_name("picopilot")
             .with_streaming(true)
             .with_available_tools(crate::config::V1_AVAILABLE_TOOLS.iter().copied())
             .with_excluded_tools(crate::config::V1_EXCLUDED_TOOLS.iter().copied())
             .with_working_directory(self.working_directory.clone())
             .with_permission_handler(self.permission_handler.clone())
-            .with_suppress_resume_event(true)
+            .with_suppress_resume_event(true);
+        apply_active_model_options(&mut config, &self.active_model_options);
+        config
     }
 }
 
@@ -151,5 +203,10 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         session,
         models,
         working_directory,
+        active_model_options: ActiveModelOptions {
+            model: config.model.clone(),
+            reasoning_effort: config.reasoning_effort.clone(),
+            context_tier: config.context_tier.clone(),
+        },
     })
 }

@@ -784,6 +784,11 @@ async fn process_terminal_events(
                         url: None,
                     });
                 } else {
+                    runtime.set_active_model_options(
+                        model.clone(),
+                        selection.reasoning_effort,
+                        selection.context_tier,
+                    );
                     app.apply(crate::events::EventUpdate::ModelChanged { model });
                 }
             }
