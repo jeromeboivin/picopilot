@@ -18,11 +18,14 @@ use ratatui::Terminal;
 use github_copilot_sdk::session::Session;
 use github_copilot_sdk::subscription::RecvErrorKind;
 
+use crate::permissions::{ApprovalDecision, ApprovalRequest};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
     None,
     Quit,
     Send(String),
+    Approval(ApprovalDecision),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +82,7 @@ pub struct App {
     entries: Vec<ChatEntry>,
     status: StatusState,
     input: String,
+    pending_approvals: std::collections::VecDeque<ApprovalRequest>,
     should_quit: bool,
 }
 
@@ -103,6 +107,18 @@ impl App {
 
     pub fn input(&self) -> &str {
         &self.input
+    }
+
+    pub fn pending_approval(&self) -> Option<&ApprovalRequest> {
+        self.pending_approvals.front()
+    }
+
+    pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
+        self.pending_approvals.push_back(request);
+    }
+
+    fn take_approval(&mut self) -> Option<ApprovalRequest> {
+        self.pending_approvals.pop_front()
     }
 
     pub fn push_input(&mut self, character: char) {
@@ -347,6 +363,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
 
+    if app.pending_approval().is_some() {
+        return match key.code {
+            KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
+            KeyCode::Char('n') => UiAction::Approval(ApprovalDecision::Deny),
+            KeyCode::Char('a') => UiAction::Approval(ApprovalDecision::Trust),
+            _ => UiAction::None,
+        };
+    }
+
     match key.code {
         KeyCode::Esc => UiAction::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
@@ -386,7 +411,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(input_box(app), layout[2]);
 }
 
-pub async fn run(session: &Session, model: Option<String>) -> io::Result<()> {
+pub async fn run(
+    session: &Session,
+    model: Option<String>,
+    permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -404,7 +433,7 @@ pub async fn run(session: &Session, model: Option<String>) -> io::Result<()> {
         }
     };
 
-    let result = run_loop(&mut terminal, session, model).await;
+    let result = run_loop(&mut terminal, session, model, permission_requests).await;
     let restore_result = restore_terminal(&mut terminal);
     result.and(restore_result)
 }
@@ -413,9 +442,11 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     session: &Session,
     model: Option<String>,
+    mut permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
 ) -> io::Result<()> {
     let mut app = App::new(model);
     let mut events = session.subscribe();
+    let mut permission_requests_open = true;
 
     while !app.should_quit() {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -450,6 +481,10 @@ async fn run_loop(
                     }),
                 }
             },
+            request = permission_requests.recv(), if permission_requests_open => match request {
+                Some(request) => app.enqueue_approval(request),
+                None => permission_requests_open = false,
+            },
             _ = &mut tick => process_terminal_events(&mut app, session).await?,
         }
     }
@@ -466,6 +501,11 @@ async fn process_terminal_events(app: &mut App, session: &Session) -> io::Result
         match handle_key(app, key) {
             UiAction::None => {}
             UiAction::Quit => app.quit(),
+            UiAction::Approval(decision) => {
+                if let Some(request) = app.take_approval() {
+                    let _ = request.respond_to.send(decision);
+                }
+            }
             UiAction::Send(prompt) => {
                 app.add_user_message(prompt.clone());
                 if let Err(error) = session.send(prompt).await {
@@ -504,6 +544,24 @@ fn status_bar(app: &App) -> Paragraph<'static> {
 }
 
 fn input_box(app: &App) -> Paragraph<'static> {
+    if let Some(request) = app.pending_approval() {
+        let prompt = format!(
+            "{} ({}): {} | y allow once, n deny, a trust for session",
+            request.category.label(),
+            request.tool_name,
+            request.details
+        );
+        return Paragraph::new(prompt)
+            .style(Style::default().fg(Color::Rgb(255, 219, 129)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(242, 177, 94)))
+                    .title("approval"),
+            )
+            .wrap(Wrap { trim: false });
+    }
+
     Paragraph::new(Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Rgb(240, 177, 94))),
         Span::raw(app.input().to_string()),
@@ -780,5 +838,55 @@ mod tests {
             UiAction::None
         );
         assert_eq!(app.input(), "x");
+    }
+
+    #[tokio::test]
+    async fn resolves_the_visible_approval_only_on_a_key_press() {
+        let mut app = App::new(None);
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(crate::permissions::ApprovalRequest {
+            category: crate::permissions::ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "cargo test".to_string(),
+            respond_to,
+        });
+
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    code: KeyCode::Char('y'),
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Release,
+                    state: crossterm::event::KeyEventState::NONE,
+                }
+            ),
+            UiAction::None
+        );
+        assert!(app.pending_approval().is_some());
+
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    code: KeyCode::Char('y'),
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                }
+            ),
+            UiAction::Approval(crate::permissions::ApprovalDecision::ApproveOnce)
+        );
+        let request = app
+            .take_approval()
+            .expect("approval should still be queued");
+        request
+            .respond_to
+            .send(crate::permissions::ApprovalDecision::ApproveOnce)
+            .expect("test response receiver should still be open");
+        assert_eq!(
+            response.await.expect("approval response should arrive"),
+            crate::permissions::ApprovalDecision::ApproveOnce
+        );
     }
 }

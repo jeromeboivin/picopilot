@@ -22,7 +22,7 @@ async fn main() -> ExitCode {
 async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     let model = config.model.clone();
     let runtime = connect(&config).await?;
-    tui::run(&runtime.session, model).await?;
+    tui::run(&runtime.session, model, runtime.permission_requests).await?;
     drop(runtime);
     Ok(())
 }

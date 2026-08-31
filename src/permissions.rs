@@ -220,20 +220,21 @@ fn classify_request(data: &PermissionRequestData, workspace_root: &Path) -> Poli
             tool_name,
         },
         Some(PermissionRequestKind::Unknown) | None => {
-            match inferred_category(&tool_name, &data.extra) {
-                Some(ApprovalCategory::Shell) => PolicyDecision::Confirm {
+            match inferred_policy(&tool_name, &data.extra, workspace_root) {
+                InferredPolicy::Approve => PolicyDecision::Approve,
+                InferredPolicy::Deny => PolicyDecision::Deny(
+                    "picopilot does not permit this permission category".to_string(),
+                ),
+                InferredPolicy::Confirm(ApprovalCategory::Shell) => PolicyDecision::Confirm {
                     category: ApprovalCategory::Shell,
                     details: request_details(&data.extra, ApprovalCategory::Shell),
                     tool_name,
                 },
-                Some(ApprovalCategory::Task) => PolicyDecision::Confirm {
+                InferredPolicy::Confirm(ApprovalCategory::Task) => PolicyDecision::Confirm {
                     category: ApprovalCategory::Task,
                     details: request_details(&data.extra, ApprovalCategory::Task),
                     tool_name,
                 },
-                None => PolicyDecision::Deny(
-                    "picopilot does not permit this permission category".to_string(),
-                ),
             }
         }
         Some(PermissionRequestKind::Url)
@@ -247,18 +248,34 @@ fn classify_request(data: &PermissionRequestData, workspace_root: &Path) -> Poli
     }
 }
 
-fn inferred_category(tool_name: &str, extra: &Value) -> Option<ApprovalCategory> {
+enum InferredPolicy {
+    Approve,
+    Deny,
+    Confirm(ApprovalCategory),
+}
+
+fn inferred_policy(tool_name: &str, extra: &Value, workspace_root: &Path) -> InferredPolicy {
     if is_task_tool(tool_name) {
-        return Some(ApprovalCategory::Task);
+        return InferredPolicy::Confirm(ApprovalCategory::Task);
     }
     let lower = tool_name.to_ascii_lowercase();
+    if matches!(lower.as_str(), "view" | "read" | "grep" | "glob") {
+        return InferredPolicy::Approve;
+    }
+    if matches!(lower.as_str(), "edit" | "create") {
+        return if write_paths_are_safe(extra, workspace_root) {
+            InferredPolicy::Approve
+        } else {
+            InferredPolicy::Deny
+        };
+    }
     if lower.contains("shell") || lower.contains("bash") || lower.contains("powershell") {
-        return Some(ApprovalCategory::Shell);
+        return InferredPolicy::Confirm(ApprovalCategory::Shell);
     }
     if first_string(extra, &["command", "cmd", "script"]).is_some() {
-        return Some(ApprovalCategory::Shell);
+        return InferredPolicy::Confirm(ApprovalCategory::Shell);
     }
-    None
+    InferredPolicy::Deny
 }
 
 fn is_task_tool(tool_name: &str) -> bool {

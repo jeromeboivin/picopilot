@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use github_copilot_sdk::{Client, Error as SdkError, Model};
 
 use crate::config::{AppConfig, ConfigError};
+use crate::permissions::{permission_handler, ApprovalRequest};
 
 pub struct AppRuntime {
     pub client: Client,
+    pub permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
     pub session: github_copilot_sdk::session::Session,
     pub models: Vec<Model>,
     pub working_directory: PathBuf,
@@ -50,6 +52,7 @@ impl std::error::Error for StartupError {
 
 pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
     let working_directory = std::env::current_dir().map_err(StartupError::CurrentDirectory)?;
+    let (permission, permission_requests) = permission_handler(working_directory.clone());
     let client = Client::start(config.client_options_in(&working_directory))
         .await
         .map_err(StartupError::Client)?;
@@ -60,12 +63,17 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         .map_err(StartupError::Configuration)?;
 
     let session = client
-        .create_session(config.session_config_in(&working_directory))
+        .create_session(
+            config
+                .session_config_in(&working_directory)
+                .with_permission_handler(permission),
+        )
         .await
         .map_err(StartupError::Session)?;
 
     Ok(AppRuntime {
         client,
+        permission_requests,
         session,
         models,
         working_directory,
