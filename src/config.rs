@@ -1,7 +1,11 @@
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use github_copilot_sdk::types::{Model, SessionConfig};
+use github_copilot_sdk::{
+    types::{Model, SessionConfig},
+    ClientOptions,
+};
 
 pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
 pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
@@ -80,6 +84,10 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn client_options_in(&self, working_directory: &Path) -> ClientOptions {
+        ClientOptions::new().with_cwd(working_directory)
+    }
+
     pub fn session_config(&self) -> SessionConfig {
         let mut session = SessionConfig::default()
             .with_client_name("picopilot")
@@ -89,6 +97,12 @@ impl AppConfig {
         session.model = self.model.clone();
         session.reasoning_effort = self.reasoning_effort.clone();
         session.context_tier = self.context_tier.clone();
+        session
+    }
+
+    pub fn session_config_in(&self, working_directory: impl Into<PathBuf>) -> SessionConfig {
+        let mut session = self.session_config();
+        session.working_directory = Some(working_directory.into());
         session
     }
 
@@ -167,6 +181,8 @@ fn supported_context_tiers(model: &Model) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use clap::Parser;
     use github_copilot_sdk::types::{Model, ModelCapabilities};
 
@@ -254,6 +270,22 @@ mod tests {
                     .map(String::from)
                     .collect()
             )
+        );
+    }
+
+    #[test]
+    fn propagates_the_working_directory_to_client_and_session() {
+        let config =
+            AppConfig::try_parse_from(["picopilot"]).expect("default options should parse");
+        let working_directory = Path::new("C:\\dev\\picopilot");
+
+        let client_options = config.client_options_in(working_directory);
+        let session_config = config.session_config_in(working_directory);
+
+        assert_eq!(client_options.working_directory, working_directory);
+        assert_eq!(
+            session_config.working_directory.as_deref(),
+            Some(working_directory)
         );
     }
 }
