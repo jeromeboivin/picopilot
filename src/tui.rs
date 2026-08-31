@@ -1,5 +1,10 @@
 use crate::events::{BannerSeverity, EventUpdate, UsageSnapshot};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
@@ -352,6 +357,250 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         }
         _ => UiAction::None,
     }
+}
+
+pub fn draw(frame: &mut Frame, app: &App) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(frame.area());
+
+    frame.render_widget(status_bar(app), layout[0]);
+    draw_chat(frame, app, layout[1]);
+    frame.render_widget(input_box(app), layout[2]);
+}
+
+fn status_bar(app: &App) -> Paragraph<'static> {
+    let status = app.status();
+    let model = status.model.as_deref().unwrap_or("auto");
+    let mode = if status.busy { "working" } else { "ready" };
+    let context = status
+        .usage
+        .as_ref()
+        .map(|usage| format_tokens(usage.current_tokens, usage.token_limit))
+        .unwrap_or_else(|| "--/--".to_string());
+    let label = format!(
+        " picopilot | model: {model} | mode: autopilot/{mode} | context: {context} | cost: -- "
+    );
+
+    Paragraph::new(label).style(Style::default().fg(Color::White).bg(Color::Rgb(28, 38, 50)))
+}
+
+fn input_box(app: &App) -> Paragraph<'static> {
+    Paragraph::new(Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Rgb(240, 177, 94))),
+        Span::raw(app.input().to_string()),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
+            .title("message"),
+    )
+}
+
+fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
+        .title("conversation");
+    let inner_width = area.width.saturating_sub(2);
+    let visible_height = area.height.saturating_sub(2);
+    let lines = chat_lines(app);
+    let total_lines = wrapped_line_count(&lines, inner_width);
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    let scroll = total_lines
+        .saturating_sub(visible_height as usize)
+        .min(u16::MAX as usize) as u16;
+
+    frame.render_widget(paragraph.scroll((scroll, 0)), area);
+}
+
+fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(width))
+        .sum()
+}
+
+fn chat_lines(app: &App) -> Vec<Line<'static>> {
+    if app.entries().is_empty() {
+        return vec![Line::from(Span::styled(
+            "Waiting for a prompt.",
+            Style::default().fg(Color::Rgb(132, 147, 160)),
+        ))];
+    }
+
+    app.entries()
+        .iter()
+        .flat_map(entry_lines)
+        .collect()
+}
+
+fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
+    match entry {
+        ChatEntry::User(content) => labeled_lines(
+            "you",
+            content,
+            Style::default()
+                .fg(Color::Rgb(240, 177, 94))
+                .add_modifier(Modifier::BOLD),
+        ),
+        ChatEntry::Assistant {
+            content, agent_id, ..
+        } => labeled_lines(
+            &speaker_label("agent", agent_id.as_deref()),
+            content,
+            Style::default().fg(Color::Rgb(154, 230, 180)),
+        ),
+        ChatEntry::Reasoning {
+            content, agent_id, ..
+        } => labeled_lines(
+            &speaker_label("think", agent_id.as_deref()),
+            content,
+            Style::default()
+                .fg(Color::Rgb(165, 174, 187))
+                .add_modifier(Modifier::ITALIC),
+        ),
+        ChatEntry::Tool {
+            tool_name,
+            output,
+            success,
+            agent_id,
+            ..
+        } => {
+            let state = match success {
+                None => "running",
+                Some(true) => "done",
+                Some(false) => "failed",
+            };
+            let label = format!(
+                "tool {} [{}]{}",
+                tool_name,
+                state,
+                agent_suffix(agent_id.as_deref())
+            );
+            let mut lines = labeled_lines(
+                &label,
+                if output.is_empty() { "" } else { output },
+                Style::default().fg(Color::Rgb(139, 181, 255)),
+            );
+            if output.is_empty() {
+                lines.truncate(1);
+            }
+            lines
+        }
+        ChatEntry::Subagent {
+            display_name,
+            status,
+            error,
+            agent_id,
+            ..
+        } => {
+            let state = match status {
+                SubagentStatus::Running => "running",
+                SubagentStatus::Completed => "done",
+                SubagentStatus::Failed => "failed",
+            };
+            let content = error.as_deref().unwrap_or("");
+            let label = format!(
+                "agent {} [{}]{}",
+                display_name,
+                state,
+                agent_suffix(agent_id.as_deref())
+            );
+            let mut lines = labeled_lines(
+                &label,
+                content,
+                Style::default().fg(Color::Rgb(204, 166, 255)),
+            );
+            if content.is_empty() {
+                lines.truncate(1);
+            }
+            lines
+        }
+        ChatEntry::Banner {
+            severity,
+            message,
+            url,
+        } => {
+            let (label, style) = match severity {
+                BannerSeverity::Warning => (
+                    "warn",
+                    Style::default()
+                        .fg(Color::Rgb(242, 204, 96))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                BannerSeverity::RecoverableError => (
+                    "retry",
+                    Style::default()
+                        .fg(Color::Rgb(255, 169, 122))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                BannerSeverity::BlockingError => (
+                    "error",
+                    Style::default()
+                        .fg(Color::Rgb(255, 117, 117))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            };
+            let content = match url {
+                Some(url) => format!("{message} ({url})"),
+                None => message.clone(),
+            };
+            labeled_lines(label, &content, style)
+        }
+        ChatEntry::Completed => vec![Line::from(Span::styled(
+            "done",
+            Style::default().fg(Color::Rgb(132, 147, 160)),
+        ))],
+    }
+}
+
+fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'static>> {
+    let mut lines = content.lines();
+    let first = lines.next().unwrap_or_default();
+    let mut rendered = vec![Line::from(vec![
+        Span::styled(format!("{label:<18} "), label_style),
+        Span::raw(first.to_string()),
+    ])];
+    rendered.extend(lines.map(|line| {
+        Line::from(vec![Span::styled("                   ", label_style), Span::raw(line.to_string())])
+    }));
+    rendered
+}
+
+fn speaker_label(label: &str, agent_id: Option<&str>) -> String {
+    format!("{}{}", label, agent_suffix(agent_id))
+}
+
+fn agent_suffix(agent_id: Option<&str>) -> String {
+    agent_id
+        .map(|id| format!(" ({id})"))
+        .unwrap_or_default()
+}
+
+fn format_tokens(current: i64, limit: i64) -> String {
+    format!("{}/{}", format_count(current), format_count(limit))
+}
+
+fn format_count(value: i64) -> String {
+    let digits = value.to_string();
+    let mut result = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(character);
+    }
+    result
 }
 
 #[cfg(test)]
