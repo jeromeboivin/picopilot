@@ -1,4 +1,5 @@
 use crate::events::{BannerSeverity, EventUpdate, UsageSnapshot};
+use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
 
@@ -17,6 +18,7 @@ use ratatui::Terminal;
 
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
+use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::AppRuntime;
@@ -27,6 +29,16 @@ pub enum UiAction {
     Quit,
     Send(String),
     Approval(ApprovalDecision),
+    LoadSessions,
+    LoadModels,
+    Resume(SessionId),
+    SwitchModel(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalKind {
+    Sessions,
+    Models,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +95,11 @@ pub struct App {
     entries: Vec<ChatEntry>,
     status: StatusState,
     input: String,
-    pending_approvals: std::collections::VecDeque<ApprovalRequest>,
+    pending_approvals: VecDeque<ApprovalRequest>,
+    modal: Option<ModalKind>,
+    sessions: Vec<SessionMetadata>,
+    models: Vec<Model>,
+    selected_item: usize,
     should_quit: bool,
 }
 
@@ -112,6 +128,56 @@ impl App {
 
     pub fn pending_approval(&self) -> Option<&ApprovalRequest> {
         self.pending_approvals.front()
+    }
+
+    pub fn modal_is_open(&self) -> bool {
+        self.modal.is_some()
+    }
+
+    pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
+        self.sessions = sessions;
+        self.selected_item = 0;
+        self.modal = Some(ModalKind::Sessions);
+    }
+
+    pub fn set_models(&mut self, models: Vec<Model>) {
+        self.models = models;
+        self.selected_item = 0;
+        self.modal = Some(ModalKind::Models);
+    }
+
+    fn close_modal(&mut self) {
+        self.modal = None;
+        self.selected_item = 0;
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let item_count = match self.modal {
+            Some(ModalKind::Sessions) => self.sessions.len(),
+            Some(ModalKind::Models) => self.models.len(),
+            None => 0,
+        };
+        if item_count == 0 {
+            return;
+        }
+        self.selected_item =
+            (self.selected_item as isize + delta).rem_euclid(item_count as isize) as usize;
+    }
+
+    fn choose_selected(&mut self) -> UiAction {
+        let action = match self.modal {
+            Some(ModalKind::Sessions) => self
+                .sessions
+                .get(self.selected_item)
+                .map(|session| UiAction::Resume(session.session_id.clone())),
+            Some(ModalKind::Models) => self
+                .models
+                .get(self.selected_item)
+                .map(|model| UiAction::SwitchModel(model.id.clone())),
+            None => None,
+        };
+        self.close_modal();
+        action.unwrap_or(UiAction::None)
     }
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
@@ -373,9 +439,32 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         };
     }
 
+    if app.modal.is_some() {
+        return match key.code {
+            KeyCode::Esc => {
+                app.close_modal();
+                UiAction::None
+            }
+            KeyCode::Up => {
+                app.move_selection(-1);
+                UiAction::None
+            }
+            KeyCode::Down => {
+                app.move_selection(1);
+                UiAction::None
+            }
+            KeyCode::Enter => app.choose_selected(),
+            _ => UiAction::None,
+        };
+    }
+
     match key.code {
         KeyCode::Esc => UiAction::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            UiAction::LoadSessions
+        }
+        KeyCode::Char('m') => UiAction::LoadModels,
         KeyCode::Char('q') if app.input().is_empty() => UiAction::Quit,
         KeyCode::Enter => {
             let input = app.take_input();
@@ -410,6 +499,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(status_bar(app), layout[0]);
     draw_chat(frame, app, layout[1]);
     frame.render_widget(input_box(app), layout[2]);
+    draw_modal(frame, app);
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -491,7 +581,7 @@ async fn run_loop(
 async fn process_terminal_events(
     app: &mut App,
     runtime: &mut AppRuntime,
-    _events: &mut EventSubscription,
+    events: &mut EventSubscription,
 ) -> io::Result<()> {
     while event::poll(Duration::ZERO)? {
         let Event::Key(key) = event::read()? else {
@@ -504,6 +594,42 @@ async fn process_terminal_events(
             UiAction::Approval(decision) => {
                 if let Some(request) = app.take_approval() {
                     let _ = request.respond_to.send(decision);
+                }
+            }
+            UiAction::LoadSessions => {
+                let sessions = runtime.client.list_sessions(None).await.map_err(|error| {
+                    io::Error::other(format!("could not list sessions: {error}"))
+                })?;
+                app.set_sessions(sessions);
+            }
+            UiAction::LoadModels => {
+                app.set_models(runtime.models.clone());
+            }
+            UiAction::Resume(session_id) => {
+                if let Err(error) = runtime.resume(session_id).await {
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: error.to_string(),
+                        url: None,
+                    });
+                } else {
+                    *events = runtime.session.subscribe();
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::Warning,
+                        message: "session resumed".to_string(),
+                        url: None,
+                    });
+                }
+            }
+            UiAction::SwitchModel(model) => {
+                if let Err(error) = runtime.session.set_model(&model, None).await {
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: format!("could not switch model: {error}"),
+                        url: None,
+                    });
+                } else {
+                    app.apply(crate::events::EventUpdate::ModelChanged { model });
                 }
             }
             UiAction::Send(prompt) => {
@@ -571,6 +697,77 @@ fn input_box(app: &App) -> Paragraph<'static> {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
             .title("message"),
+    )
+}
+
+fn draw_modal(frame: &mut Frame, app: &App) {
+    let Some(modal) = app.modal else {
+        return;
+    };
+    let area = centered_rect(70, 70, frame.area());
+    frame.render_widget(ratatui::widgets::Clear, area);
+
+    let title = match modal {
+        ModalKind::Sessions => "resume session",
+        ModalKind::Models => "choose model",
+    };
+    let items: Vec<String> = match modal {
+        ModalKind::Sessions => app
+            .sessions
+            .iter()
+            .map(|session| {
+                format!(
+                    "{} | {}",
+                    session.modified_time,
+                    session.summary.as_deref().unwrap_or("untitled session")
+                )
+            })
+            .collect(),
+        ModalKind::Models => app
+            .models
+            .iter()
+            .map(|model| format!("{} | {}", model.id, model.name))
+            .collect(),
+    };
+    let lines: Vec<Line<'static>> = if items.is_empty() {
+        vec![Line::from("No entries available.")]
+    } else {
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let style = if index == app.selected_item {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Rgb(240, 177, 94))
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(format!(" {item}"), style))
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+                    .title(format!("{title} | up/down, enter, esc")),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let width = area.width * percent_x / 100;
+    let height = area.height * percent_y / 100;
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
     )
 }
 
@@ -775,6 +972,7 @@ fn format_count(value: i64) -> String {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
     use super::{handle_key, App, ChatEntry, UiAction};
     use crate::events::EventUpdate;
@@ -888,5 +1086,55 @@ mod tests {
             response.await.expect("approval response should arrive"),
             crate::permissions::ApprovalDecision::ApproveOnce
         );
+    }
+
+    #[test]
+    fn modal_selection_emits_resume_and_model_actions() {
+        let mut app = App::new(None);
+        app.set_sessions(vec![
+            SessionMetadata {
+                session_id: SessionId::from("session-1"),
+                start_time: "2026-08-31T12:00:00Z".to_string(),
+                modified_time: "2026-08-31T12:01:00Z".to_string(),
+                summary: Some("first".to_string()),
+                is_remote: false,
+            },
+            SessionMetadata {
+                session_id: SessionId::from("session-2"),
+                start_time: "2026-08-31T12:00:00Z".to_string(),
+                modified_time: "2026-08-31T12:02:00Z".to_string(),
+                summary: Some("second".to_string()),
+                is_remote: false,
+            },
+        ]);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Resume(SessionId::from("session-2"))
+        );
+        assert!(!app.modal_is_open());
+
+        app.set_models(vec![Model {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            ..Model::default()
+        }]);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::SwitchModel("gpt-5".to_string())
+        );
+    }
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+            kind,
+            state: crossterm::event::KeyEventState::NONE,
+        }
     }
 }

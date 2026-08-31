@@ -1,7 +1,12 @@
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use github_copilot_sdk::{Client, Error as SdkError, Model};
+use github_copilot_sdk::{
+    handler::PermissionHandler,
+    types::{Model, ResumeSessionConfig, SessionId},
+    Client, Error as SdkError,
+};
 
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
@@ -9,9 +14,77 @@ use crate::permissions::{permission_handler, ApprovalRequest};
 pub struct AppRuntime {
     pub client: Client,
     pub permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
+    permission_handler: Arc<dyn PermissionHandler>,
     pub session: github_copilot_sdk::session::Session,
     pub models: Vec<Model>,
     pub working_directory: PathBuf,
+}
+
+#[derive(Debug)]
+pub enum ResumeError {
+    Session(SdkError),
+    IdentityMismatch {
+        expected: SessionId,
+        actual: SessionId,
+    },
+}
+
+impl fmt::Display for ResumeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Session(error) => write!(formatter, "could not resume session: {error}"),
+            Self::IdentityMismatch { expected, actual } => write!(
+                formatter,
+                "resume returned session '{actual}' instead of requested session '{expected}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResumeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Session(error) => Some(error),
+            Self::IdentityMismatch { .. } => None,
+        }
+    }
+}
+
+impl AppRuntime {
+    pub async fn resume(&mut self, session_id: SessionId) -> Result<(), ResumeError> {
+        self.session
+            .disconnect()
+            .await
+            .map_err(ResumeError::Session)?;
+
+        let resumed = self
+            .client
+            .resume_session(self.resume_config(session_id.clone()))
+            .await
+            .map_err(ResumeError::Session)?;
+        if resumed.id() != &session_id {
+            let actual = resumed.id().clone();
+            let _ = resumed.disconnect().await;
+            return Err(ResumeError::IdentityMismatch {
+                expected: session_id,
+                actual,
+            });
+        }
+
+        self.session = resumed;
+        Ok(())
+    }
+
+    fn resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
+        ResumeSessionConfig::new(session_id)
+            .with_client_name("picopilot")
+            .with_streaming(true)
+            .with_available_tools(crate::config::V1_AVAILABLE_TOOLS.iter().copied())
+            .with_excluded_tools(crate::config::V1_EXCLUDED_TOOLS.iter().copied())
+            .with_working_directory(self.working_directory.clone())
+            .with_permission_handler(self.permission_handler.clone())
+            .with_suppress_resume_event(true)
+    }
 }
 
 #[derive(Debug)]
@@ -52,7 +125,7 @@ impl std::error::Error for StartupError {
 
 pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
     let working_directory = std::env::current_dir().map_err(StartupError::CurrentDirectory)?;
-    let (permission, permission_requests) = permission_handler(working_directory.clone());
+    let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
     let client = Client::start(config.client_options_in(&working_directory))
         .await
         .map_err(StartupError::Client)?;
@@ -66,7 +139,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         .create_session(
             config
                 .session_config_in(&working_directory)
-                .with_permission_handler(permission),
+                .with_permission_handler(permission_handler.clone()),
         )
         .await
         .map_err(StartupError::Session)?;
@@ -74,6 +147,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
     Ok(AppRuntime {
         client,
         permission_requests,
+        permission_handler,
         session,
         models,
         working_directory,
