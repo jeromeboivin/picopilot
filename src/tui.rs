@@ -122,6 +122,12 @@ pub enum ChatEntry {
         message: String,
         url: Option<String>,
     },
+    Approval {
+        category: String,
+        tool_name: String,
+        details: String,
+        status: ApprovalStatus,
+    },
     Completed,
 }
 
@@ -130,6 +136,14 @@ pub enum SubagentStatus {
     Running,
     Completed,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalStatus {
+    Pending,
+    ApprovedOnce,
+    Denied,
+    Trusted,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -147,6 +161,7 @@ pub struct App {
     status: StatusState,
     input: String,
     pending_approvals: VecDeque<ApprovalRequest>,
+    show_approval_details: bool,
     modal: Option<ModalKind>,
     sessions: Vec<SessionMetadata>,
     session_preview: Option<String>,
@@ -405,17 +420,48 @@ impl App {
     }
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
+        self.entries.push(ChatEntry::Approval {
+            category: request.category.label().to_string(),
+            tool_name: request.tool_name.clone(),
+            details: request.details.clone(),
+            status: ApprovalStatus::Pending,
+        });
         self.pending_approvals.push_back(request);
     }
 
-    fn take_approval(&mut self) -> Option<ApprovalRequest> {
-        self.pending_approvals.pop_front()
+    fn resolve_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalRequest> {
+        let request = self.pending_approvals.pop_front()?;
+        if let Some(ChatEntry::Approval { status, .. }) = self
+            .entries
+            .iter_mut()
+            .find(|entry| matches!(entry, ChatEntry::Approval { status: ApprovalStatus::Pending, .. }))
+        {
+            *status = match decision {
+                ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
+                ApprovalDecision::Deny => ApprovalStatus::Denied,
+                ApprovalDecision::Trust => ApprovalStatus::Trusted,
+            };
+        }
+        self.show_approval_details = false;
+        Some(request)
     }
 
     fn reject_pending_approvals(&mut self) {
         while let Some(request) = self.pending_approvals.pop_front() {
             let _ = request.respond_to.send(ApprovalDecision::Deny);
         }
+        for entry in &mut self.entries {
+            if let ChatEntry::Approval {
+                status: ApprovalStatus::Pending,
+                ..
+            } = entry
+            {
+                if let ChatEntry::Approval { status, .. } = entry {
+                    *status = ApprovalStatus::Denied;
+                }
+            }
+        }
+        self.show_approval_details = false;
     }
 
     pub fn push_input(&mut self, character: char) {
@@ -710,6 +756,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             KeyCode::Char('a') if app.pending_approval().is_some_and(|request| {
                 request.category.supports_trust()
             }) => UiAction::Approval(ApprovalDecision::Trust),
+            KeyCode::Char('v') => {
+                app.show_approval_details = !app.show_approval_details;
+                UiAction::None
+            }
             _ => UiAction::None,
         };
     }
@@ -915,7 +965,7 @@ async fn process_terminal_events(
             UiAction::None => {}
             UiAction::Quit => app.quit(),
             UiAction::Approval(decision) => {
-                if let Some(request) = app.take_approval() {
+                if let Some(request) = app.resolve_approval(decision) {
                     let _ = request.respond_to.send(decision);
                 }
             }
@@ -1232,9 +1282,9 @@ fn input_box(app: &App) -> Paragraph<'static> {
 
     if let Some(request) = app.pending_approval() {
         let choices = if request.category.supports_trust() {
-            "y allow once, n deny, a trust for session"
+            "y allow once, n deny, a trust for session, v details"
         } else {
-            "y allow once, n deny"
+            "y allow once, n deny, v details"
         };
         let prompt = format!(
             "{} ({}): {} | {choices}",
@@ -1264,10 +1314,31 @@ fn input_box(app: &App) -> Paragraph<'static> {
 }
 
 fn draw_modal(frame: &mut Frame, app: &App) {
+    if app.show_approval_details {
+        let area = centered_rect(80, 80, frame.area());
+        frame.render_widget(ratatui::widgets::Clear, area);
+        let details = app
+            .pending_approval()
+            .map(|request| request.details.as_str())
+            .unwrap_or("No approval details available.");
+        frame.render_widget(
+            Paragraph::new(details.to_string())
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+                        .title("approval details | v to close"),
+                )
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+
     let Some(modal) = app.modal else {
         return;
     };
-    let area = centered_rect(70, 70, frame.area());
+    let area = modal_area(modal, frame.area());
     frame.render_widget(ratatui::widgets::Clear, area);
 
     if matches!(modal, ModalKind::Usage) {
@@ -1392,6 +1463,13 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
+    match modal {
+        ModalKind::Sessions | ModalKind::Models => terminal_area,
+        ModalKind::Usage | ModalKind::Todos => centered_rect(70, 70, terminal_area),
+    }
 }
 
 fn model_cost_label(model: &Model) -> String {
@@ -1687,6 +1765,26 @@ fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
             };
             labeled_lines(label, &content, style)
         }
+        ChatEntry::Approval {
+            category,
+            tool_name,
+            details,
+            status,
+        } => {
+            let state = match status {
+                ApprovalStatus::Pending => "pending",
+                ApprovalStatus::ApprovedOnce => "approved once",
+                ApprovalStatus::Denied => "denied",
+                ApprovalStatus::Trusted => "trusted",
+            };
+            labeled_lines(
+                &format!("approve [{state}]"),
+                &format!("{category} ({tool_name}): {details}"),
+                Style::default()
+                    .fg(Color::Rgb(255, 219, 129))
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
         ChatEntry::Completed => vec![Line::from(Span::styled(
             "done",
             Style::default().fg(Color::Rgb(132, 147, 160)),
@@ -1742,8 +1840,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_key, model_context_label, model_cost_label, send_with_fleet_fallback,
-        todo_detail_lines, App, ChatEntry, ModelSelection, SendPath, UiAction,
+        handle_key, modal_area, model_context_label, model_cost_label, send_with_fleet_fallback,
+        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
@@ -1867,7 +1965,7 @@ mod tests {
             UiAction::Approval(crate::permissions::ApprovalDecision::ApproveOnce)
         );
         let request = app
-            .take_approval()
+            .resolve_approval(crate::permissions::ApprovalDecision::ApproveOnce)
             .expect("approval should still be queued");
         request
             .respond_to
@@ -1877,6 +1975,53 @@ mod tests {
             response.await.expect("approval response should arrive"),
             crate::permissions::ApprovalDecision::ApproveOnce
         );
+        assert!(matches!(
+            app.entries().last(),
+            Some(ChatEntry::Approval {
+                status: super::ApprovalStatus::ApprovedOnce,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn approval_details_toggle_while_the_input_is_hijacked() {
+        let mut app = App::new(None);
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(crate::permissions::ApprovalRequest {
+            category: crate::permissions::ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "cargo test --all-targets".to_string(),
+            respond_to,
+        });
+
+        assert!(matches!(
+            app.entries().last(),
+            Some(ChatEntry::Approval {
+                status: super::ApprovalStatus::Pending,
+                details,
+                ..
+            }) if details == "cargo test --all-targets"
+        ));
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('v'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(app.show_approval_details);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('v'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.show_approval_details);
+    }
+
+    #[test]
+    fn session_and_model_pickers_fill_the_terminal() {
+        let terminal_area = ratatui::layout::Rect::new(0, 0, 120, 40);
+
+        assert_eq!(modal_area(ModalKind::Sessions, terminal_area), terminal_area);
+        assert_eq!(modal_area(ModalKind::Models, terminal_area), terminal_area);
+        assert_ne!(modal_area(ModalKind::Usage, terminal_area), terminal_area);
     }
 
     #[test]
