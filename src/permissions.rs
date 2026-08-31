@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,6 +16,7 @@ use tokio::sync::{mpsc, oneshot};
 pub enum ApprovalCategory {
     Shell,
     Task,
+    ExternalWrite,
 }
 
 impl ApprovalCategory {
@@ -23,7 +24,12 @@ impl ApprovalCategory {
         match self {
             Self::Shell => "shell",
             Self::Task => "task",
+            Self::ExternalWrite => "external write",
         }
+    }
+
+    pub fn supports_trust(self) -> bool {
+        matches!(self, Self::Shell | Self::Task)
     }
 }
 
@@ -72,6 +78,7 @@ impl TrustStore {
         match category {
             ApprovalCategory::Shell => trust.shell,
             ApprovalCategory::Task => trust.task,
+            ApprovalCategory::ExternalWrite => false,
         }
     }
 
@@ -86,6 +93,7 @@ impl TrustStore {
         match category {
             ApprovalCategory::Shell => trust.shell = true,
             ApprovalCategory::Task => trust.task = true,
+            ApprovalCategory::ExternalWrite => return Ok(()),
         }
         fs::create_dir_all(&self.directory)?;
         let contents = serde_json::to_vec_pretty(trust).expect("trust state is serializable");
@@ -142,7 +150,9 @@ impl PermissionHandler for PermissionGate {
                 tool_name,
                 details,
             } => {
-                if self.trust_store.is_trusted(&session_id, category) {
+                if category.supports_trust()
+                    && self.trust_store.is_trusted(&session_id, category)
+                {
                     return PermissionResult::approve_once();
                 }
 
@@ -165,7 +175,11 @@ impl PermissionHandler for PermissionGate {
                         PermissionResult::reject(Some("denied by user".to_string()))
                     }
                     Ok(ApprovalDecision::Trust) => {
-                        if self.trust_store.trust(&session_id, category).is_err() {
+                        if !category.supports_trust() {
+                            PermissionResult::reject(Some(
+                                "external writes cannot be trusted for the session".to_string(),
+                            ))
+                        } else if self.trust_store.trust(&session_id, category).is_err() {
                             PermissionResult::reject(Some(
                                 "could not persist session trust; operation denied".to_string(),
                             ))
@@ -209,9 +223,11 @@ fn classify_request(data: &PermissionRequestData, workspace_root: &Path) -> Poli
             if write_paths_are_safe(&data.extra, workspace_root) {
                 PolicyDecision::Approve
             } else {
-                PolicyDecision::Deny(
-                    "picopilot only permits writes inside the workspace".to_string(),
-                )
+                PolicyDecision::Confirm {
+                    category: ApprovalCategory::ExternalWrite,
+                    details: request_details(&data.extra, ApprovalCategory::ExternalWrite),
+                    tool_name,
+                }
             }
         }
         Some(PermissionRequestKind::Shell) => PolicyDecision::Confirm {
@@ -235,6 +251,13 @@ fn classify_request(data: &PermissionRequestData, workspace_root: &Path) -> Poli
                     details: request_details(&data.extra, ApprovalCategory::Task),
                     tool_name,
                 },
+                InferredPolicy::Confirm(ApprovalCategory::ExternalWrite) => {
+                    PolicyDecision::Confirm {
+                        category: ApprovalCategory::ExternalWrite,
+                        details: request_details(&data.extra, ApprovalCategory::ExternalWrite),
+                        tool_name,
+                    }
+                }
             }
         }
         Some(PermissionRequestKind::Url)
@@ -266,7 +289,7 @@ fn inferred_policy(tool_name: &str, extra: &Value, workspace_root: &Path) -> Inf
         return if write_paths_are_safe(extra, workspace_root) {
             InferredPolicy::Approve
         } else {
-            InferredPolicy::Deny
+            InferredPolicy::Confirm(ApprovalCategory::ExternalWrite)
         };
     }
     if lower.contains("shell") || lower.contains("bash") || lower.contains("powershell") {
@@ -289,6 +312,7 @@ fn request_details(extra: &Value, category: ApprovalCategory) -> String {
     let keys = match category {
         ApprovalCategory::Shell => ["command", "cmd", "script", "description"],
         ApprovalCategory::Task => ["prompt", "description", "task", "agentName"],
+        ApprovalCategory::ExternalWrite => ["path", "filePath", "file_path", "description"],
     };
     first_string(extra, &keys).unwrap_or_else(|| "details unavailable".to_string())
 }
@@ -313,37 +337,47 @@ fn write_paths_are_safe(extra: &Value, workspace_root: &Path) -> bool {
 }
 
 fn is_within_workspace(workspace_root: &Path, path: &Path) -> bool {
-    let root = normalize_path(if workspace_root.is_absolute() {
+    let root = if workspace_root.is_absolute() {
         workspace_root.to_path_buf()
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(workspace_root)
-    });
-    let candidate = normalize_path(if path.is_absolute() {
+    };
+    let candidate = if path.is_absolute() {
         path.to_path_buf()
     } else {
         root.join(path)
-    });
+    };
+    let Ok(root) = canonicalize_with_missing_tail(&root) else {
+        return false;
+    };
+    let Ok(candidate) = canonicalize_with_missing_tail(&candidate) else {
+        return false;
+    };
     let root_key = path_key(&root);
     let candidate_key = path_key(&candidate);
     candidate_key == root_key || candidate_key.starts_with(&(root_key + "/"))
 }
 
-fn normalize_path(path: PathBuf) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
+fn canonicalize_with_missing_tail(path: &Path) -> std::io::Result<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !ancestor.exists() {
+        let Some(name) = ancestor.file_name() else {
+            return fs::canonicalize(path);
+        };
+        missing.push(name.to_os_string());
+        if !ancestor.pop() {
+            return fs::canonicalize(path);
         }
     }
-    normalized
+
+    let mut resolved = fs::canonicalize(ancestor)?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn path_key(path: &Path) -> String {
@@ -425,6 +459,7 @@ fn default_trust_directory() -> PathBuf {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use github_copilot_sdk::handler::{PermissionHandler, PermissionResult};
@@ -484,28 +519,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_writes_outside_the_workspace_and_through_traversal() {
-        let workspace = std::env::current_dir().unwrap();
-        let (handler, mut requests) = permission_handler(workspace);
+    async fn confirms_writes_outside_the_workspace_and_through_traversal() {
+        let (handler, mut requests, trust_directory) = test_gate();
         for (index, path) in ["../outside.txt", "C:\\outside.txt"]
             .into_iter()
             .enumerate()
         {
-            let result = handler
-                .handle(
-                    SessionId::from("session-write"),
-                    RequestId::new(format!("request-outside-{index}")),
-                    PermissionRequestData {
-                        kind: Some(PermissionRequestKind::Write),
-                        extra: json!({ "path": path }),
-                        ..Default::default()
-                    },
-                )
-                .await;
+            let task = tokio::spawn({
+                let handler = handler.clone();
+                async move {
+                    handler
+                        .handle(
+                            SessionId::from("session-write"),
+                            RequestId::new(format!("request-outside-{index}")),
+                            PermissionRequestData {
+                                kind: Some(PermissionRequestKind::Write),
+                                extra: json!({ "path": path }),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                }
+            });
+            let request = requests.recv().await.expect("outside write should ask");
+            assert_eq!(request.category, ApprovalCategory::ExternalWrite);
+            assert!(!request.category.supports_trust());
+            request
+                .respond_to
+                .send(ApprovalDecision::ApproveOnce)
+                .expect("permission handler should be waiting");
+            let result = task.await.expect("permission task should finish");
 
             assert!(matches!(result, PermissionResult::Decision { .. }));
         }
         assert!(requests.try_recv().is_err());
+        assert!(!trust_directory.exists());
+        cleanup_trust_directory(trust_directory);
     }
 
     #[tokio::test]
@@ -642,8 +691,12 @@ mod tests {
         mpsc::UnboundedReceiver<super::ApprovalRequest>,
         PathBuf,
     ) {
-        let directory =
-            std::env::temp_dir().join(format!("picopilot-permissions-{}", std::process::id()));
+        static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "picopilot-permissions-{}-{}",
+            std::process::id(),
+            NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
         cleanup_trust_directory(directory.clone());
         let (handler, requests) = test_gate_with_directory(directory.clone());
         (handler, requests, directory)

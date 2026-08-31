@@ -250,7 +250,7 @@ impl AppRuntime {
         &self,
         session_id: SessionId,
     ) -> Result<Vec<SessionEvent>, ResumeError> {
-        if self.session.id() == &session_id {
+        if self.session.id().eq(&session_id) {
             return self.session.get_events().await.map_err(ResumeError::Session);
         }
 

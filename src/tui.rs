@@ -701,7 +701,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return match key.code {
             KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
             KeyCode::Char('n') => UiAction::Approval(ApprovalDecision::Deny),
-            KeyCode::Char('a') => UiAction::Approval(ApprovalDecision::Trust),
+            KeyCode::Char('a') if app.pending_approval().is_some_and(|request| {
+                request.category.supports_trust()
+            }) => UiAction::Approval(ApprovalDecision::Trust),
             _ => UiAction::None,
         };
     }
@@ -1203,11 +1205,14 @@ fn input_box(app: &App) -> Paragraph<'static> {
     }
 
     if let Some(request) = app.pending_approval() {
+        let choices = if request.category.supports_trust() {
+            "y allow once, n deny, a trust for session"
+        } else {
+            "y allow once, n deny"
+        };
         let prompt = format!(
-            "{} ({}): {} | y allow once, n deny, a trust for session",
-            request.category.label(),
-            request.tool_name,
-            request.details
+            "{} ({}): {} | {choices}",
+            request.category.label(), request.tool_name, request.details
         );
         return Paragraph::new(prompt)
             .style(Style::default().fg(Color::Rgb(255, 219, 129)))
