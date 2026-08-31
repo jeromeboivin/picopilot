@@ -26,7 +26,9 @@ use github_copilot_sdk::rpc::{
 };
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
-use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
+use github_copilot_sdk::types::{
+    ContextTier, Model, SessionId, SessionMetadata, SetModelOptions,
+};
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
@@ -1338,8 +1340,11 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     "default"
                 };
                 format!(
-                    "{} | {} | reasoning: {reasoning} | context: {context}",
-                    model.id, model.name
+                    "{} | {} | cost: {} | window: {} | reasoning: {reasoning} | context: {context}",
+                    model.id,
+                    model.name,
+                    model_cost_label(model),
+                    model_context_label(model),
                 )
             })
             .collect(),
@@ -1387,6 +1392,37 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn model_cost_label(model: &Model) -> String {
+    let category = serde_json::to_value(model)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("modelPickerPriceCategory")
+                .and_then(|category| category.as_str())
+                .map(str::to_owned)
+        });
+    match category.as_deref() {
+        Some("low" | "medium" | "high") => category.expect("matched category is present"),
+        Some("very_high") => "very high".to_string(),
+        _ => model
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.multiplier)
+            .map(|multiplier| format!("{multiplier}x"))
+            .unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn model_context_label(model: &Model) -> String {
+    model
+        .capabilities
+        .limits
+        .as_ref()
+        .and_then(|limits| limits.max_context_window_tokens)
+        .map(format_count)
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn todo_detail_lines(app: &App) -> Vec<Line<'static>> {
@@ -1706,8 +1742,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        handle_key, send_with_fleet_fallback, todo_detail_lines, App, ChatEntry, ModelSelection,
-        SendPath, UiAction,
+        handle_key, model_context_label, model_cost_label, send_with_fleet_fallback,
+        todo_detail_lines, App, ChatEntry, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
@@ -1914,6 +1950,23 @@ mod tests {
 
         assert_eq!(options.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(options.context_tier, Some(ContextTier::LongContext));
+    }
+
+    #[test]
+    fn model_picker_formats_cost_and_context_metadata() {
+        let model: Model = serde_json::from_value(json!({
+            "billing": { "multiplier": 1.5 },
+            "capabilities": {
+                "limits": { "max_context_window_tokens": 200000 }
+            },
+            "id": "gpt-5",
+            "modelPickerPriceCategory": "high",
+            "name": "GPT-5"
+        }))
+        .expect("model metadata should deserialize");
+
+        assert_eq!(model_cost_label(&model), "high");
+        assert_eq!(model_context_label(&model), "200,000");
     }
 
     #[test]
