@@ -24,10 +24,15 @@ impl fmt::Display for StartupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CurrentDirectory(error) => {
-                write!(formatter, "could not determine the working directory: {error}")
+                write!(
+                    formatter,
+                    "could not determine the working directory: {error}"
+                )
             }
             Self::Client(error) => write!(formatter, "could not start Copilot: {error}"),
-            Self::Configuration(error) => write!(formatter, "invalid startup configuration: {error}"),
+            Self::Configuration(error) => {
+                write!(formatter, "invalid startup configuration: {error}")
+            }
             Self::Session(error) => write!(formatter, "could not create Copilot session: {error}"),
         }
     }
