@@ -14,15 +14,13 @@ use github_copilot_sdk::{
 pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
 pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
 const CONCISE_TONE: &str = "Be concise, direct, and professional.";
-const CONCISE_RUNTIME_INSTRUCTIONS: &str =
-    "Work autonomously until the task is complete. Use available tools efficiently and obey host permission decisions.";
 
 struct PicopilotSystemMessageTransform;
 
 #[async_trait]
 impl SystemMessageTransform for PicopilotSystemMessageTransform {
     fn section_ids(&self) -> Vec<String> {
-        vec!["tone".to_string(), "runtime_instructions".to_string()]
+        vec!["tone".to_string()]
     }
 
     async fn transform_section(
@@ -33,7 +31,6 @@ impl SystemMessageTransform for PicopilotSystemMessageTransform {
     ) -> Option<String> {
         match section_id {
             "tone" => Some(CONCISE_TONE.to_string()),
-            "runtime_instructions" => Some(CONCISE_RUNTIME_INSTRUCTIONS.to_string()),
             _ => None,
         }
     }
@@ -240,10 +237,7 @@ mod tests {
     use github_copilot_sdk::transforms::{SystemMessageTransform, TransformContext};
     use github_copilot_sdk::types::{Model, ModelCapabilities, SessionId};
 
-    use super::{
-        system_message_config, AppConfig, PicopilotSystemMessageTransform,
-        CONCISE_RUNTIME_INSTRUCTIONS, CONCISE_TONE,
-    };
+    use super::{system_message_config, AppConfig, PicopilotSystemMessageTransform, CONCISE_TONE};
 
     #[test]
     fn parses_startup_model_overrides() {
@@ -400,12 +394,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rewrites_tone_and_runtime_instructions_concisely() {
+    async fn rewrites_tone_but_preserves_runtime_instructions() {
         let transform = PicopilotSystemMessageTransform;
         let context = TransformContext {
             session_id: SessionId::from("session-1"),
         };
 
+        assert_eq!(transform.section_ids(), vec!["tone"]);
         assert_eq!(
             transform
                 .transform_section("tone", "long default tone", context.clone())
@@ -420,9 +415,8 @@ mod tests {
                     "long default runtime instructions",
                     context,
                 )
-                .await
-                .as_deref(),
-            Some(CONCISE_RUNTIME_INSTRUCTIONS)
+                .await,
+            None
         );
     }
 
