@@ -1,10 +1,10 @@
 use github_copilot_sdk::rpc::{MetadataContextAttributionResult, UsageGetMetricsResult};
 use github_copilot_sdk::session_events::{
     AssistantMessageData, AssistantMessageDeltaData, AssistantReasoningData,
-    AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionUsageInfoData,
-    SessionWarningData, SubagentCompletedData, SubagentFailedData, SubagentStartedData,
-    ToolExecutionCompleteData, ToolExecutionPartialResultData, ToolExecutionProgressData,
-    ToolExecutionStartData,
+    AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionTodosChangedData,
+    SessionUsageInfoData, SessionWarningData, SubagentCompletedData, SubagentFailedData,
+    SubagentStartedData, ToolExecutionCompleteData, ToolExecutionPartialResultData,
+    ToolExecutionProgressData, ToolExecutionStartData,
 };
 use github_copilot_sdk::types::SessionEvent;
 
@@ -156,6 +156,7 @@ pub enum EventUpdate {
     ModelChanged {
         model: String,
     },
+    TodosChanged,
     Idle,
     TaskComplete,
 }
@@ -295,6 +296,9 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                     model: data.new_model,
                 })
         }
+        "session.todos_changed" => event
+            .typed_data::<SessionTodosChangedData>()
+            .map(|_| EventUpdate::TodosChanged),
         "session.idle" => Some(EventUpdate::Idle),
         "session.task_complete" => Some(EventUpdate::TaskComplete),
         _ => None,
@@ -391,5 +395,22 @@ mod tests {
         assert_eq!(snapshot.categories[0].tokens, 10);
         assert_eq!(snapshot.categories[3].tokens, 4);
         assert_eq!(snapshot.compactions, 3);
+    }
+
+    #[test]
+    fn maps_todos_changed_to_a_refresh_signal() {
+        let event = SessionEvent {
+            id: "event-todos".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "session.todos_changed".to_string(),
+            data: json!({}),
+        };
+
+        assert_eq!(event_update(&event), Some(EventUpdate::TodosChanged));
     }
 }

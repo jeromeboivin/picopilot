@@ -437,6 +437,7 @@ impl App {
                 url,
             }),
             EventUpdate::ModelChanged { model } => self.status.model = Some(model),
+            EventUpdate::TodosChanged => {}
             EventUpdate::Idle | EventUpdate::TaskComplete => {
                 self.status.busy = false;
                 if !matches!(self.entries.last(), Some(ChatEntry::Completed)) {
