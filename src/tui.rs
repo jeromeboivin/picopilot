@@ -765,9 +765,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if app.blocked {
         return match key.code {
-            KeyCode::Esc => UiAction::Quit,
+            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
-            KeyCode::Char('q') => UiAction::Quit,
             _ => UiAction::None,
         };
     }
@@ -793,11 +792,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if app.modal.is_some() {
         return match key.code {
-            KeyCode::Char('u') if matches!(app.modal, Some(ModalKind::Usage)) => {
+            KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(app.modal, Some(ModalKind::Usage)) =>
+            {
                 app.close_modal();
                 UiAction::None
             }
-            KeyCode::Char('t') if matches!(app.modal, Some(ModalKind::Todos)) => {
+            KeyCode::Char('t')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(app.modal, Some(ModalKind::Todos)) =>
+            {
                 app.close_modal();
                 UiAction::None
             }
@@ -839,19 +844,21 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     }
 
     match key.code {
-        KeyCode::Esc => UiAction::Quit,
+        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             UiAction::LoadSessions
+        }
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::LoadModels,
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::LoadUsage,
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) && app.fleet_active => {
+            UiAction::LoadTodos
         }
         KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.show_internals = !app.show_internals;
             UiAction::None
         }
-        KeyCode::Char('m') => UiAction::LoadModels,
-        KeyCode::Char('u') => UiAction::LoadUsage,
-        KeyCode::Char('t') if app.fleet_active => UiAction::LoadTodos,
-        KeyCode::Char('q') if app.input().is_empty() => UiAction::Quit,
+        KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::None,
         KeyCode::Enter => {
             let input = app.take_input();
             if input.trim().is_empty() {
@@ -886,12 +893,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(3),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
     frame.render_widget(status_bar(app), layout[0]);
     draw_chat(frame, app, layout[1]);
     frame.render_widget(input_box(app), layout[2]);
+    frame.render_widget(shortcut_bar(), layout[3]);
     draw_modal(frame, app);
 }
 
@@ -1308,9 +1317,41 @@ fn status_bar(app: &App) -> Paragraph<'static> {
     Paragraph::new(label).style(Style::default().fg(Color::White).bg(Color::Rgb(28, 38, 50)))
 }
 
+fn shortcut_bar() -> Paragraph<'static> {
+    let shortcut = |key| {
+        Span::styled(
+            key,
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(220, 224, 230))
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    Paragraph::new(vec![
+        Line::from(vec![
+            shortcut("^O"),
+            Span::raw(" Sessions   "),
+            shortcut("^P"),
+            Span::raw(" Models   "),
+            shortcut("^U"),
+            Span::raw(" Usage"),
+        ]),
+        Line::from(vec![
+            shortcut("^T"),
+            Span::raw(" Todos      "),
+            shortcut("^I"),
+            Span::raw(" Internals "),
+            shortcut("^X"),
+            Span::raw(" Exit"),
+        ]),
+    ])
+    .style(Style::default().fg(Color::Rgb(220, 224, 230)))
+}
+
 fn input_box(app: &App) -> Paragraph<'static> {
     if app.blocked {
-        return Paragraph::new("Session ended. Press q or esc to close.")
+        return Paragraph::new("Session ended. Press Ctrl+X to close.")
             .style(Style::default().fg(Color::Rgb(255, 117, 117)))
             .block(
                 Block::default()
@@ -1402,7 +1443,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                        .title("usage and context | u or esc to close"),
+                        .title("usage and context | ^U or Esc to close"),
                 )
                 .wrap(Wrap { trim: false }),
             area,
@@ -1417,7 +1458,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                        .title("fleet todos | t or esc to close"),
+                        .title("fleet todos | ^T or Esc to close"),
                 )
                 .wrap(Wrap { trim: false }),
             area,
@@ -1433,8 +1474,8 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     let title = match modal {
         ModalKind::Sessions => "resume session",
         ModalKind::Models => "choose model",
-        ModalKind::Usage => "usage and context | u or esc to close",
-        ModalKind::Todos => "fleet todos | t or esc to close",
+        ModalKind::Usage => "usage and context | ^U or Esc to close",
+        ModalKind::Todos => "fleet todos | ^T or Esc to close",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -1976,7 +2017,7 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        draw_model_picker, handle_key, modal_area, model_context_label, model_cost_label,
+        draw, draw_model_picker, handle_key, modal_area, model_context_label, model_cost_label,
         model_picker_detail_lines, model_picker_row, send_with_fleet_fallback, todo_detail_lines,
         App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
@@ -2415,10 +2456,7 @@ mod tests {
     fn usage_key_requests_the_usage_detail_modal() {
         let mut app = App::new(None);
 
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
-            UiAction::LoadUsage
-        );
+        assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
     }
 
     #[test]
@@ -2443,10 +2481,7 @@ mod tests {
                 .and_then(|metrics| metrics.total_nano_aiu),
             Some(3.5)
         );
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
-            UiAction::None
-        );
+        assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::None);
         assert!(!app.modal_is_open());
     }
 
@@ -2489,16 +2524,11 @@ mod tests {
     fn todo_modal_is_only_available_for_an_active_fleet() {
         let mut app = App::new(None);
 
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
-            UiAction::None
-        );
+        assert_eq!(handle_key(&mut app, ctrl_key('t')), UiAction::None);
+        assert!(app.input().is_empty());
 
         app.set_fleet_active(true);
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
-            UiAction::LoadTodos
-        );
+        assert_eq!(handle_key(&mut app, ctrl_key('t')), UiAction::LoadTodos);
 
         app.set_todos(TodoSnapshot {
             rows: vec![TodoRowSnapshot {
@@ -2518,11 +2548,45 @@ mod tests {
         assert!(app.take_todo_refresh_request());
         assert!(!app.take_todo_refresh_request());
 
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
-            UiAction::None
-        );
+        assert_eq!(handle_key(&mut app, ctrl_key('t')), UiAction::None);
         assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn main_window_commands_require_control_and_plain_letters_remain_input() {
+        let mut app = App::new(None);
+        for character in "quantum".chars() {
+            assert_eq!(
+                handle_key(&mut app, key(KeyCode::Char(character), KeyEventKind::Press)),
+                UiAction::None
+            );
+        }
+        assert_eq!(app.input(), "quantum");
+
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::LoadSessions);
+        assert_eq!(handle_key(&mut app, ctrl_key('p')), UiAction::LoadModels);
+        assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
+        assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
+        assert_eq!(app.input(), "quantum");
+    }
+
+    #[test]
+    fn main_window_renders_nano_shortcuts_at_the_bottom() {
+        let app = App::new(None);
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("main window should render");
+
+        let buffer = terminal.backend().buffer();
+        let row = |y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(row(28).contains("^O Sessions   ^P Models   ^U Usage"));
+        assert!(row(29).contains("^T Todos      ^I Internals ^X Exit"));
     }
 
     #[tokio::test]
@@ -2658,8 +2722,9 @@ mod tests {
         assert!(app.input().is_empty());
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Char('q'), KeyEventKind::Press)),
-            UiAction::Quit
+            UiAction::None
         );
+        assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
     }
 
     #[test]
@@ -2708,6 +2773,15 @@ mod tests {
             code,
             modifiers: KeyModifiers::NONE,
             kind,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    fn ctrl_key(character: char) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char(character),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
     }
