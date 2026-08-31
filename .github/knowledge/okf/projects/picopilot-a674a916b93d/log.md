@@ -1,5 +1,85 @@
 # Knowledge extraction log
 
+## 2026-08-31T19:03:00Z — Eighth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (318 events, 172 KB) — Local model/BYOK investigation session.
+  User asked to investigate SDK support for Ollama and local models. Assistant
+  researched `NamedProviderConfig`, `ProviderModelConfig`, and the additive
+  multi-provider registry in SDK 1.0.13-preview.2. A full implementation plan
+  was agreed and implementation started, but no code was committed before the
+  session ended. Durable design decision and verified SDK API surface extracted.
+- `7028bf67` (1729 events, 1057 KB) — Re-reviewed later messages (13–18).
+  User requested TUI cleanup to resemble Claude Code CLI: borderless layout,
+  `❯` prompt glyph, `●` assistant prefix, `✻` busy indicator, Markdown
+  rendering via `pulldown-cmark`, reasoning always visible in dim gray.
+  Also requested install scripts (install.ps1, install.sh) with user-local
+  installation and PATH management. All committed (3a79fff, a3b3023).
+- `f0959735` (18 events, 52 KB) — "Fetch my system info" session. Transient.
+- `bc763a17` (18 events, 54 KB) — "Fetch my system info" session. Transient.
+- `88e4e368` (10 events, 28 KB) — "Hi" greeting session. Transient.
+
+**Frontmatter audit:** All 11 concept files pass validation (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Created `local-provider-support.md` — BYOK/Ollama additive registry design
+  decision, verified SDK API surface, agreed implementation plan (draft status).
+- Updated `architecture.md` — added `pulldown-cmark` dependency, updated
+  packaging section with install.ps1/install.sh and user-local directories.
+- Updated `tui-conventions.md` — borderless Claude Code-like layout, `❯`/`●`/`✻`
+  glyphs, Markdown rendering via pulldown-cmark, reasoning always visible in
+  dim gray italics, terminal caret positioning.
+- Updated `sdk-api-surface.md` — added local provider registry section with
+  NamedProviderConfig, ProviderModelConfig, session vs client model listing.
+- Updated `index.md` — added local-provider-support entry.
+- Updated `okf-project-index.instructions.md` — corrected all concept names
+  and paths, added local-provider-support entry.
+
+## 2026-08-31T18:23:00Z — Seventh consolidation pass
+
+**Reviewed transcripts:**
+- `9b61cf62` events — Re-reviewed (495 KB). Transient system-info gathering
+  session: user repeatedly attempted `systeminfo`, `wmic`, `rustc --version`,
+  `cargo --version`, `git --version`; assistant hit sub-agent depth limits
+  throughout. No durable project decisions, user preferences, or verified
+  facts.
+
+**Frontmatter audit:** All 10 concept files pass validation (fenced YAML
+with non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:** None. No new durable knowledge extracted.
+
+## 2026-08-31T16:23:00Z — Sixth consolidation pass
+
+**Reviewed transcripts:**
+- `9b61cf62` events — Re-reviewed. Transient system-info gathering session
+  (user repeatedly tried `systeminfo`, `wmic`, `rustc --version` etc.;
+  assistant hit sub-agent depth limits throughout). No durable project
+  decisions, user preferences, or verified facts.
+
+**Frontmatter audit:** All 10 concept files pass validation (fenced YAML
+with non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:** None. No new durable knowledge extracted.
+
+## 2026-08-31T18:22:00Z — Fifth consolidation pass
+
+**Reviewed transcripts:**
+- `9b61cf62` events — Transient system-info gathering session. User
+  repeatedly attempted to run Windows diagnostic commands (`systeminfo`,
+  `wmic`, `rustc --version`, `cargo --version`, `git --version`). Assistant
+  hit tool/depth limitations throughout. No durable project decisions, user
+  preferences, or verified facts.
+
+**Changes:** None. No new durable knowledge extracted.
+
+**Frontmatter audit:** All 10 concept files pass validation (fenced YAML
+with non-empty `type` key). index.md and log.md are exempt.
+
 ## 2026-08-31T18:05:00Z — Fourth consolidation pass (frontmatter audit)
 
 **Reviewed transcripts:**

@@ -12,8 +12,9 @@ A minimalist Rust TUI coding agent built on the GitHub Copilot SDK.
 - [Permission policy](permission-policy.md) — Hardcoded tool-approval model and workspace confinement.
 - [Fleet dispatch design](fleet-dispatch.md) — Explicit `/fleet` command vs normal `session.send`.
 - [Transport recovery](transport-recovery.md) — Auto-restart, identity verification, and steering semantics.
-- [TUI conventions](tui-conventions.md) — Ctrl+key shortcuts, nano-style command bar, modals, error/status rendering.
+- [TUI conventions](tui-conventions.md) — Ctrl-key keyboard model, modals, error/status rendering.
 - [System message trimming](system-message-trimming.md) — Which Copilot system-message sections are removed or rewritten.
-- [Model selection](model-selection.md) — Unconstrained picker, per-model options, cost-focused UX.
-- [Known gaps](known-gaps.md) — Audit-discovered residual gaps and their fix status.
+- [Model selection](model-selection.md) — Compact picker, per-model options, cost-focused UX.
 - [Development workflow](development-workflow.md) — TDD commit-per-step preference and validation gates.
+- [Known gaps](known-gaps.md) — Audit-discovered residual gaps and their fix status.
+- [Local provider support](local-provider-support.md) — BYOK/Ollama additive local model design (planned, not yet implemented).

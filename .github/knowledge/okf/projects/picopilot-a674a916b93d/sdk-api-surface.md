@@ -10,7 +10,8 @@ status: verified
 sources:
   - session b8030d13 (SDK research report)
   - github/copilot-sdk rust/src/
-generated: "2026-08-31T17:28:00Z"
+  - session 73ea30cc (local provider API investigation)
+generated: "2026-08-31T19:03:00Z"
 ---
 
 # Copilot SDK API surface
@@ -60,3 +61,29 @@ Verified against `github-copilot-sdk` 1.0.13-preview.2 crate.
 - No distinct "stale session" error from resume; mismatch detected by comparing metadata fields.
 - `session.metadata.getContextAttribution` is experimental / generated-only.
 - Newly created sessions may not be immediately visible via `get_session_metadata`; picopilot treats missing `start_time` as acceptable during startup (discovered via live testing).
+
+## Local provider registry (experimental)
+
+Verified in session `73ea30cc` for additive BYOK/Ollama support.
+
+| Type | Purpose |
+|------|---------|
+| `NamedProviderConfig` | Registers a named provider (name, provider_type, base_url, wire_api, api_key, bearer_token, transport). |
+| `ProviderModelConfig` | Binds a model to a named provider (provider name, wire_model, model_id, capabilities). |
+
+**Session integration:**
+- `SessionConfig` accepts `providers: Vec<NamedProviderConfig>` and `models: Vec<ProviderModelConfig>`.
+- `Client::list_models()` returns **only** the hosted catalog.
+- `session.rpc().model().list()` returns **both** hosted and session-registered models.
+- `session.set_model()` accepts qualified IDs like `local/qwen2.5-coder:14b`.
+- Provider definitions are per-session and must be resupplied on resume and recovery.
+
+**Ollama minimal config:**
+```
+ProviderConfig::new("http://localhost:11434/v1")
+    .with_provider_type("openai")
+    .with_wire_api("completions")
+    // no API key needed
+```
+
+⚠️ Marked experimental — API may change in future SDK releases.

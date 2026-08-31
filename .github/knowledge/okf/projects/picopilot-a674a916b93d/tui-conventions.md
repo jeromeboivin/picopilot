@@ -13,19 +13,23 @@ sources:
   - session b8030d13 (implementation)
   - session 7028bf67 (audit fixes a17e9cb, 9bd3d1e, f21987c)
   - session 7028bf67 (Ctrl-key migration 46de582, picker simplification 5d1eafd, debug resume 849c061)
-generated: "2026-08-31T18:03:00Z"
+  - session 7028bf67 (Claude Code-like simplification 3a79fff, Markdown rendering, ❯/●/✻ glyphs)
+generated: "2026-08-31T19:03:00Z"
 ---
 
 # TUI conventions
 
 ## Layout
 
-- **Four-row single-column overlay**: thin top status bar (model, mode, live
-  cost in AIU), full-width chat transcript, pinned single-line input, and a
-  persistent **shortcut bar** at the very bottom showing keybindings.
+- **Borderless, padded single-column** inspired by Claude Code CLI: thin
+  top metadata bar (model, mode, reasoning level, live cost in AIU),
+  full-width borderless chat transcript with horizontal padding, pinned
+  single-line input with subtle top/bottom rules, and a single muted
+  **shortcut bar** footer showing keybindings.
 - Auto-scroll anchored to the bottom so streamed output stays visible.
 - Wrapped-line estimate replaces Ratatui's private `Paragraph::line_count`
   (unstable API workaround for 0.29).
+- Modals retain boxed borders; only the main conversation screen is borderless.
 
 ## Keyboard shortcuts
 
@@ -65,13 +69,27 @@ A 2-line bar rendered below the input box shows discoverable key labels:
 
 ## Transcript display
 
-- **Reasoning and tool telemetry** are hidden by default; `Ctrl+I` reveals them.
-- **Diagnostic entries** (e.g. "session resumed") are also hidden unless
-  `Ctrl+I` is toggled on. They appear as `debug:` labeled lines.
+- **User messages** prefixed with `❯` (Unicode glyph matching Claude Code).
+- **Assistant messages** prefixed with `●`.
+- **Busy indicator**: `✻ Copilot is responding…` shown in dim text while the
+  session is active; disappears on idle/completion.
+- **Reasoning tokens** are always rendered in **dim gray italics** regardless
+  of `Ctrl+I` toggle state. This was a deliberate design change: reasoning
+  was previously hidden unless `Ctrl+I` was enabled; now it is a first-class
+  always-visible dim stream.
+- **Markdown rendering** in assistant and reasoning messages via `pulldown-cmark`:
+  headings, bold, italic, strikethrough, lists, task lists, inline code,
+  fenced code, links, quotes, and horizontal rules. Reasoning messages use a
+  muted gray palette that overrides Markdown accent colors.
+- **Tool activity**, sub-agent lifecycle, and Fleet coordination are collapsed
+  by default; toggled via `Ctrl+I`.
+- **Diagnostic entries** (e.g. "session resumed") are hidden unless `Ctrl+I`
+  is toggled on. They appear as `debug:` labeled lines.
 - **User messages**: optimistic insert on submit; SDK `user.message` events
   reconcile with (not duplicate) the optimistic row.
 - **Streamed deltas** coalesce into a single assistant line.
-- Tool activity, sub-agent lifecycle, and Fleet coordination are collapsed by default.
+- **Input caret**: the terminal cursor is positioned after the typed text
+  when the main input owns focus. The prompt glyph is `❯`.
 
 ## Error and status conventions
 
