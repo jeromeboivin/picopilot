@@ -171,6 +171,7 @@ pub enum EventUpdate {
     ToolStarted {
         tool_call_id: String,
         tool_name: String,
+        arguments: Option<serde_json::Value>,
         agent_id: Option<String>,
     },
     ToolOutput {
@@ -264,6 +265,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .map(|data| EventUpdate::ToolStarted {
                     tool_call_id: data.tool_call_id,
                     tool_name: data.tool_name,
+                    arguments: data.arguments,
                     agent_id,
                 })
         }
@@ -283,16 +285,18 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                     agent_id,
                 })
         }
-        "tool.execution_complete" => {
-            event
-                .typed_data::<ToolExecutionCompleteData>()
-                .map(|data| EventUpdate::ToolCompleted {
-                    tool_call_id: data.tool_call_id,
-                    success: data.success,
-                    message: data.error.map(|error| error.message),
-                    agent_id,
-                })
-        }
+        "tool.execution_complete" => event.typed_data::<ToolExecutionCompleteData>().map(|data| {
+            let message = data
+                .result
+                .map(|result| result.detailed_content.unwrap_or(result.content))
+                .or_else(|| data.error.map(|error| error.message));
+            EventUpdate::ToolCompleted {
+                tool_call_id: data.tool_call_id,
+                success: data.success,
+                message,
+                agent_id,
+            }
+        }),
         "subagent.started" => {
             event
                 .typed_data::<SubagentStartedData>()
@@ -418,6 +422,59 @@ mod tests {
             Some(EventUpdate::AssistantDelta {
                 message_id: "message-1".to_string(),
                 content: "The patch is ready.".to_string(),
+                agent_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn maps_shell_arguments_and_completed_output() {
+        let start = SessionEvent {
+            id: "event-shell-start".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "tool.execution_start".to_string(),
+            data: json!({
+                "toolCallId": "tool-1",
+                "toolName": "powershell",
+                "arguments": { "command": "Get-CimInstance Win32_OperatingSystem" }
+            }),
+        };
+        let complete = SessionEvent {
+            id: "event-shell-complete".to_string(),
+            event_type: "tool.execution_complete".to_string(),
+            data: json!({
+                "toolCallId": "tool-1",
+                "success": true,
+                "result": {
+                    "content": "Microsoft Windows 11 Pro",
+                    "detailedContent": "Caption: Microsoft Windows 11 Pro\nVersion: 10.0.26100"
+                }
+            }),
+            ..start.clone()
+        };
+
+        assert_eq!(
+            event_update(&start),
+            Some(EventUpdate::ToolStarted {
+                tool_call_id: "tool-1".to_string(),
+                tool_name: "powershell".to_string(),
+                arguments: Some(json!({
+                    "command": "Get-CimInstance Win32_OperatingSystem"
+                })),
+                agent_id: None,
+            })
+        );
+        assert_eq!(
+            event_update(&complete),
+            Some(EventUpdate::ToolCompleted {
+                tool_call_id: "tool-1".to_string(),
+                success: true,
+                message: Some("Caption: Microsoft Windows 11 Pro\nVersion: 10.0.26100".to_string()),
                 agent_id: None,
             })
         );

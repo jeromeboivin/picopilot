@@ -13,7 +13,7 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use pulldown_cmark::{Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -107,6 +107,7 @@ pub enum ChatEntry {
     Tool {
         tool_call_id: String,
         tool_name: String,
+        command: Option<String>,
         output: String,
         success: Option<bool>,
         unknown: bool,
@@ -611,9 +612,11 @@ impl App {
             EventUpdate::ToolStarted {
                 tool_call_id,
                 tool_name,
+                arguments,
                 agent_id,
             } => self.entries.push(ChatEntry::Tool {
                 tool_call_id,
+                command: arguments.as_ref().and_then(tool_command),
                 tool_name,
                 output: String::new(),
                 success: None,
@@ -652,7 +655,11 @@ impl App {
                     *state = Some(success);
                     *unknown = false;
                     if let Some(message) = message {
-                        output.push_str(&message);
+                        if success {
+                            *output = message;
+                        } else {
+                            output.push_str(&message);
+                        }
                     }
                 }
             }
@@ -2059,12 +2066,13 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         ),
         ChatEntry::Tool {
             tool_name,
+            command,
             output,
             success,
             unknown,
             agent_id,
             ..
-        } if show_internals => {
+        } if show_internals || is_shell_tool(tool_name) => {
             let state = if *unknown {
                 "unknown"
             } else {
@@ -2080,12 +2088,18 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
                 state,
                 agent_suffix(agent_id.as_deref())
             );
+            let content = match (command, output.is_empty()) {
+                (Some(command), false) => format!("$ {command}\n{output}"),
+                (Some(command), true) => format!("$ {command}"),
+                (None, false) => output.clone(),
+                (None, true) => String::new(),
+            };
             let mut lines = labeled_lines(
                 &label,
-                if output.is_empty() { "" } else { output },
+                &content,
                 Style::default().fg(Color::Rgb(139, 181, 255)),
             );
-            if output.is_empty() {
+            if content.is_empty() {
                 lines.truncate(1);
             }
             lines
@@ -2191,6 +2205,20 @@ fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'st
     rendered
 }
 
+fn is_shell_tool(tool_name: &str) -> bool {
+    let tool_name = tool_name.to_ascii_lowercase();
+    tool_name.contains("shell") || tool_name.contains("bash") || tool_name.contains("powershell")
+}
+
+fn tool_command(arguments: &serde_json::Value) -> Option<String> {
+    for key in ["command", "cmd", "script", "fullCommandText"] {
+        if let Some(command) = arguments.get(key).and_then(serde_json::Value::as_str) {
+            return Some(command.to_string());
+        }
+    }
+    arguments.as_str().map(ToString::to_string)
+}
+
 fn markdown_prefixed_lines(
     prefix: &str,
     content: &str,
@@ -2222,7 +2250,7 @@ fn markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>> {
     let mut renderer = MarkdownRenderer::new(base_style);
     let parser = Parser::new_ext(
         content,
-        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS | Options::ENABLE_TABLES,
     );
     for event in parser {
         renderer.push(event);
@@ -2237,6 +2265,15 @@ struct MarkdownRenderer {
     muted: bool,
     list_depth: usize,
     code_block: bool,
+    table: Option<MarkdownTable>,
+}
+
+struct MarkdownTable {
+    alignments: Vec<Alignment>,
+    rows: Vec<Vec<String>>,
+    current_row: Vec<String>,
+    current_cell: String,
+    header_rows: usize,
 }
 
 impl MarkdownRenderer {
@@ -2248,6 +2285,7 @@ impl MarkdownRenderer {
             styles: vec![base_style],
             list_depth: 0,
             code_block: false,
+            table: None,
         }
     }
 
@@ -2256,10 +2294,14 @@ impl MarkdownRenderer {
             MarkdownEvent::Start(tag) => self.start(tag),
             MarkdownEvent::End(tag) => self.end(tag),
             MarkdownEvent::Text(text) => self.push_text(&text),
+            MarkdownEvent::Code(code) if self.table.is_some() => {
+                self.push_table_text(&code);
+            }
             MarkdownEvent::Code(code) => self.spans.push(Span::styled(
                 code.into_string(),
                 self.accent(Color::Rgb(242, 204, 96)),
             )),
+            MarkdownEvent::SoftBreak if self.table.is_some() => self.push_table_text(" "),
             MarkdownEvent::SoftBreak => self.spans.push(Span::raw(" ")),
             MarkdownEvent::HardBreak => self.flush_line(),
             MarkdownEvent::Rule => {
@@ -2280,6 +2322,17 @@ impl MarkdownRenderer {
 
     fn start(&mut self, tag: Tag<'_>) {
         match tag {
+            Tag::Table(alignments) => {
+                self.flush_line();
+                self.table = Some(MarkdownTable {
+                    alignments,
+                    rows: Vec::new(),
+                    current_row: Vec::new(),
+                    current_cell: String::new(),
+                    header_rows: 0,
+                });
+            }
+            Tag::TableHead | Tag::TableRow | Tag::TableCell => {}
             Tag::Paragraph => {}
             Tag::Heading { .. } => self.push_style(
                 self.accent(Color::Rgb(139, 181, 255))
@@ -2311,6 +2364,27 @@ impl MarkdownRenderer {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
+            TagEnd::TableCell => {
+                if let Some(table) = &mut self.table {
+                    table
+                        .current_row
+                        .push(std::mem::take(&mut table.current_cell));
+                }
+            }
+            TagEnd::TableRow => {
+                if let Some(table) = &mut self.table {
+                    table.rows.push(std::mem::take(&mut table.current_row));
+                }
+            }
+            TagEnd::TableHead => {
+                if let Some(table) = &mut self.table {
+                    if !table.current_row.is_empty() {
+                        table.rows.push(std::mem::take(&mut table.current_row));
+                    }
+                    table.header_rows = table.rows.len();
+                }
+            }
+            TagEnd::Table => self.render_table(),
             TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_) => self.flush_line(),
             TagEnd::Heading(_) => {
                 self.flush_line();
@@ -2330,7 +2404,9 @@ impl MarkdownRenderer {
     }
 
     fn push_text(&mut self, text: &str) {
-        if self.code_block {
+        if self.table.is_some() {
+            self.push_table_text(text);
+        } else if self.code_block {
             for (index, line) in text.split('\n').enumerate() {
                 if index > 0 {
                     self.flush_line();
@@ -2343,6 +2419,72 @@ impl MarkdownRenderer {
         } else {
             self.spans
                 .push(Span::styled(text.to_string(), self.style()));
+        }
+    }
+
+    fn push_table_text(&mut self, text: &str) {
+        if let Some(table) = &mut self.table {
+            table.current_cell.push_str(text);
+        }
+    }
+
+    fn render_table(&mut self) {
+        let Some(table) = self.table.take() else {
+            return;
+        };
+        let column_count = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+        let widths: Vec<usize> = (0..column_count)
+            .map(|column| {
+                table
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.get(column))
+                    .map(|cell| cell.chars().count())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+
+        for (row_index, row) in table.rows.iter().enumerate() {
+            if row_index == table.header_rows {
+                let divider = widths
+                    .iter()
+                    .map(|width| "-".repeat(width + 1))
+                    .collect::<Vec<_>>()
+                    .join("+");
+                self.lines.push(Line::from(Span::styled(
+                    divider,
+                    self.accent(Color::DarkGray),
+                )));
+            }
+            let cells = (0..column_count)
+                .map(|column| {
+                    let cell = row.get(column).map(String::as_str).unwrap_or("");
+                    match table
+                        .alignments
+                        .get(column)
+                        .copied()
+                        .unwrap_or(Alignment::None)
+                    {
+                        Alignment::Right => format!("{cell:>width$}", width = widths[column]),
+                        Alignment::Center => {
+                            let padding = widths[column].saturating_sub(cell.chars().count());
+                            let left = padding / 2;
+                            format!("{}{cell}{}", " ".repeat(left), " ".repeat(padding - left))
+                        }
+                        Alignment::None | Alignment::Left => {
+                            format!("{cell:<width$}", width = widths[column])
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let style = if row_index < table.header_rows {
+                self.style().add_modifier(Modifier::BOLD)
+            } else {
+                self.style()
+            };
+            self.lines.push(Line::from(Span::styled(cells, style)));
         }
     }
 
@@ -2462,6 +2604,7 @@ mod tests {
         app.apply(EventUpdate::ToolStarted {
             tool_call_id: "tool-1".to_string(),
             tool_name: "grep".to_string(),
+            arguments: None,
             agent_id: None,
         });
         app.add_diagnostic("session resumed");
@@ -2556,6 +2699,55 @@ mod tests {
             .contains(Modifier::BOLD));
         assert_eq!(lines[1].spans[1].style.fg, None);
         assert_eq!(lines[2].spans[1].style.fg, Some(Color::Rgb(242, 204, 96)));
+    }
+
+    #[test]
+    fn markdown_renders_tables_as_aligned_terminal_rows() {
+        let lines = super::markdown_lines(
+            "| OS | Version |\n| --- | ---: |\n| Windows | 11 |\n| Ubuntu | 24.04 |",
+            Style::default(),
+        );
+        let rendered: Vec<String> = lines.iter().map(ToString::to_string).collect();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "OS      | Version",
+                "--------+--------",
+                "Windows |      11",
+                "Ubuntu  |   24.04",
+            ]
+        );
+        assert!(lines[0]
+            .spans
+            .iter()
+            .all(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn shell_commands_and_results_are_visible_without_internals() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-shell".to_string(),
+            tool_name: "powershell".to_string(),
+            arguments: Some(serde_json::json!({ "command": "Get-Date" })),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "tool-shell".to_string(),
+            success: true,
+            message: Some("Monday, August 31, 2026".to_string()),
+            agent_id: None,
+        });
+
+        let rendered: Vec<String> = super::chat_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(rendered.iter().any(|line| line.contains("Get-Date")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("Monday, August 31, 2026")));
     }
 
     #[test]
@@ -3361,6 +3553,7 @@ mod tests {
         app.apply(EventUpdate::ToolStarted {
             tool_call_id: "tool-1".to_string(),
             tool_name: "edit".to_string(),
+            arguments: None,
             agent_id: None,
         });
         app.set_reconnecting(true);

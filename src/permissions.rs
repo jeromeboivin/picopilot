@@ -205,8 +205,14 @@ enum PolicyDecision {
 }
 
 fn classify_request(data: &PermissionRequestData, workspace_root: &Path) -> PolicyDecision {
-    let tool_name = first_string(&data.extra, &["toolName", "tool_name", "tool", "name"])
-        .unwrap_or_else(|| "unknown tool".to_string());
+    let tool_name = first_string(
+        &data.extra,
+        &["toolName", "tool_name", "tool", "name", "identifier"],
+    )
+    .unwrap_or_else(|| match data.kind {
+        Some(PermissionRequestKind::Shell) => "shell".to_string(),
+        _ => "unknown tool".to_string(),
+    });
     if is_task_tool(&tool_name) {
         return PolicyDecision::Confirm {
             category: ApprovalCategory::Task,
@@ -308,7 +314,7 @@ fn is_task_tool(tool_name: &str) -> bool {
 
 fn request_details(extra: &Value, category: ApprovalCategory) -> String {
     let keys = match category {
-        ApprovalCategory::Shell => ["command", "cmd", "script", "description"],
+        ApprovalCategory::Shell => ["fullCommandText", "command", "cmd", "script"],
         ApprovalCategory::Task => ["prompt", "description", "task", "agentName"],
         ApprovalCategory::ExternalWrite => ["path", "filePath", "file_path", "description"],
     };
@@ -606,6 +612,43 @@ mod tests {
         .await;
         assert!(matches!(task, PermissionResult::Decision { .. }));
         assert!(!trust_directory.exists());
+        cleanup_trust_directory(trust_directory);
+    }
+
+    #[tokio::test]
+    async fn describes_realistic_nested_shell_requests() {
+        let (handler, mut requests, trust_directory) = test_gate();
+        let task = tokio::spawn(async move {
+            handler
+                .handle(
+                    SessionId::from("session-powershell"),
+                    RequestId::new("request-powershell"),
+                    PermissionRequestData {
+                        kind: Some(PermissionRequestKind::Shell),
+                        extra: json!({
+                            "permissionRequest": {
+                                "kind": "shell",
+                                "fullCommandText": "Get-CimInstance Win32_OperatingSystem",
+                                "commands": [{
+                                    "identifier": "Get-CimInstance",
+                                    "readOnly": true
+                                }]
+                            }
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .await
+        });
+
+        let request = requests.recv().await.expect("shell request should ask");
+        assert_eq!(request.tool_name, "Get-CimInstance");
+        assert_eq!(request.details, "Get-CimInstance Win32_OperatingSystem");
+        request
+            .respond_to
+            .send(ApprovalDecision::Deny)
+            .expect("permission handler should be waiting");
+        let _ = task.await.expect("permission task should finish");
         cleanup_trust_directory(trust_directory);
     }
 
