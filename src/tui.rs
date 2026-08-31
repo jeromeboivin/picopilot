@@ -438,10 +438,7 @@ fn chat_lines(app: &App) -> Vec<Line<'static>> {
         ))];
     }
 
-    app.entries()
-        .iter()
-        .flat_map(entry_lines)
-        .collect()
+    app.entries().iter().flat_map(entry_lines).collect()
 }
 
 fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
@@ -572,7 +569,10 @@ fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'st
         Span::raw(first.to_string()),
     ])];
     rendered.extend(lines.map(|line| {
-        Line::from(vec![Span::styled("                   ", label_style), Span::raw(line.to_string())])
+        Line::from(vec![
+            Span::styled("                   ", label_style),
+            Span::raw(line.to_string()),
+        ])
     }));
     rendered
 }
@@ -582,9 +582,7 @@ fn speaker_label(label: &str, agent_id: Option<&str>) -> String {
 }
 
 fn agent_suffix(agent_id: Option<&str>) -> String {
-    agent_id
-        .map(|id| format!(" ({id})"))
-        .unwrap_or_default()
+    agent_id.map(|id| format!(" ({id})")).unwrap_or_default()
 }
 
 fn format_tokens(current: i64, limit: i64) -> String {
