@@ -11,6 +11,18 @@ use github_copilot_sdk::{
     ClientOptions,
 };
 
+#[cfg(windows)]
+pub const V1_AVAILABLE_TOOLS: &[&str] = &[
+    "powershell",
+    "view",
+    "edit",
+    "create",
+    "grep",
+    "glob",
+    "task",
+];
+
+#[cfg(not(windows))]
 pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
 pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
 const CONCISE_TONE: &str = "Be concise, direct, and professional.";
@@ -350,10 +362,11 @@ mod tests {
         assert_eq!(session.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(session.context_tier.as_deref(), Some("long_context"));
         assert_eq!(session.streaming, Some(true));
+        let shell_tool = if cfg!(windows) { "powershell" } else { "bash" };
         assert_eq!(
             session.available_tools,
             Some(
-                ["bash", "view", "edit", "create", "grep", "glob", "task"]
+                [shell_tool, "view", "edit", "create", "grep", "glob", "task"]
                     .into_iter()
                     .map(String::from)
                     .collect()
