@@ -1,6 +1,6 @@
 use crate::events::{
-    context_attribution_snapshot, usage_metrics_snapshot, BannerSeverity,
-    ContextAttributionSnapshot, EventUpdate, UsageMetricsSnapshot, UsageSnapshot,
+    context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
+    ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
 use std::collections::VecDeque;
 use std::io;
@@ -66,6 +66,7 @@ pub enum UiAction {
     LoadSessions,
     LoadModels,
     LoadUsage,
+    LoadTodos,
     Resume(SessionId),
     SwitchModel(ModelSelection),
 }
@@ -75,6 +76,7 @@ enum ModalKind {
     Sessions,
     Models,
     Usage,
+    Todos,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +142,9 @@ pub struct App {
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
     picker_context_tier: Option<String>,
+    fleet_active: bool,
+    todos: Option<TodoSnapshot>,
+    todo_refresh_requested: bool,
     should_quit: bool,
 }
 
@@ -174,6 +179,10 @@ impl App {
         self.modal.is_some()
     }
 
+    fn todo_modal_is_open(&self) -> bool {
+        matches!(self.modal, Some(ModalKind::Todos))
+    }
+
     pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
         self.sessions = sessions;
         self.selected_item = 0;
@@ -198,6 +207,27 @@ impl App {
         self.modal = Some(ModalKind::Usage);
     }
 
+    pub fn set_fleet_active(&mut self, active: bool) {
+        self.fleet_active = active;
+        if active {
+            self.todos = None;
+            self.todo_refresh_requested = false;
+        } else if matches!(self.modal, Some(ModalKind::Todos)) {
+            self.close_modal();
+        }
+    }
+
+    pub fn set_todos(&mut self, todos: TodoSnapshot) {
+        self.todos = Some(todos);
+        self.todo_refresh_requested = false;
+        self.selected_item = 0;
+        self.modal = Some(ModalKind::Todos);
+    }
+
+    pub fn take_todo_refresh_request(&mut self) -> bool {
+        std::mem::take(&mut self.todo_refresh_requested)
+    }
+
     fn close_modal(&mut self) {
         self.modal = None;
         self.selected_item = 0;
@@ -207,7 +237,7 @@ impl App {
         let item_count = match self.modal {
             Some(ModalKind::Sessions) => self.sessions.len(),
             Some(ModalKind::Models) => self.models.len(),
-            Some(ModalKind::Usage) => 0,
+            Some(ModalKind::Usage | ModalKind::Todos) => 0,
             None => 0,
         };
         if item_count == 0 {
@@ -281,7 +311,7 @@ impl App {
                     context_tier: self.picker_context_tier.clone(),
                 })
             }),
-            Some(ModalKind::Usage) => None,
+            Some(ModalKind::Usage | ModalKind::Todos) => None,
             None => None,
         };
         self.close_modal();
@@ -437,8 +467,13 @@ impl App {
                 url,
             }),
             EventUpdate::ModelChanged { model } => self.status.model = Some(model),
-            EventUpdate::TodosChanged => {}
+            EventUpdate::TodosChanged => {
+                if self.fleet_active && matches!(self.modal, Some(ModalKind::Todos)) {
+                    self.todo_refresh_requested = true;
+                }
+            }
             EventUpdate::Idle | EventUpdate::TaskComplete => {
+                self.set_fleet_active(false);
                 self.status.busy = false;
                 if !matches!(self.entries.last(), Some(ChatEntry::Completed)) {
                     self.entries.push(ChatEntry::Completed);
@@ -554,6 +589,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 app.close_modal();
                 UiAction::None
             }
+            KeyCode::Char('t') if matches!(app.modal, Some(ModalKind::Todos)) => {
+                app.close_modal();
+                UiAction::None
+            }
             KeyCode::Esc => {
                 app.close_modal();
                 UiAction::None
@@ -587,6 +626,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         }
         KeyCode::Char('m') => UiAction::LoadModels,
         KeyCode::Char('u') => UiAction::LoadUsage,
+        KeyCode::Char('t') if app.fleet_active => UiAction::LoadTodos,
         KeyCode::Char('q') if app.input().is_empty() => UiAction::Quit,
         KeyCode::Enter => {
             let input = app.take_input();
@@ -693,7 +733,10 @@ async fn run_loop(
                 Some(request) => app.enqueue_approval(request),
                 None => permission_requests_open = false,
             },
-            _ = &mut tick => process_terminal_events(&mut app, &mut runtime, &mut events).await?,
+            _ = &mut tick => {
+                process_terminal_events(&mut app, &mut runtime, &mut events).await?;
+                refresh_todos_if_requested(&mut app, &runtime).await?;
+            },
         }
     }
 
@@ -748,6 +791,9 @@ async fn process_terminal_events(
                     .ok()
                     .and_then(|result| context_attribution_snapshot(&result));
                 app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
+            }
+            UiAction::LoadTodos => {
+                load_todos(app, runtime).await?;
             }
             UiAction::Resume(session_id) => {
                 if let Err(error) = runtime.resume(session_id).await {
@@ -806,6 +852,31 @@ async fn process_terminal_events(
         }
     }
     Ok(())
+}
+
+async fn load_todos(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
+    match runtime
+        .session
+        .rpc()
+        .plan()
+        .read_sql_todos_with_dependencies()
+        .await
+    {
+        Ok(result) => app.set_todos(todo_snapshot(&result)),
+        Err(error) => app.apply(crate::events::EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::RecoverableError,
+            message: format!("could not load Fleet todos: {error}"),
+            url: None,
+        }),
+    }
+    Ok(())
+}
+
+async fn refresh_todos_if_requested(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
+    if !app.take_todo_refresh_request() || !app.fleet_active || !app.todo_modal_is_open() {
+        return Ok(());
+    }
+    load_todos(app, runtime).await
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
@@ -888,10 +959,26 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         return;
     }
 
+    if matches!(modal, ModalKind::Todos) {
+        frame.render_widget(
+            Paragraph::new(todo_detail_lines(app))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+                        .title("fleet todos | t or esc to close"),
+                )
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+
     let title = match modal {
         ModalKind::Sessions => "resume session",
         ModalKind::Models => "choose model | r reasoning, c context, enter, esc",
         ModalKind::Usage => "usage and context | u or esc to close",
+        ModalKind::Todos => "fleet todos | t or esc to close",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -932,7 +1019,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 )
             })
             .collect(),
-        ModalKind::Usage => Vec::new(),
+        ModalKind::Usage | ModalKind::Todos => Vec::new(),
     };
     let lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
@@ -963,6 +1050,44 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn todo_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(todos) = app.todos.as_ref() else {
+        return vec![Line::from("Fleet todo data unavailable.")];
+    };
+    if todos.rows.is_empty() {
+        return vec![Line::from("No Fleet todos available.")];
+    }
+
+    todos
+        .rows
+        .iter()
+        .map(|row| {
+            let blocked_by: Vec<String> = todos
+                .dependencies
+                .iter()
+                .filter(|dependency| dependency.todo_id == row.id)
+                .map(|dependency| {
+                    todos
+                        .rows
+                        .iter()
+                        .find(|candidate| candidate.id == dependency.depends_on)
+                        .map(|candidate| candidate.title.clone())
+                        .unwrap_or_else(|| dependency.depends_on.clone())
+                })
+                .collect();
+            let dependency_label = if blocked_by.is_empty() {
+                String::new()
+            } else {
+                format!(" | blocked by: {}", blocked_by.join(", "))
+            };
+            Line::from(format!(
+                "[{}] {}{}",
+                row.status, row.title, dependency_label
+            ))
+        })
+        .collect()
 }
 
 fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
@@ -1237,7 +1362,7 @@ mod tests {
     use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
     use super::{handle_key, App, ChatEntry, ModelSelection, UiAction};
-    use crate::events::EventUpdate;
+    use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
     #[test]
     fn accumulates_streamed_assistant_deltas_into_one_entry() {
@@ -1440,6 +1565,46 @@ mod tests {
         );
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn todo_modal_is_only_available_for_an_active_fleet() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
+            UiAction::None
+        );
+
+        app.set_fleet_active(true);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
+            UiAction::LoadTodos
+        );
+
+        app.set_todos(TodoSnapshot {
+            rows: vec![TodoRowSnapshot {
+                id: "todo-1".to_string(),
+                title: "Inspect the transport".to_string(),
+                description: String::new(),
+                status: "in_progress".to_string(),
+            }],
+            dependencies: vec![TodoDependencySnapshot {
+                todo_id: "todo-1".to_string(),
+                depends_on: "todo-0".to_string(),
+            }],
+        });
+        assert!(app.modal_is_open());
+
+        app.apply(EventUpdate::TodosChanged);
+        assert!(app.take_todo_refresh_request());
+        assert!(!app.take_todo_refresh_request());
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('t'), KeyEventKind::Press)),
             UiAction::None
         );
         assert!(!app.modal_is_open());
