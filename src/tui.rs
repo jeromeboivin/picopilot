@@ -17,7 +17,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -270,7 +270,12 @@ impl App {
 
     pub fn set_models(&mut self, models: Vec<Model>) {
         self.models = models;
-        self.selected_item = 0;
+        self.selected_item = self
+            .status
+            .model
+            .as_ref()
+            .and_then(|active| self.models.iter().position(|model| &model.id == active))
+            .unwrap_or(0);
         self.reset_picker_options();
         self.modal = Some(ModalKind::Models);
     }
@@ -1420,9 +1425,14 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         return;
     }
 
+    if matches!(modal, ModalKind::Models) {
+        draw_model_picker(frame, app, area);
+        return;
+    }
+
     let title = match modal {
         ModalKind::Sessions => "resume session",
-        ModalKind::Models => "choose model | r reasoning, c context, enter, esc",
+        ModalKind::Models => "choose model",
         ModalKind::Usage => "usage and context | u or esc to close",
         ModalKind::Todos => "fleet todos | t or esc to close",
     };
@@ -1438,36 +1448,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 )
             })
             .collect(),
-        ModalKind::Models => app
-            .models
-            .iter()
-            .enumerate()
-            .map(|(index, model)| {
-                let reasoning = if index == app.selected_item {
-                    app.picker_reasoning_effort
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string())
-                } else {
-                    model
-                        .supported_reasoning_efforts
-                        .as_ref()
-                        .map(|values| values.join("/"))
-                        .unwrap_or_else(|| "default".to_string())
-                };
-                let context = if index == app.selected_item {
-                    app.picker_context_tier.as_deref().unwrap_or("default")
-                } else {
-                    "default"
-                };
-                format!(
-                    "{} | {} | cost: {} | window: {} | reasoning: {reasoning} | context: {context}",
-                    model.id,
-                    model.name,
-                    model_cost_label(model),
-                    model_context_label(model),
-                )
-            })
-            .collect(),
+        ModalKind::Models => Vec::new(),
         ModalKind::Usage | ModalKind::Todos => Vec::new(),
     };
     let mut lines: Vec<Line<'static>> = if items.is_empty() {
@@ -1512,6 +1493,102 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn draw_model_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+        .title("choose model");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(5),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let items: Vec<ListItem<'static>> = app
+        .models
+        .iter()
+        .map(|model| ListItem::new(model_picker_row(model)))
+        .collect();
+    let list = List::new(items).highlight_symbol("› ").highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(240, 177, 94)),
+    );
+    let mut state =
+        ListState::default().with_selected((!app.models.is_empty()).then_some(app.selected_item));
+    frame.render_stateful_widget(list, layout[0], &mut state);
+
+    frame.render_widget(
+        Paragraph::new(model_picker_detail_lines(app))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
+                    .title("selected model"),
+            )
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new("↑/↓ choose   r reasoning   c context   Enter apply   Esc cancel")
+            .style(Style::default().fg(Color::Rgb(165, 174, 187))),
+        layout[2],
+    );
+}
+
+fn model_picker_row(model: &Model) -> String {
+    format!(
+        "{:<28}  {:<9}  {} tokens",
+        model.name,
+        model_cost_label(model),
+        model_context_label(model)
+    )
+}
+
+fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(model) = app.models.get(app.selected_item) else {
+        return vec![Line::from("No models available.")];
+    };
+    let reasoning = app
+        .picker_reasoning_effort
+        .as_deref()
+        .unwrap_or("model default");
+    let reasoning_values = model
+        .supported_reasoning_efforts
+        .as_ref()
+        .filter(|values| !values.is_empty())
+        .map(|values| values.join(" · "))
+        .unwrap_or_else(|| "fixed".to_string());
+    let context = app
+        .picker_context_tier
+        .as_deref()
+        .unwrap_or("model default");
+    let context_values = crate::config::supported_context_tiers(model);
+    let context_values = if context_values.is_empty() {
+        "fixed".to_string()
+    } else {
+        context_values.join(" · ")
+    };
+
+    vec![
+        Line::from(Span::styled(
+            format!("{}  ({})", model.name, model.id),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "Reasoning: {reasoning}   Available: {reasoning_values}"
+        )),
+        Line::from(format!(
+            "Context:   {context}   Available: {context_values}"
+        )),
+    ]
 }
 
 fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
@@ -1894,11 +1971,14 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use serde_json::json;
 
     use super::{
-        handle_key, modal_area, model_context_label, model_cost_label, send_with_fleet_fallback,
-        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
+        draw_model_picker, handle_key, modal_area, model_context_label, model_cost_label,
+        model_picker_detail_lines, model_picker_row, send_with_fleet_fallback, todo_detail_lines,
+        App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
@@ -2241,6 +2321,94 @@ mod tests {
 
         assert_eq!(model_cost_label(&model), "high");
         assert_eq!(model_context_label(&model), "200,000");
+        assert_eq!(
+            model_picker_row(&model),
+            "GPT-5                         high       200,000 tokens"
+        );
+    }
+
+    #[test]
+    fn model_picker_opens_on_the_active_model_and_isolates_its_options() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_models(vec![
+            Model {
+                id: "auto".to_string(),
+                name: "Auto".to_string(),
+                ..Default::default()
+            },
+            Model {
+                id: "gpt-5".to_string(),
+                name: "GPT-5".to_string(),
+                supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+                supported_context_tiers: Some(vec!["default".to_string()]),
+                ..Default::default()
+            },
+        ]);
+
+        assert_eq!(app.selected_item, 1);
+        let details: Vec<String> = model_picker_detail_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(details[0], "GPT-5  (gpt-5)");
+        assert_eq!(
+            details[1],
+            "Reasoning: model default   Available: low · high"
+        );
+        assert_eq!(details[2], "Context:   model default   Available: default");
+    }
+
+    #[test]
+    fn model_picker_keeps_rows_compact_at_a_typical_terminal_size() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_models(vec![
+            serde_json::from_value(json!({
+                "billing": { "multiplier": 0.0 },
+                "capabilities": { "limits": { "max_context_window_tokens": 128000 } },
+                "id": "auto",
+                "name": "Auto"
+            }))
+            .expect("auto model metadata"),
+            serde_json::from_value(json!({
+                "billing": { "multiplier": 1.0 },
+                "capabilities": { "limits": { "max_context_window_tokens": 200000 } },
+                "id": "gpt-5",
+                "name": "GPT-5",
+                "supportedReasoningEfforts": ["low", "high"],
+                "supportedContextTiers": ["default"]
+            }))
+            .expect("gpt-5 model metadata"),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw_model_picker(frame, &app, frame.area()))
+            .expect("picker should render");
+
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("Auto")));
+        assert!(rendered.iter().any(|line| line.contains("GPT-5")));
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.contains("low · high"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.contains("Available: default"))
+                .count(),
+            1
+        );
     }
 
     #[test]
