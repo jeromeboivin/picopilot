@@ -18,10 +18,41 @@ use ratatui::Terminal;
 
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
-use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
+use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::AppRuntime;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSelection {
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub context_tier: Option<String>,
+}
+
+impl ModelSelection {
+    fn sdk_options(&self) -> Result<Option<SetModelOptions>, String> {
+        let mut options = SetModelOptions::default();
+        let mut has_options = false;
+
+        if let Some(reasoning_effort) = self.reasoning_effort.as_deref() {
+            options = options.with_reasoning_effort(reasoning_effort);
+            has_options = true;
+        }
+
+        if let Some(context_tier) = self.context_tier.as_deref() {
+            let context_tier = match context_tier {
+                "default" => ContextTier::Default,
+                "long_context" => ContextTier::LongContext,
+                _ => return Err(format!("unsupported context tier '{context_tier}'")),
+            };
+            options = options.with_context_tier(context_tier);
+            has_options = true;
+        }
+
+        Ok(has_options.then_some(options))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
@@ -32,7 +63,7 @@ pub enum UiAction {
     LoadSessions,
     LoadModels,
     Resume(SessionId),
-    SwitchModel(String),
+    SwitchModel(ModelSelection),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +131,8 @@ pub struct App {
     sessions: Vec<SessionMetadata>,
     models: Vec<Model>,
     selected_item: usize,
+    picker_reasoning_effort: Option<String>,
+    picker_context_tier: Option<String>,
     should_quit: bool,
 }
 
@@ -143,6 +176,7 @@ impl App {
     pub fn set_models(&mut self, models: Vec<Model>) {
         self.models = models;
         self.selected_item = 0;
+        self.reset_picker_options();
         self.modal = Some(ModalKind::Models);
     }
 
@@ -160,8 +194,59 @@ impl App {
         if item_count == 0 {
             return;
         }
+        let previous = self.selected_item;
         self.selected_item =
             (self.selected_item as isize + delta).rem_euclid(item_count as isize) as usize;
+        if matches!(self.modal, Some(ModalKind::Models)) && self.selected_item != previous {
+            self.reset_picker_options();
+        }
+    }
+
+    fn reset_picker_options(&mut self) {
+        self.picker_reasoning_effort = None;
+        self.picker_context_tier = None;
+    }
+
+    fn cycle_picker_option(&mut self, reasoning: bool) {
+        let Some(model) = self.models.get(self.selected_item) else {
+            return;
+        };
+        let mut values = vec![None];
+        if reasoning {
+            values.extend(
+                model
+                    .supported_reasoning_efforts
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(Some),
+            );
+        } else {
+            values.extend(
+                crate::config::supported_context_tiers(model)
+                    .into_iter()
+                    .filter_map(|tier| match tier.as_str() {
+                        "default" | "long_context" => Some(Some(tier)),
+                        _ => None,
+                    }),
+            );
+        }
+
+        let current = if reasoning {
+            self.picker_reasoning_effort.clone()
+        } else {
+            self.picker_context_tier.clone()
+        };
+        let current_index = values
+            .iter()
+            .position(|value| value == &current)
+            .unwrap_or(0);
+        let next = values[(current_index + 1) % values.len()].clone();
+        if reasoning {
+            self.picker_reasoning_effort = next;
+        } else {
+            self.picker_context_tier = next;
+        }
     }
 
     fn choose_selected(&mut self) -> UiAction {
@@ -170,10 +255,13 @@ impl App {
                 .sessions
                 .get(self.selected_item)
                 .map(|session| UiAction::Resume(session.session_id.clone())),
-            Some(ModalKind::Models) => self
-                .models
-                .get(self.selected_item)
-                .map(|model| UiAction::SwitchModel(model.id.clone())),
+            Some(ModalKind::Models) => self.models.get(self.selected_item).map(|model| {
+                UiAction::SwitchModel(ModelSelection {
+                    model: model.id.clone(),
+                    reasoning_effort: self.picker_reasoning_effort.clone(),
+                    context_tier: self.picker_context_tier.clone(),
+                })
+            }),
             None => None,
         };
         self.close_modal();
@@ -453,6 +541,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 app.move_selection(1);
                 UiAction::None
             }
+            KeyCode::Char('r') => {
+                app.cycle_picker_option(true);
+                UiAction::None
+            }
+            KeyCode::Char('c') => {
+                app.cycle_picker_option(false);
+                UiAction::None
+            }
             KeyCode::Enter => app.choose_selected(),
             _ => UiAction::None,
         };
@@ -621,8 +717,20 @@ async fn process_terminal_events(
                     });
                 }
             }
-            UiAction::SwitchModel(model) => {
-                if let Err(error) = runtime.session.set_model(&model, None).await {
+            UiAction::SwitchModel(selection) => {
+                let model = selection.model.clone();
+                let options = match selection.sdk_options() {
+                    Ok(options) => options,
+                    Err(error) => {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::RecoverableError,
+                            message: error,
+                            url: None,
+                        });
+                        continue;
+                    }
+                };
+                if let Err(error) = runtime.session.set_model(&model, options).await {
                     app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::RecoverableError,
                         message: format!("could not switch model: {error}"),
@@ -709,7 +817,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 
     let title = match modal {
         ModalKind::Sessions => "resume session",
-        ModalKind::Models => "choose model",
+        ModalKind::Models => "choose model | r reasoning, c context, enter, esc",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -726,7 +834,29 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         ModalKind::Models => app
             .models
             .iter()
-            .map(|model| format!("{} | {}", model.id, model.name))
+            .enumerate()
+            .map(|(index, model)| {
+                let reasoning = if index == app.selected_item {
+                    app.picker_reasoning_effort
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string())
+                } else {
+                    model
+                        .supported_reasoning_efforts
+                        .as_ref()
+                        .map(|values| values.join("/"))
+                        .unwrap_or_else(|| "default".to_string())
+                };
+                let context = if index == app.selected_item {
+                    app.picker_context_tier.as_deref().unwrap_or("default")
+                } else {
+                    "default"
+                };
+                format!(
+                    "{} | {} | reasoning: {reasoning} | context: {context}",
+                    model.id, model.name
+                )
+            })
             .collect(),
     };
     let lines: Vec<Line<'static>> = if items.is_empty() {
@@ -974,7 +1104,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
-    use super::{handle_key, App, ChatEntry, UiAction};
+    use super::{handle_key, App, ChatEntry, ModelSelection, UiAction};
     use crate::events::EventUpdate;
 
     #[test]
@@ -1119,13 +1249,28 @@ mod tests {
         assert!(!app.modal_is_open());
 
         app.set_models(vec![Model {
+            default_reasoning_effort: Some("low".to_string()),
             id: "gpt-5".to_string(),
             name: "GPT-5".to_string(),
+            supported_context_tiers: Some(vec!["default".to_string(), "long_context".to_string()]),
+            supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
             ..Model::default()
         }]);
         assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('r'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
-            UiAction::SwitchModel("gpt-5".to_string())
+            UiAction::SwitchModel(ModelSelection {
+                model: "gpt-5".to_string(),
+                reasoning_effort: Some("low".to_string()),
+                context_tier: Some("default".to_string()),
+            })
         );
     }
 

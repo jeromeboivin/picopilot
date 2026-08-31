@@ -23,6 +23,5 @@ async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     let model = config.model.clone();
     let runtime = connect(&config).await?;
     tui::run(runtime, model).await?;
-    drop(runtime);
     Ok(())
 }

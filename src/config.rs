@@ -160,7 +160,7 @@ impl AppConfig {
     }
 }
 
-fn supported_context_tiers(model: &Model) -> Vec<String> {
+pub(crate) fn supported_context_tiers(model: &Model) -> Vec<String> {
     let mut supported = model.supported_context_tiers.clone().unwrap_or_default();
     if let Some(token_prices) = model
         .billing
