@@ -235,6 +235,52 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_unknown_startup_model() {
+        let config = AppConfig::try_parse_from(["picopilot", "--model", "missing-model"])
+            .expect("valid startup options should parse");
+
+        let error = config
+            .validate_against(&[Model {
+                id: "gpt-5".to_string(),
+                name: "GPT-5".to_string(),
+                ..Default::default()
+            }])
+            .expect_err("unknown model should fail validation");
+
+        assert_eq!(
+            error.to_string(),
+            "model 'missing-model' was not found; available models: gpt-5"
+        );
+    }
+
+    #[test]
+    fn rejects_a_context_tier_not_supported_by_selected_model() {
+        let config = AppConfig::try_parse_from([
+            "picopilot",
+            "--model",
+            "gpt-5",
+            "--context-tier",
+            "long_context",
+        ])
+        .expect("valid startup options should parse");
+        let model = Model {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            supported_context_tiers: Some(vec!["default".to_string()]),
+            ..Default::default()
+        };
+
+        let error = config
+            .validate_against(&[model])
+            .expect_err("unsupported context tier should fail validation");
+
+        assert_eq!(
+            error.to_string(),
+            "context tier 'long_context' is not supported by model 'gpt-5'; supported values: default"
+        );
+    }
+
+    #[test]
     fn builds_a_streaming_session_with_the_v1_tool_policy() {
         let config = AppConfig::try_parse_from([
             "picopilot",
