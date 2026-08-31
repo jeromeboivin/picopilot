@@ -160,16 +160,25 @@ enum SendPath {
     Single,
 }
 
-async fn send_with_fleet_fallback<FleetStart, FleetFuture, SingleSend, SingleFuture, Error>(
+async fn send_with_fleet_fallback<
+    FleetStart,
+    FleetFuture,
+    SingleSend,
+    SingleFuture,
+    Error,
+    IsTransportFailure,
+>(
     prompt: String,
     fleet_start: FleetStart,
     single_send: SingleSend,
+    is_transport_failure: IsTransportFailure,
 ) -> Result<SendPath, Error>
 where
     FleetStart: FnOnce(FleetStartRequest) -> FleetFuture,
     FleetFuture: Future<Output = Result<FleetStartResult, Error>>,
     SingleSend: FnOnce(String) -> SingleFuture,
     SingleFuture: Future<Output = Result<String, Error>>,
+    IsTransportFailure: Fn(&Error) -> bool,
 {
     match fleet_start(FleetStartRequest {
         prompt: Some(prompt.clone()),
@@ -177,6 +186,7 @@ where
     .await
     {
         Ok(result) if result.started => Ok(SendPath::Fleet),
+        Err(error) if is_transport_failure(&error) => Err(error),
         Ok(_) | Err(_) => {
             single_send(prompt).await?;
             Ok(SendPath::Single)
@@ -796,7 +806,7 @@ async fn run_loop(
             },
             _ = &mut tick => {
                 process_terminal_events(&mut app, &mut runtime, &mut events).await?;
-                refresh_todos_if_requested(&mut app, &runtime).await?;
+                refresh_todos_if_requested(&mut app, &mut runtime, &mut events).await?;
             },
         }
     }
@@ -852,18 +862,24 @@ async fn process_terminal_events(
                         continue;
                     }
                 };
-                let context_attribution = runtime
+                let context_attribution = match runtime
                     .session
                     .rpc()
                     .metadata()
                     .get_context_attribution()
                     .await
-                    .ok()
-                    .and_then(|result| context_attribution_snapshot(&result));
+                {
+                    Ok(result) => context_attribution_snapshot(&result),
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
+                        continue;
+                    }
+                    Err(_) => None,
+                };
                 app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
             }
             UiAction::LoadTodos => {
-                load_todos(app, runtime).await?;
+                load_todos(app, runtime, events).await?;
             }
             UiAction::Resume(session_id) => {
                 if let Err(error) = runtime.resume(session_id).await {
@@ -924,6 +940,7 @@ async fn process_terminal_events(
                     prompt,
                     |request| async move { session.rpc().fleet().start(request).await },
                     |prompt| async move { session.send(prompt).await },
+                    |error| error.is_transport_failure(),
                 )
                 .await
                 {
@@ -1003,7 +1020,11 @@ fn is_fatal_recovery_error(error: &RecoveryError) -> bool {
     )
 }
 
-async fn load_todos(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
+async fn load_todos(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    events: &mut EventSubscription,
+) -> io::Result<()> {
     match runtime
         .session
         .rpc()
@@ -1012,6 +1033,9 @@ async fn load_todos(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
         .await
     {
         Ok(result) => app.set_todos(todo_snapshot(&result)),
+        Err(error) if error.is_transport_failure() => {
+            recover_connection(app, runtime, events).await?;
+        }
         Err(error) => app.apply(crate::events::EventUpdate::Banner {
             severity: crate::events::BannerSeverity::RecoverableError,
             message: format!("could not load Fleet todos: {error}"),
@@ -1021,11 +1045,15 @@ async fn load_todos(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
     Ok(())
 }
 
-async fn refresh_todos_if_requested(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
+async fn refresh_todos_if_requested(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    events: &mut EventSubscription,
+) -> io::Result<()> {
     if !app.take_todo_refresh_request() || !app.fleet_active || !app.todo_modal_is_open() {
         return Ok(());
     }
-    load_todos(app, runtime).await
+    load_todos(app, runtime, events).await
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
@@ -1789,6 +1817,7 @@ mod tests {
                 Ok::<_, String>(FleetStartResult { started: true })
             },
             |_prompt| async { panic!("single-agent fallback should not send") },
+            |_error: &String| false,
         )
         .await
         .expect("Fleet start should succeed");
@@ -1805,6 +1834,7 @@ mod tests {
                 assert_eq!(prompt, "inspect this");
                 Ok::<_, String>("message-1".to_string())
             },
+            |_error: &String| false,
         )
         .await
         .expect("single-agent fallback should succeed");
@@ -1821,11 +1851,25 @@ mod tests {
                 assert_eq!(prompt, "repair this");
                 Ok::<_, String>("message-2".to_string())
             },
+            |_error: &String| false,
         )
         .await
         .expect("single-agent fallback should handle a Fleet error");
 
         assert_eq!(path, SendPath::Single);
+    }
+
+    #[tokio::test]
+    async fn fleet_transport_errors_are_not_retried_as_single_agent_prompts() {
+        let result = send_with_fleet_fallback(
+            "inspect this".to_string(),
+            |_request| async { Err::<FleetStartResult, _>("transport".to_string()) },
+            |_prompt| async { panic!("a transport failure must not duplicate the prompt") },
+            |error: &String| error == "transport",
+        )
+        .await;
+
+        assert_eq!(result, Err("transport".to_string()));
     }
 
     #[test]
