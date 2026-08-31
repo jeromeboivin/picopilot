@@ -150,9 +150,7 @@ impl PermissionHandler for PermissionGate {
                 tool_name,
                 details,
             } => {
-                if category.supports_trust()
-                    && self.trust_store.is_trusted(&session_id, category)
-                {
+                if category.supports_trust() && self.trust_store.is_trusted(&session_id, category) {
                     return PermissionResult::approve_once();
                 }
 

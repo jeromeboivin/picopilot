@@ -21,14 +21,10 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use github_copilot_sdk::rpc::{
-    FleetStartRequest, FleetStartResult, TasksStartAgentRequest,
-};
+use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
-use github_copilot_sdk::types::{
-    ContextTier, Model, SessionId, SessionMetadata, SetModelOptions,
-};
+use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
@@ -431,11 +427,15 @@ impl App {
 
     fn resolve_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalRequest> {
         let request = self.pending_approvals.pop_front()?;
-        if let Some(ChatEntry::Approval { status, .. }) = self
-            .entries
-            .iter_mut()
-            .find(|entry| matches!(entry, ChatEntry::Approval { status: ApprovalStatus::Pending, .. }))
-        {
+        if let Some(ChatEntry::Approval { status, .. }) = self.entries.iter_mut().find(|entry| {
+            matches!(
+                entry,
+                ChatEntry::Approval {
+                    status: ApprovalStatus::Pending,
+                    ..
+                }
+            )
+        }) {
             *status = match decision {
                 ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
                 ApprovalDecision::Deny => ApprovalStatus::Denied,
@@ -753,9 +753,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return match key.code {
             KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
             KeyCode::Char('n') => UiAction::Approval(ApprovalDecision::Deny),
-            KeyCode::Char('a') if app.pending_approval().is_some_and(|request| {
-                request.category.supports_trust()
-            }) => UiAction::Approval(ApprovalDecision::Trust),
+            KeyCode::Char('a')
+                if app
+                    .pending_approval()
+                    .is_some_and(|request| request.category.supports_trust()) =>
+            {
+                UiAction::Approval(ApprovalDecision::Trust)
+            }
             KeyCode::Char('v') => {
                 app.show_approval_details = !app.show_approval_details;
                 UiAction::None
@@ -1288,7 +1292,9 @@ fn input_box(app: &App) -> Paragraph<'static> {
         };
         let prompt = format!(
             "{} ({}): {} | {choices}",
-            request.category.label(), request.tool_name, request.details
+            request.category.label(),
+            request.tool_name,
+            request.details
         );
         return Paragraph::new(prompt)
             .style(Style::default().fg(Color::Rgb(255, 219, 129)))
@@ -1473,14 +1479,12 @@ fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
 }
 
 fn model_cost_label(model: &Model) -> String {
-    let category = serde_json::to_value(model)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("modelPickerPriceCategory")
-                .and_then(|category| category.as_str())
-                .map(str::to_owned)
-        });
+    let category = serde_json::to_value(model).ok().and_then(|value| {
+        value
+            .get("modelPickerPriceCategory")
+            .and_then(|category| category.as_str())
+            .map(str::to_owned)
+    });
     match category.as_deref() {
         Some("low" | "medium" | "high") => category.expect("matched category is present"),
         Some("very_high") => "very high".to_string(),
@@ -1888,7 +1892,10 @@ mod tests {
 
         app.replace_history(&events);
 
-        assert_eq!(app.entries(), &[ChatEntry::User("resumed session".to_string())]);
+        assert_eq!(
+            app.entries(),
+            &[ChatEntry::User("resumed session".to_string())]
+        );
     }
 
     #[test]
@@ -2019,7 +2026,10 @@ mod tests {
     fn session_and_model_pickers_fill_the_terminal() {
         let terminal_area = ratatui::layout::Rect::new(0, 0, 120, 40);
 
-        assert_eq!(modal_area(ModalKind::Sessions, terminal_area), terminal_area);
+        assert_eq!(
+            modal_area(ModalKind::Sessions, terminal_area),
+            terminal_area
+        );
         assert_eq!(modal_area(ModalKind::Models, terminal_area), terminal_area);
         assert_ne!(modal_area(ModalKind::Usage, terminal_area), terminal_area);
     }

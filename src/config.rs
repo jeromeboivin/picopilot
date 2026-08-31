@@ -241,8 +241,8 @@ mod tests {
     use github_copilot_sdk::types::{Model, ModelCapabilities, SessionId};
 
     use super::{
-        system_message_config, AppConfig, PicopilotSystemMessageTransform, CONCISE_RUNTIME_INSTRUCTIONS,
-        CONCISE_TONE,
+        system_message_config, AppConfig, PicopilotSystemMessageTransform,
+        CONCISE_RUNTIME_INSTRUCTIONS, CONCISE_TONE,
     };
 
     #[test]
@@ -375,7 +375,10 @@ mod tests {
             )
         );
         assert_eq!(
-            session.system_message.as_ref().and_then(|config| config.mode.as_deref()),
+            session
+                .system_message
+                .as_ref()
+                .and_then(|config| config.mode.as_deref()),
             Some("customize")
         );
         assert!(session.system_message_transform.is_some());
@@ -384,13 +387,12 @@ mod tests {
     #[test]
     fn removes_only_the_planned_system_message_sections() {
         let config = system_message_config();
-        let sections = config.sections.expect("section overrides should be configured");
+        let sections = config
+            .sections
+            .expect("section overrides should be configured");
 
         assert_eq!(sections.len(), 2);
-        assert_eq!(
-            sections["guidelines"].action.as_deref(),
-            Some("remove")
-        );
+        assert_eq!(sections["guidelines"].action.as_deref(), Some("remove"));
         assert_eq!(
             sections["custom_instructions"].action.as_deref(),
             Some("remove")

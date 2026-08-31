@@ -366,14 +366,17 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
 }
 
 pub fn latest_message_preview(events: &[SessionEvent]) -> Option<String> {
-    events.iter().rev().find_map(|event| match event_update(event) {
-        Some(EventUpdate::UserMessage { content })
-        | Some(EventUpdate::AssistantMessage { content, .. }) => {
-            let preview: String = content.chars().take(240).collect();
-            (!preview.is_empty()).then_some(preview)
-        }
-        _ => None,
-    })
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event_update(event) {
+            Some(EventUpdate::UserMessage { content })
+            | Some(EventUpdate::AssistantMessage { content, .. }) => {
+                let preview: String = content.chars().take(240).collect();
+                (!preview.is_empty()).then_some(preview)
+            }
+            _ => None,
+        })
 }
 
 #[cfg(test)]

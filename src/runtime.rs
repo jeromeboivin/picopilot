@@ -119,7 +119,10 @@ mod tests {
         let message = recovery_message();
 
         assert_eq!(message.prompt, RECOVERY_INSTRUCTION);
-        assert_eq!(message.display_prompt.as_deref(), Some(RECOVERY_DISPLAY_PROMPT));
+        assert_eq!(
+            message.display_prompt.as_deref(),
+            Some(RECOVERY_DISPLAY_PROMPT)
+        );
         assert_eq!(
             message.mode,
             Some(github_copilot_sdk::types::DeliveryMode::Immediate)
@@ -241,7 +244,10 @@ impl AppRuntime {
         };
     }
 
-    pub async fn resume(&mut self, session_id: SessionId) -> Result<Vec<SessionEvent>, ResumeError> {
+    pub async fn resume(
+        &mut self,
+        session_id: SessionId,
+    ) -> Result<Vec<SessionEvent>, ResumeError> {
         let expected_metadata = self
             .client
             .get_session_metadata(&session_id)
@@ -269,7 +275,10 @@ impl AppRuntime {
 
         self.session = resumed;
         self.session_start_time = actual_start_time;
-        self.session.get_events().await.map_err(ResumeError::Session)
+        self.session
+            .get_events()
+            .await
+            .map_err(ResumeError::Session)
     }
 
     pub async fn preview_session(
@@ -277,7 +286,11 @@ impl AppRuntime {
         session_id: SessionId,
     ) -> Result<Vec<SessionEvent>, ResumeError> {
         if self.session.id().eq(&session_id) {
-            return self.session.get_events().await.map_err(ResumeError::Session);
+            return self
+                .session
+                .get_events()
+                .await
+                .map_err(ResumeError::Session);
         }
 
         let expected_metadata = self
