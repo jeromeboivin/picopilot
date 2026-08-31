@@ -15,10 +15,11 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use github_copilot_sdk::session::Session;
+use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
+use crate::runtime::AppRuntime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
@@ -411,11 +412,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(input_box(app), layout[2]);
 }
 
-pub async fn run(
-    session: &Session,
-    model: Option<String>,
-    permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
-) -> io::Result<()> {
+pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -433,19 +430,18 @@ pub async fn run(
         }
     };
 
-    let result = run_loop(&mut terminal, session, model, permission_requests).await;
+    let result = run_loop(&mut terminal, runtime, model).await;
     let restore_result = restore_terminal(&mut terminal);
     result.and(restore_result)
 }
 
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    session: &Session,
+    mut runtime: AppRuntime,
     model: Option<String>,
-    mut permission_requests: tokio::sync::mpsc::UnboundedReceiver<ApprovalRequest>,
 ) -> io::Result<()> {
     let mut app = App::new(model);
-    let mut events = session.subscribe();
+    let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
 
     while !app.should_quit() {
@@ -481,18 +477,22 @@ async fn run_loop(
                     }),
                 }
             },
-            request = permission_requests.recv(), if permission_requests_open => match request {
+            request = runtime.permission_requests.recv(), if permission_requests_open => match request {
                 Some(request) => app.enqueue_approval(request),
                 None => permission_requests_open = false,
             },
-            _ = &mut tick => process_terminal_events(&mut app, session).await?,
+            _ = &mut tick => process_terminal_events(&mut app, &mut runtime, &mut events).await?,
         }
     }
 
     Ok(())
 }
 
-async fn process_terminal_events(app: &mut App, session: &Session) -> io::Result<()> {
+async fn process_terminal_events(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    _events: &mut EventSubscription,
+) -> io::Result<()> {
     while event::poll(Duration::ZERO)? {
         let Event::Key(key) = event::read()? else {
             continue;
@@ -508,7 +508,7 @@ async fn process_terminal_events(app: &mut App, session: &Session) -> io::Result
             }
             UiAction::Send(prompt) => {
                 app.add_user_message(prompt.clone());
-                if let Err(error) = session.send(prompt).await {
+                if let Err(error) = runtime.session.send(prompt).await {
                     app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::BlockingError,
                         message: format!("message could not be sent: {error}"),
