@@ -270,6 +270,10 @@ impl App {
         self.modal = Some(ModalKind::Usage);
     }
 
+    pub fn set_usage_metrics(&mut self, metrics: UsageMetricsSnapshot) {
+        self.status.usage_metrics = Some(metrics);
+    }
+
     pub fn set_fleet_active(&mut self, active: bool) {
         self.fleet_active = active;
         if active {
@@ -832,6 +836,8 @@ async fn run_loop(
     let mut app = App::new(model);
     let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
+    let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
+    usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !app.should_quit() {
         terminal.draw(|frame| draw(frame, &app))?;
@@ -865,6 +871,9 @@ async fn run_loop(
                 Some(request) => app.enqueue_approval(request),
                 None => permission_requests_open = false,
             },
+            _ = usage_refresh.tick() => {
+                refresh_status_cost(&mut app, &mut runtime, &mut events).await?;
+            },
             _ = &mut tick => {
                 process_terminal_events(&mut app, &mut runtime, &mut events).await?;
                 refresh_todos_if_requested(&mut app, &mut runtime, &mut events).await?;
@@ -872,6 +881,21 @@ async fn run_loop(
         }
     }
 
+    Ok(())
+}
+
+async fn refresh_status_cost(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    events: &mut EventSubscription,
+) -> io::Result<()> {
+    match runtime.session.rpc().usage().get_metrics().await {
+        Ok(metrics) => app.set_usage_metrics(usage_metrics_snapshot(&metrics)),
+        Err(error) if error.is_transport_failure() => {
+            recover_connection(app, runtime, events).await?;
+        }
+        Err(_) => {}
+    }
     Ok(())
 }
 
@@ -1927,6 +1951,28 @@ mod tests {
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
             UiAction::None
+        );
+        assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn status_cost_updates_without_opening_the_usage_modal() {
+        let mut app = App::new(None);
+
+        app.set_usage_metrics(crate::events::UsageMetricsSnapshot {
+            total_nano_aiu: Some(7.25),
+            total_premium_request_cost: 0.0,
+            total_user_requests: 2,
+            total_api_duration_ms: 500,
+            current_model: Some("gpt-5".to_string()),
+        });
+
+        assert_eq!(
+            app.status()
+                .usage_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.total_nano_aiu),
+            Some(7.25)
         );
         assert!(!app.modal_is_open());
     }
