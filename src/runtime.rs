@@ -413,7 +413,6 @@ pub enum StartupError {
     Client(SdkError),
     Configuration(ConfigError),
     Session(SdkError),
-    SessionMetadataMissing { session_id: SessionId },
 }
 
 impl fmt::Display for StartupError {
@@ -430,10 +429,6 @@ impl fmt::Display for StartupError {
                 write!(formatter, "invalid startup configuration: {error}")
             }
             Self::Session(error) => write!(formatter, "could not create Copilot session: {error}"),
-            Self::SessionMetadataMissing { session_id } => write!(
-                formatter,
-                "could not determine the start time for Copilot session '{session_id}'"
-            ),
         }
     }
 }
@@ -444,7 +439,6 @@ impl std::error::Error for StartupError {
             Self::CurrentDirectory(error) => Some(error),
             Self::Client(error) | Self::Session(error) => Some(error),
             Self::Configuration(error) => Some(error),
-            Self::SessionMetadataMissing { .. } => None,
         }
     }
 }
@@ -473,10 +467,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         .get_session_metadata(session.id())
         .await
         .map_err(StartupError::Client)?
-        .map(|metadata| metadata.start_time)
-        .ok_or_else(|| StartupError::SessionMetadataMissing {
-            session_id: session.id().clone(),
-        })?;
+        .map(|metadata| metadata.start_time);
 
     Ok(AppRuntime {
         client,
@@ -486,7 +477,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         models,
         working_directory,
         startup_config: config.clone(),
-        session_start_time: Some(session_start_time),
+        session_start_time,
         active_model_options: ActiveModelOptions {
             model: config.model.clone(),
             reasoning_effort: config.reasoning_effort.clone(),
