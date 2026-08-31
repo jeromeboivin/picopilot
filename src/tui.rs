@@ -1640,7 +1640,7 @@ fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
 
 fn format_cost(metrics: &UsageMetricsSnapshot) -> String {
     match metrics.total_nano_aiu {
-        Some(cost) => format!("{cost:.1} nAIU"),
+        Some(cost) => format!("{:.3} AIU", cost / 1_000_000_000.0),
         None => format!("{:.1} premium", metrics.total_premium_request_cost),
     }
 }
@@ -2302,6 +2302,19 @@ mod tests {
             Some(7.25)
         );
         assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn formats_nano_aiu_as_readable_aiu() {
+        let metrics = crate::events::UsageMetricsSnapshot {
+            total_nano_aiu: Some(8_063_475_000.0),
+            total_premium_request_cost: 0.0,
+            total_user_requests: 1,
+            total_api_duration_ms: 100,
+            current_model: Some("gpt-5".to_string()),
+        };
+
+        assert_eq!(super::format_cost(&metrics), "8.063 AIU");
     }
 
     #[test]
