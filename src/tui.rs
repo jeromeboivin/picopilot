@@ -1,10 +1,22 @@
 use crate::events::{BannerSeverity, EventUpdate, UsageSnapshot};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::io;
+use std::time::Duration;
+
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use ratatui::Terminal;
+
+use github_copilot_sdk::session::Session;
+use github_copilot_sdk::subscription::RecvErrorKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiAction {
@@ -372,6 +384,107 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(status_bar(app), layout[0]);
     draw_chat(frame, app, layout[1]);
     frame.render_widget(input_box(app), layout[2]);
+}
+
+pub async fn run(session: &Session, model: Option<String>) -> io::Result<()> {
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(error);
+    }
+
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = match Terminal::new(backend) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            return Err(error);
+        }
+    };
+
+    let result = run_loop(&mut terminal, session, model).await;
+    let restore_result = restore_terminal(&mut terminal);
+    result.and(restore_result)
+}
+
+async fn run_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &Session,
+    model: Option<String>,
+) -> io::Result<()> {
+    let mut app = App::new(model);
+    let mut events = session.subscribe();
+
+    while !app.should_quit() {
+        terminal.draw(|frame| draw(frame, &app))?;
+        let tick = tokio::time::sleep(Duration::from_millis(50));
+        tokio::pin!(tick);
+
+        tokio::select! {
+            result = events.recv() => match result {
+                Ok(event) => {
+                    if let Some(update) = crate::events::event_update(&event) {
+                        app.apply(update);
+                    }
+                }
+                Err(error) => match error.kind() {
+                    RecvErrorKind::Lagged(lagged) => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::Warning,
+                        message: format!("event stream lagged by {} events", lagged.skipped()),
+                        url: None,
+                    }),
+                    RecvErrorKind::Closed => {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::BlockingError,
+                            message: "Copilot event stream closed".to_string(),
+                            url: None,
+                        });
+                        app.quit();
+                    }
+                    _ => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::Warning,
+                        message: format!("event stream error: {error}"),
+                        url: None,
+                    }),
+                }
+            },
+            _ = &mut tick => process_terminal_events(&mut app, session).await?,
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_terminal_events(app: &mut App, session: &Session) -> io::Result<()> {
+    while event::poll(Duration::ZERO)? {
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+
+        match handle_key(app, key) {
+            UiAction::None => {}
+            UiAction::Quit => app.quit(),
+            UiAction::Send(prompt) => {
+                app.add_user_message(prompt.clone());
+                if let Err(error) = session.send(prompt).await {
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::BlockingError,
+                        message: format!("message could not be sent: {error}"),
+                        url: None,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()
 }
 
 fn status_bar(app: &App) -> Paragraph<'static> {
