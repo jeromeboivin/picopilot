@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use github_copilot_sdk::{
     handler::PermissionHandler,
-    types::{Model, ResumeSessionConfig, SessionEvent, SessionId},
+    types::{DeliveryMode, MessageOptions, Model, ResumeSessionConfig, SessionEvent, SessionId},
     Client, ClientOptions, Error as SdkError,
 };
 
@@ -13,6 +13,15 @@ use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
 
 pub const MAX_RECOVERY_ATTEMPTS: usize = 3;
+const RECOVERY_INSTRUCTION: &str = "The client transport failed while a tool call may have been in flight. Its outcome is unknown. Before continuing, inspect the relevant state; do not assume success and do not retry the operation blindly.";
+const RECOVERY_DISPLAY_PROMPT: &str =
+    "Connection recovered. Verify any in-flight tool outcome before continuing.";
+
+fn recovery_message() -> MessageOptions {
+    MessageOptions::new(RECOVERY_INSTRUCTION)
+        .with_display_prompt(RECOVERY_DISPLAY_PROMPT)
+        .with_mode(DeliveryMode::Immediate)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SessionIdentity {
@@ -50,8 +59,8 @@ mod tests {
     use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, recovery_backoff, verify_session_identity, ActiveModelOptions,
-        SessionIdentity,
+        apply_active_model_options, recovery_backoff, recovery_message, verify_session_identity,
+        ActiveModelOptions, SessionIdentity, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
 
     #[test]
@@ -103,6 +112,18 @@ mod tests {
         assert_eq!(recovery_backoff(1).as_millis(), 250);
         assert_eq!(recovery_backoff(2).as_millis(), 500);
         assert_eq!(recovery_backoff(3).as_millis(), 1_000);
+    }
+
+    #[test]
+    fn recovery_message_tells_the_agent_to_verify_unknown_tool_state_immediately() {
+        let message = recovery_message();
+
+        assert_eq!(message.prompt, RECOVERY_INSTRUCTION);
+        assert_eq!(message.display_prompt.as_deref(), Some(RECOVERY_DISPLAY_PROMPT));
+        assert_eq!(
+            message.mode,
+            Some(github_copilot_sdk::types::DeliveryMode::Immediate)
+        );
     }
 }
 
@@ -159,6 +180,7 @@ impl ResumeError {
 pub enum RecoveryError {
     Client(SdkError),
     Resume(ResumeError),
+    Notify(SdkError),
 }
 
 impl fmt::Display for RecoveryError {
@@ -166,6 +188,9 @@ impl fmt::Display for RecoveryError {
         match self {
             Self::Client(error) => write!(formatter, "could not restart Copilot: {error}"),
             Self::Resume(error) => write!(formatter, "could not reconnect session: {error}"),
+            Self::Notify(error) => {
+                write!(formatter, "could not notify the resumed agent: {error}")
+            }
         }
     }
 }
@@ -175,6 +200,7 @@ impl std::error::Error for RecoveryError {
         match self {
             Self::Client(error) => Some(error),
             Self::Resume(error) => Some(error),
+            Self::Notify(error) => Some(error),
         }
     }
 }
@@ -305,6 +331,10 @@ impl AppRuntime {
             .resume_on_client(&replacement, expected)
             .await
             .map_err(RecoveryError::Resume)?;
+        resumed
+            .send(recovery_message())
+            .await
+            .map_err(RecoveryError::Notify)?;
 
         let _old_client = std::mem::replace(&mut self.client, replacement);
         self.session = resumed;
