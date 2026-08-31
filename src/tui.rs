@@ -1,7 +1,6 @@
 use crate::events::{
-    context_attribution_snapshot, latest_message_preview, todo_snapshot, usage_metrics_snapshot,
-    BannerSeverity, ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot,
-    UsageSnapshot,
+    context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
+    ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
 use std::collections::VecDeque;
 use std::future::Future;
@@ -70,7 +69,6 @@ pub enum UiAction {
     StartFleet(String),
     Approval(ApprovalDecision),
     LoadSessions,
-    LoadSessionPreview(SessionId),
     LoadModels,
     LoadUsage,
     LoadTodos,
@@ -162,7 +160,6 @@ pub struct App {
     show_approval_details: bool,
     modal: Option<ModalKind>,
     sessions: Vec<SessionMetadata>,
-    session_preview: Option<String>,
     models: Vec<Model>,
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
@@ -253,19 +250,8 @@ impl App {
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
         self.sessions = sessions;
-        self.session_preview = None;
         self.selected_item = 0;
         self.modal = Some(ModalKind::Sessions);
-    }
-
-    pub fn set_session_preview(&mut self, preview: Option<String>) {
-        self.session_preview = preview;
-    }
-
-    fn selected_session_id(&self) -> Option<SessionId> {
-        self.sessions
-            .get(self.selected_item)
-            .map(|session| session.session_id.clone())
     }
 
     pub fn set_models(&mut self, models: Vec<Model>) {
@@ -812,23 +798,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             }
             KeyCode::Up => {
                 app.move_selection(-1);
-                if matches!(app.modal, Some(ModalKind::Sessions)) {
-                    app.selected_session_id()
-                        .map(UiAction::LoadSessionPreview)
-                        .unwrap_or(UiAction::None)
-                } else {
-                    UiAction::None
-                }
+                UiAction::None
             }
             KeyCode::Down => {
                 app.move_selection(1);
-                if matches!(app.modal, Some(ModalKind::Sessions)) {
-                    app.selected_session_id()
-                        .map(UiAction::LoadSessionPreview)
-                        .unwrap_or(UiAction::None)
-                } else {
-                    UiAction::None
-                }
+                UiAction::None
             }
             KeyCode::Char('r') => {
                 app.cycle_picker_option(true);
@@ -1017,12 +991,7 @@ async fn process_terminal_events(
                 }
             }
             UiAction::LoadSessions => match runtime.client.list_sessions(None).await {
-                Ok(sessions) => {
-                    app.set_sessions(sessions);
-                    if let Some(session_id) = app.selected_session_id() {
-                        load_session_preview(app, runtime, events, session_id).await?;
-                    }
-                }
+                Ok(sessions) => app.set_sessions(sessions),
                 Err(error) if error.is_transport_failure() => {
                     recover_connection(app, runtime, events).await?;
                 }
@@ -1032,9 +1001,6 @@ async fn process_terminal_events(
                     url: None,
                 }),
             },
-            UiAction::LoadSessionPreview(session_id) => {
-                load_session_preview(app, runtime, events, session_id).await?;
-            }
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
             }
@@ -1175,22 +1141,6 @@ async fn process_terminal_events(
                 }
             }
         }
-    }
-    Ok(())
-}
-
-async fn load_session_preview(
-    app: &mut App,
-    runtime: &mut AppRuntime,
-    events: &mut EventSubscription,
-    session_id: SessionId,
-) -> io::Result<()> {
-    match runtime.preview_session(session_id).await {
-        Ok(history) => app.set_session_preview(latest_message_preview(&history)),
-        Err(error) if error.is_transport_failure() => {
-            recover_connection(app, runtime, events).await?;
-        }
-        Err(error) => app.set_session_preview(Some(format!("Preview unavailable: {error}"))),
     }
     Ok(())
 }
@@ -1492,7 +1442,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         ModalKind::Models => Vec::new(),
         ModalKind::Usage | ModalKind::Todos => Vec::new(),
     };
-    let mut lines: Vec<Line<'static>> = if items.is_empty() {
+    let lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
     } else {
         items
@@ -1510,19 +1460,6 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             })
             .collect()
     };
-    if matches!(modal, ModalKind::Sessions) {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Preview",
-            Style::default().fg(Color::Rgb(240, 177, 94)),
-        )));
-        lines.push(Line::from(
-            app.session_preview
-                .as_deref()
-                .unwrap_or("No message preview available.")
-                .to_string(),
-        ));
-    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -2275,7 +2212,7 @@ mod tests {
     }
 
     #[test]
-    fn modal_selection_emits_resume_and_model_actions() {
+    fn session_navigation_stays_local_and_modal_selection_emits_actions() {
         let mut app = App::new(None);
         app.set_sessions(vec![
             SessionMetadata {
@@ -2296,8 +2233,22 @@ mod tests {
 
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press)),
-            UiAction::LoadSessionPreview(SessionId::from("session-2"))
+            UiAction::None
         );
+        assert_eq!(app.selected_item, 1);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.modal_is_open());
+
+        app.set_sessions(vec![SessionMetadata {
+            session_id: SessionId::from("session-2"),
+            start_time: "2026-08-31T12:00:00Z".to_string(),
+            modified_time: "2026-08-31T12:02:00Z".to_string(),
+            summary: Some("second".to_string()),
+            is_remote: false,
+        }]);
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
             UiAction::Resume(SessionId::from("session-2"))

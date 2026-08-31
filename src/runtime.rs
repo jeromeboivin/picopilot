@@ -281,54 +281,6 @@ impl AppRuntime {
             .map_err(ResumeError::Session)
     }
 
-    pub async fn preview_session(
-        &self,
-        session_id: SessionId,
-    ) -> Result<Vec<SessionEvent>, ResumeError> {
-        if self.session.id().eq(&session_id) {
-            return self
-                .session
-                .get_events()
-                .await
-                .map_err(ResumeError::Session);
-        }
-
-        let expected_metadata = self
-            .client
-            .get_session_metadata(&session_id)
-            .await
-            .map_err(ResumeError::Session)?
-            .ok_or_else(|| ResumeError::MissingSession {
-                session_id: session_id.clone(),
-            })?;
-        let resumed = self
-            .client
-            .resume_session(self.base_resume_config(session_id.clone()))
-            .await
-            .map_err(ResumeError::Session)?;
-        let events = async {
-            let actual_metadata = self
-                .client
-                .get_session_metadata(resumed.id())
-                .await
-                .map_err(ResumeError::Session)?;
-            verify_session_identity(
-                &SessionIdentity {
-                    session_id,
-                    start_time: Some(expected_metadata.start_time),
-                },
-                &SessionIdentity {
-                    session_id: resumed.id().clone(),
-                    start_time: actual_metadata.map(|metadata| metadata.start_time),
-                },
-            )?;
-            resumed.get_events().await.map_err(ResumeError::Session)
-        }
-        .await;
-        let _ = resumed.disconnect().await;
-        events
-    }
-
     pub async fn recover_transport(&mut self) -> Result<(), RecoveryError> {
         let expected = SessionIdentity {
             session_id: self.session.id().clone(),
