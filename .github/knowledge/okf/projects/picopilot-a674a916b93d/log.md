@@ -1,5 +1,47 @@
 # Knowledge extraction log
 
+## 2026-08-31T18:05:00Z — Fourth consolidation pass (frontmatter audit)
+
+**Reviewed transcripts:**
+- `7028bf67` (re-read) — No new durable knowledge beyond prior extractions.
+- `f309c464` events — No durable picopilot knowledge (transient system-info
+  session using gpt-5.6-luna).
+
+**Changes:**
+- Updated `tui-conventions.md` — fixed `r/R` shortcut to correctly show `r`
+  for reasoning and `c` for context tier; added model-picker three-panel
+  layout section with detail pane description.
+- Repaired `okf-project-index.instructions.md` — replaced stale concept
+  names and broken relative paths with actual filenames and correct paths.
+
+**Frontmatter audit:** All 10 concept files pass validation (fenced YAML
+with non-empty `type` key).
+
+## 2026-08-31T18:03:00Z — Third consolidation pass (code-verified)
+
+**Reviewed transcripts:**
+- `7028bf67` (re-review) — Confirmed Ctrl-key migration rationale, picker
+  simplification, and model chooser feedback from user.
+- `f309c464` events — Live smoke test of picopilot binary. No durable project
+  decisions; confirmed binary runs standalone from `target/debug`.
+
+**Reviewed commits (post-previous-extraction):**
+- `46de582` — Require Ctrl for all main-window shortcuts.
+- `5d1eafd` — Remove per-selection session preview; local-only navigation.
+- `849c061` — Resume notice demoted to debug-only diagnostic.
+
+**Changes:**
+- Updated `tui-conventions.md` — full rewrite reflecting Ctrl+key shortcuts,
+  shortcut bar, diagnostic entries, session picker simplification,
+  blocked-state quit controls.
+- Updated `architecture.md` — Fleet dispatch moved from runtime.rs to tui.rs.
+- Updated `known-gaps.md` — marked resume transcript replay as fixed.
+- Removed duplicate "Known gaps" entry from `index.md`.
+- Updated instructions mirror to match current concept set.
+
+**Frontmatter audit:** All 10 concept files verified to have valid YAML
+frontmatter with non-empty `type` key. index.md and log.md are exempt.
+
 ## 2026-08-31T18:04:00Z — Second consolidation pass
 
 **Reviewed transcripts:**
