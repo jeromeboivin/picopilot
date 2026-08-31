@@ -6,7 +6,7 @@ use github_copilot_sdk::session_events::{
     AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionTodosChangedData,
     SessionUsageInfoData, SessionWarningData, SubagentCompletedData, SubagentFailedData,
     SubagentStartedData, ToolExecutionCompleteData, ToolExecutionPartialResultData,
-    ToolExecutionProgressData, ToolExecutionStartData,
+    ToolExecutionProgressData, ToolExecutionStartData, UserMessageData,
 };
 use github_copilot_sdk::types::SessionEvent;
 
@@ -145,6 +145,9 @@ pub fn todo_snapshot(result: &PlanReadSqlTodosWithDependenciesResult) -> TodoSna
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventUpdate {
+    UserMessage {
+        content: String,
+    },
     AssistantDelta {
         message_id: String,
         content: String,
@@ -212,6 +215,15 @@ pub enum EventUpdate {
 pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
     let agent_id = event.agent_id.clone();
     match event.event_type.as_str() {
+        "user.message" => event
+            .typed_data::<UserMessageData>()
+            .filter(|data| {
+                !data.is_autopilot_continuation.unwrap_or(false)
+                    && data.source.as_deref().is_none_or(|source| source == "user")
+            })
+            .map(|data| EventUpdate::UserMessage {
+                content: data.content,
+            }),
         "assistant.message_delta" => event.typed_data::<AssistantMessageDeltaData>().map(|data| {
             EventUpdate::AssistantDelta {
                 message_id: data.message_id,
@@ -353,6 +365,17 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
     }
 }
 
+pub fn latest_message_preview(events: &[SessionEvent]) -> Option<String> {
+    events.iter().rev().find_map(|event| match event_update(event) {
+        Some(EventUpdate::UserMessage { content })
+        | Some(EventUpdate::AssistantMessage { content, .. }) => {
+            let preview: String = content.chars().take(240).collect();
+            (!preview.is_empty()).then_some(preview)
+        }
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use github_copilot_sdk::rpc::{
@@ -366,8 +389,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        context_attribution_snapshot, event_update, todo_snapshot, usage_metrics_snapshot,
-        EventUpdate,
+        context_attribution_snapshot, event_update, latest_message_preview, todo_snapshot,
+        usage_metrics_snapshot, EventUpdate,
     };
 
     #[test]
@@ -394,6 +417,67 @@ mod tests {
                 content: "The patch is ready.".to_string(),
                 agent_id: None,
             })
+        );
+    }
+
+    #[test]
+    fn maps_visible_user_messages_but_not_autopilot_continuations() {
+        let visible = SessionEvent {
+            id: "event-user".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "user.message".to_string(),
+            data: json!({ "content": "Fix the parser", "source": "user" }),
+        };
+        let continuation = SessionEvent {
+            id: "event-continuation".to_string(),
+            data: json!({
+                "content": "Continue working",
+                "isAutopilotContinuation": true,
+                "source": "system"
+            }),
+            ..visible.clone()
+        };
+
+        assert_eq!(
+            event_update(&visible),
+            Some(EventUpdate::UserMessage {
+                content: "Fix the parser".to_string(),
+            })
+        );
+        assert_eq!(event_update(&continuation), None);
+    }
+
+    #[test]
+    fn previews_the_latest_complete_visible_message() {
+        let user = SessionEvent {
+            id: "event-user".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "user.message".to_string(),
+            data: json!({ "content": "Fix the parser", "source": "user" }),
+        };
+        let assistant = SessionEvent {
+            id: "event-assistant".to_string(),
+            event_type: "assistant.message".to_string(),
+            data: json!({
+                "messageId": "message-1",
+                "content": "The parser is fixed."
+            }),
+            ..user.clone()
+        };
+
+        assert_eq!(
+            latest_message_preview(&[user, assistant]).as_deref(),
+            Some("The parser is fixed.")
         );
     }
 

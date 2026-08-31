@@ -1,6 +1,7 @@
 use crate::events::{
-    context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
-    ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
+    context_attribution_snapshot, latest_message_preview, todo_snapshot, usage_metrics_snapshot,
+    BannerSeverity, ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot,
+    UsageSnapshot,
 };
 use std::collections::VecDeque;
 use std::future::Future;
@@ -70,6 +71,7 @@ pub enum UiAction {
     Send(String),
     Approval(ApprovalDecision),
     LoadSessions,
+    LoadSessionPreview(SessionId),
     LoadModels,
     LoadUsage,
     LoadTodos,
@@ -145,6 +147,7 @@ pub struct App {
     pending_approvals: VecDeque<ApprovalRequest>,
     modal: Option<ModalKind>,
     sessions: Vec<SessionMetadata>,
+    session_preview: Option<String>,
     models: Vec<Model>,
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
@@ -234,8 +237,19 @@ impl App {
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
         self.sessions = sessions;
+        self.session_preview = None;
         self.selected_item = 0;
         self.modal = Some(ModalKind::Sessions);
+    }
+
+    pub fn set_session_preview(&mut self, preview: Option<String>) {
+        self.session_preview = preview;
+    }
+
+    fn selected_session_id(&self) -> Option<SessionId> {
+        self.sessions
+            .get(self.selected_item)
+            .map(|session| session.session_id.clone())
     }
 
     pub fn set_models(&mut self, models: Vec<Model>) {
@@ -423,8 +437,22 @@ impl App {
         self.status.busy = true;
     }
 
+    pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
+        self.entries.clear();
+        self.status.busy = false;
+        self.blocked = false;
+        for event in events {
+            if let Some(update) = crate::events::event_update(event) {
+                self.apply(update);
+            }
+        }
+    }
+
     pub fn apply(&mut self, update: EventUpdate) {
         match update {
+            EventUpdate::UserMessage { content } => {
+                self.entries.push(ChatEntry::User(content));
+            }
             EventUpdate::AssistantDelta {
                 message_id,
                 content,
@@ -694,11 +722,23 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             }
             KeyCode::Up => {
                 app.move_selection(-1);
-                UiAction::None
+                if matches!(app.modal, Some(ModalKind::Sessions)) {
+                    app.selected_session_id()
+                        .map(UiAction::LoadSessionPreview)
+                        .unwrap_or(UiAction::None)
+                } else {
+                    UiAction::None
+                }
             }
             KeyCode::Down => {
                 app.move_selection(1);
-                UiAction::None
+                if matches!(app.modal, Some(ModalKind::Sessions)) {
+                    app.selected_session_id()
+                        .map(UiAction::LoadSessionPreview)
+                        .unwrap_or(UiAction::None)
+                } else {
+                    UiAction::None
+                }
             }
             KeyCode::Char('r') => {
                 app.cycle_picker_option(true);
@@ -852,7 +892,12 @@ async fn process_terminal_events(
                 }
             }
             UiAction::LoadSessions => match runtime.client.list_sessions(None).await {
-                Ok(sessions) => app.set_sessions(sessions),
+                Ok(sessions) => {
+                    app.set_sessions(sessions);
+                    if let Some(session_id) = app.selected_session_id() {
+                        load_session_preview(app, runtime, events, session_id).await?;
+                    }
+                }
                 Err(error) if error.is_transport_failure() => {
                     recover_connection(app, runtime, events).await?;
                 }
@@ -862,6 +907,9 @@ async fn process_terminal_events(
                     url: None,
                 }),
             },
+            UiAction::LoadSessionPreview(session_id) => {
+                load_session_preview(app, runtime, events, session_id).await?;
+            }
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
             }
@@ -900,26 +948,25 @@ async fn process_terminal_events(
             UiAction::LoadTodos => {
                 load_todos(app, runtime, events).await?;
             }
-            UiAction::Resume(session_id) => {
-                if let Err(error) = runtime.resume(session_id).await {
-                    if error.is_transport_failure() {
-                        recover_connection(app, runtime, events).await?;
-                    } else {
-                        app.apply(crate::events::EventUpdate::Banner {
-                            severity: crate::events::BannerSeverity::RecoverableError,
-                            message: error.to_string(),
-                            url: None,
-                        });
-                    }
-                } else {
+            UiAction::Resume(session_id) => match runtime.resume(session_id).await {
+                Ok(history) => {
                     *events = runtime.session.subscribe();
+                    app.replace_history(&history);
                     app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::Warning,
                         message: "session resumed".to_string(),
                         url: None,
                     });
                 }
-            }
+                Err(error) if error.is_transport_failure() => {
+                    recover_connection(app, runtime, events).await?;
+                }
+                Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                    severity: crate::events::BannerSeverity::RecoverableError,
+                    message: error.to_string(),
+                    url: None,
+                }),
+            },
             UiAction::SwitchModel(selection) => {
                 let model = selection.model.clone();
                 let options = match selection.sdk_options() {
@@ -989,6 +1036,22 @@ async fn process_terminal_events(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+async fn load_session_preview(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    events: &mut EventSubscription,
+    session_id: SessionId,
+) -> io::Result<()> {
+    match runtime.preview_session(session_id).await {
+        Ok(history) => app.set_session_preview(latest_message_preview(&history)),
+        Err(error) if error.is_transport_failure() => {
+            recover_connection(app, runtime, events).await?;
+        }
+        Err(error) => app.set_session_preview(Some(format!("Preview unavailable: {error}"))),
     }
     Ok(())
 }
@@ -1253,7 +1316,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .collect(),
         ModalKind::Usage | ModalKind::Todos => Vec::new(),
     };
-    let lines: Vec<Line<'static>> = if items.is_empty() {
+    let mut lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
     } else {
         items
@@ -1271,6 +1334,19 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             })
             .collect()
     };
+    if matches!(modal, ModalKind::Sessions) {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "Preview",
+            Style::default().fg(Color::Rgb(240, 177, 94)),
+        )));
+        lines.push(Line::from(
+            app.session_preview
+                .as_deref()
+                .unwrap_or("No message preview available.")
+                .to_string(),
+        ));
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(
@@ -1598,6 +1674,7 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
+    use serde_json::json;
 
     use super::{
         handle_key, send_with_fleet_fallback, todo_detail_lines, App, ChatEntry, ModelSelection,
@@ -1628,6 +1705,27 @@ mod tests {
                 agent_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn resumed_history_replaces_the_previous_transcript() {
+        let mut app = App::new(None);
+        app.add_user_message("old session".to_string());
+        let events = vec![github_copilot_sdk::types::SessionEvent {
+            id: "event-user".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "user.message".to_string(),
+            data: json!({ "content": "resumed session", "source": "user" }),
+        }];
+
+        app.replace_history(&events);
+
+        assert_eq!(app.entries(), &[ChatEntry::User("resumed session".to_string())]);
     }
 
     #[test]
@@ -1738,7 +1836,7 @@ mod tests {
 
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press)),
-            UiAction::None
+            UiAction::LoadSessionPreview(SessionId::from("session-2"))
         );
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
