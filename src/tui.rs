@@ -171,6 +171,7 @@ pub struct App {
     todo_refresh_requested: bool,
     reconnecting: bool,
     blocked: bool,
+    show_internals: bool,
     should_quit: bool,
 }
 
@@ -821,6 +822,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             UiAction::LoadSessions
+        }
+        KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.show_internals = !app.show_internals;
+            UiAction::None
         }
         KeyCode::Char('m') => UiAction::LoadModels,
         KeyCode::Char('u') => UiAction::LoadUsage,
@@ -1670,10 +1675,13 @@ fn chat_lines(app: &App) -> Vec<Line<'static>> {
         ))];
     }
 
-    app.entries().iter().flat_map(entry_lines).collect()
+    app.entries()
+        .iter()
+        .flat_map(|entry| entry_lines(entry, app.show_internals))
+        .collect()
 }
 
-fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
+fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
     match entry {
         ChatEntry::User(content) => labeled_lines(
             "you",
@@ -1691,13 +1699,19 @@ fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
         ),
         ChatEntry::Reasoning {
             content, agent_id, ..
-        } => labeled_lines(
-            &speaker_label("think", agent_id.as_deref()),
-            content,
-            Style::default()
-                .fg(Color::Rgb(165, 174, 187))
-                .add_modifier(Modifier::ITALIC),
-        ),
+        } => {
+            if show_internals {
+                labeled_lines(
+                    &speaker_label("think", agent_id.as_deref()),
+                    content,
+                    Style::default()
+                        .fg(Color::Rgb(165, 174, 187))
+                        .add_modifier(Modifier::ITALIC),
+                )
+            } else {
+                Vec::new()
+            }
+        }
         ChatEntry::Tool {
             tool_name,
             output,
@@ -1705,7 +1719,7 @@ fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
             unknown,
             agent_id,
             ..
-        } => {
+        } if show_internals => {
             let state = if *unknown {
                 "unknown"
             } else {
@@ -1731,6 +1745,7 @@ fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
             }
             lines
         }
+        ChatEntry::Tool { .. } => Vec::new(),
         ChatEntry::Subagent {
             display_name,
             status,
@@ -1894,6 +1909,39 @@ mod tests {
                 agent_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn reasoning_and_tool_telemetry_are_hidden_until_requested() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Reasoning {
+            reasoning_id: "reasoning-1".to_string(),
+            content: "internal chain".to_string(),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "grep".to_string(),
+            agent_id: None,
+        });
+
+        assert!(super::chat_lines(&app).is_empty());
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    code: KeyCode::Char('i'),
+                    modifiers: KeyModifiers::CONTROL,
+                    kind: KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                }
+            ),
+            UiAction::None
+        );
+        let rendered = super::chat_lines(&app);
+        assert_eq!(rendered.len(), 2);
+        assert!(rendered[0].to_string().contains("internal chain"));
+        assert!(rendered[1].to_string().contains("grep"));
     }
 
     #[test]
