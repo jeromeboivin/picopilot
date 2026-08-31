@@ -1,3 +1,4 @@
+use github_copilot_sdk::rpc::UsageGetMetricsResult;
 use github_copilot_sdk::session_events::{
     AssistantMessageData, AssistantMessageDeltaData, AssistantReasoningData,
     AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionUsageInfoData,
@@ -22,6 +23,25 @@ pub struct UsageSnapshot {
     pub conversation_tokens: Option<i64>,
     pub system_tokens: Option<i64>,
     pub tool_definitions_tokens: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageMetricsSnapshot {
+    pub total_nano_aiu: Option<f64>,
+    pub total_premium_request_cost: f64,
+    pub total_user_requests: i64,
+    pub total_api_duration_ms: i64,
+    pub current_model: Option<String>,
+}
+
+pub fn usage_metrics_snapshot(metrics: &UsageGetMetricsResult) -> UsageMetricsSnapshot {
+    UsageMetricsSnapshot {
+        total_nano_aiu: metrics.total_nano_aiu,
+        total_premium_request_cost: metrics.total_premium_request_cost,
+        total_user_requests: metrics.total_user_requests,
+        total_api_duration_ms: metrics.total_api_duration_ms,
+        current_model: metrics.current_model.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,10 +252,11 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
 
 #[cfg(test)]
 mod tests {
+    use github_copilot_sdk::rpc::UsageGetMetricsResult;
     use github_copilot_sdk::types::SessionEvent;
     use serde_json::json;
 
-    use super::{event_update, EventUpdate};
+    use super::{event_update, usage_metrics_snapshot, EventUpdate};
 
     #[test]
     fn maps_assistant_message_delta_to_a_stream_update() {
@@ -262,5 +283,25 @@ mod tests {
                 agent_id: None,
             })
         );
+    }
+
+    #[test]
+    fn maps_session_usage_metrics_to_a_renderable_snapshot() {
+        let metrics = UsageGetMetricsResult {
+            total_nano_aiu: Some(3.5),
+            total_premium_request_cost: 2.0,
+            total_user_requests: 4,
+            total_api_duration_ms: 1250,
+            current_model: Some("gpt-5".to_string()),
+            ..UsageGetMetricsResult::default()
+        };
+
+        let snapshot = usage_metrics_snapshot(&metrics);
+
+        assert_eq!(snapshot.total_nano_aiu, Some(3.5));
+        assert_eq!(snapshot.total_premium_request_cost, 2.0);
+        assert_eq!(snapshot.total_user_requests, 4);
+        assert_eq!(snapshot.total_api_duration_ms, 1250);
+        assert_eq!(snapshot.current_model.as_deref(), Some("gpt-5"));
     }
 }
