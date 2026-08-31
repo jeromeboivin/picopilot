@@ -87,6 +87,7 @@ enum ModalKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatEntry {
     User(String),
+    Diagnostic(String),
     Assistant {
         message_id: String,
         content: String,
@@ -482,6 +483,10 @@ impl App {
         self.pending_user_messages.push_back(content.clone());
         self.entries.push(ChatEntry::User(content));
         self.status.busy = true;
+    }
+
+    fn add_diagnostic(&mut self, message: impl Into<String>) {
+        self.entries.push(ChatEntry::Diagnostic(message.into()));
     }
 
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
@@ -1043,11 +1048,7 @@ async fn process_terminal_events(
                 Ok(history) => {
                     *events = runtime.session.subscribe();
                     app.replace_history(&history);
-                    app.apply(crate::events::EventUpdate::Banner {
-                        severity: crate::events::BannerSeverity::Warning,
-                        message: "session resumed".to_string(),
-                        url: None,
-                    });
+                    app.add_diagnostic("session resumed");
                 }
                 Err(error) if error.is_transport_failure() => {
                     recover_connection(app, runtime, events).await?;
@@ -1761,6 +1762,12 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
                 .fg(Color::Rgb(240, 177, 94))
                 .add_modifier(Modifier::BOLD),
         ),
+        ChatEntry::Diagnostic(message) if show_internals => labeled_lines(
+            "debug",
+            message,
+            Style::default().fg(Color::Rgb(165, 174, 187)),
+        ),
+        ChatEntry::Diagnostic(_) => Vec::new(),
         ChatEntry::Assistant {
             content, agent_id, ..
         } => labeled_lines(
@@ -1998,6 +2005,7 @@ mod tests {
             tool_name: "grep".to_string(),
             agent_id: None,
         });
+        app.add_diagnostic("session resumed");
 
         assert!(super::chat_lines(&app).is_empty());
         assert_eq!(
@@ -2013,9 +2021,11 @@ mod tests {
             UiAction::None
         );
         let rendered = super::chat_lines(&app);
-        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered.len(), 3);
         assert!(rendered[0].to_string().contains("internal chain"));
         assert!(rendered[1].to_string().contains("grep"));
+        assert!(rendered[2].to_string().starts_with("debug"));
+        assert!(rendered[2].to_string().contains("session resumed"));
     }
 
     #[test]
