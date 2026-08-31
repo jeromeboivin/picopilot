@@ -20,7 +20,9 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
-use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult};
+use github_copilot_sdk::rpc::{
+    FleetStartRequest, FleetStartResult, TasksStartAgentRequest,
+};
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
@@ -163,21 +165,21 @@ enum SendPath {
 async fn send_with_fleet_fallback<
     FleetStart,
     FleetFuture,
-    SingleSend,
+    SingleStart,
     SingleFuture,
     Error,
     IsTransportFailure,
 >(
     prompt: String,
     fleet_start: FleetStart,
-    single_send: SingleSend,
+    single_start: SingleStart,
     is_transport_failure: IsTransportFailure,
 ) -> Result<SendPath, Error>
 where
     FleetStart: FnOnce(FleetStartRequest) -> FleetFuture,
     FleetFuture: Future<Output = Result<FleetStartResult, Error>>,
-    SingleSend: FnOnce(String) -> SingleFuture,
-    SingleFuture: Future<Output = Result<String, Error>>,
+    SingleStart: FnOnce(String) -> SingleFuture,
+    SingleFuture: Future<Output = Result<(), Error>>,
     IsTransportFailure: Fn(&Error) -> bool,
 {
     match fleet_start(FleetStartRequest {
@@ -188,7 +190,7 @@ where
         Ok(result) if result.started => Ok(SendPath::Fleet),
         Err(error) if is_transport_failure(&error) => Err(error),
         Ok(_) | Err(_) => {
-            single_send(prompt).await?;
+            single_start(prompt).await?;
             Ok(SendPath::Single)
         }
     }
@@ -939,7 +941,20 @@ async fn process_terminal_events(
                 match send_with_fleet_fallback(
                     prompt,
                     |request| async move { session.rpc().fleet().start(request).await },
-                    |prompt| async move { session.send(prompt).await },
+                    |prompt| async move {
+                        session
+                            .rpc()
+                            .tasks()
+                            .start_agent(TasksStartAgentRequest {
+                                agent_type: "general-purpose".to_string(),
+                                description: Some("Single-agent Fleet fallback".to_string()),
+                                model: None,
+                                name: "picopilot-task".to_string(),
+                                prompt,
+                            })
+                            .await
+                            .map(|_| ())
+                    },
                     |error| error.is_transport_failure(),
                 )
                 .await
@@ -1843,13 +1858,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fleet_start_falls_back_to_one_single_agent_send() {
+    async fn fleet_start_falls_back_to_one_single_agent_delegation() {
         let path = send_with_fleet_fallback(
             "inspect this".to_string(),
             |_request| async { Ok::<_, String>(FleetStartResult { started: false }) },
             |prompt| async move {
                 assert_eq!(prompt, "inspect this");
-                Ok::<_, String>("message-1".to_string())
+                Ok::<_, String>(())
             },
             |_error: &String| false,
         )
@@ -1866,7 +1881,7 @@ mod tests {
             |_request| async { Err::<FleetStartResult, _>("unsupported".to_string()) },
             |prompt| async move {
                 assert_eq!(prompt, "repair this");
-                Ok::<_, String>("message-2".to_string())
+                Ok::<_, String>(())
             },
             |_error: &String| false,
         )
