@@ -8,9 +8,11 @@ use github_copilot_sdk::{
     types::{DeliveryMode, MessageOptions, Model, ResumeSessionConfig, SessionEvent, SessionId},
     Client, ClientOptions, Error as SdkError,
 };
+use serde_json::Value;
 
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
+use crate::provider::{ProviderError, ProviderRegistry};
 
 pub const MAX_RECOVERY_ATTEMPTS: usize = 3;
 const RECOVERY_INSTRUCTION: &str = "The client transport failed while a tool call may have been in flight. Its outcome is unknown. Before continuing, inspect the relevant state; do not assume success and do not retry the operation blindly.";
@@ -42,6 +44,7 @@ pub struct AppRuntime {
     permission_handler: Arc<dyn PermissionHandler>,
     pub session: github_copilot_sdk::session::Session,
     pub models: Vec<Model>,
+    pub provider_registry: Option<ProviderRegistry>,
     pub working_directory: PathBuf,
     pub active_model_options: ActiveModelOptions,
     startup_config: AppConfig,
@@ -54,14 +57,28 @@ fn apply_active_model_options(config: &mut ResumeSessionConfig, options: &Active
     config.context_tier = options.context_tier.clone();
 }
 
+fn apply_provider_registry(
+    config: ResumeSessionConfig,
+    registry: Option<&ProviderRegistry>,
+) -> ResumeSessionConfig {
+    match registry {
+        Some(registry) => config
+            .with_providers(registry.providers().to_vec())
+            .with_models(registry.models().to_vec()),
+        None => config,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, recovery_backoff, recovery_message, verify_session_identity,
-        ActiveModelOptions, SessionIdentity, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        apply_active_model_options, apply_provider_registry, models_from_session_catalog,
+        recovery_backoff, recovery_message, verify_session_identity, ActiveModelOptions,
+        CatalogError, SessionIdentity, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
+    use crate::provider::{ProviderRegistry, ProviderSettings};
 
     #[test]
     fn resume_configuration_restores_active_model_options() {
@@ -127,6 +144,50 @@ mod tests {
             message.mode,
             Some(github_copilot_sdk::types::DeliveryMode::Immediate)
         );
+    }
+
+    #[test]
+    fn resume_configuration_reuses_the_additive_provider_registry() {
+        let settings = ProviderSettings::default_for("http://localhost:11434/v1").unwrap();
+        let registry = ProviderRegistry::from_model_ids(&settings, ["qwen:7b"]).unwrap();
+        let config = apply_provider_registry(
+            ResumeSessionConfig::new(SessionId::from("session-1")),
+            Some(&registry),
+        );
+
+        assert_eq!(config.providers.as_ref().map(Vec::len), Some(1));
+        assert_eq!(config.models.as_ref().map(Vec::len), Some(1));
+        assert_eq!(config.models.as_ref().unwrap()[0].provider, "local");
+        assert_eq!(config.models.as_ref().unwrap()[0].id, "qwen:7b");
+    }
+
+    #[test]
+    fn decodes_hosted_and_provider_models_from_the_session_catalog() {
+        let models = models_from_session_catalog(vec![
+            serde_json::json!({
+                "id": "gpt-5",
+                "name": "GPT-5",
+                "capabilities": {}
+            }),
+            serde_json::json!({"id": "local/qwen:7b", "name": "local/qwen:7b"}),
+        ])
+        .expect("representative session catalog should decode");
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5");
+        assert_eq!(models[1].id, "local/qwen:7b");
+        assert!(models[1].billing.is_none());
+        assert!(models[1].supported_reasoning_efforts.is_none());
+        assert!(models[1].supported_context_tiers.is_none());
+        assert!(models[1].capabilities.limits.is_none());
+    }
+
+    #[test]
+    fn rejects_a_session_catalog_entry_without_an_id() {
+        assert!(matches!(
+            models_from_session_catalog(vec![serde_json::json!({"name": "missing"})]),
+            Err(CatalogError::MissingModelId { index: 0 })
+        ));
     }
 }
 
@@ -346,7 +407,7 @@ impl AppRuntime {
     }
 
     fn base_resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
-        ResumeSessionConfig::new(session_id)
+        let config = ResumeSessionConfig::new(session_id)
             .with_client_name("picopilot")
             .with_streaming(true)
             .with_available_tools(crate::config::V1_AVAILABLE_TOOLS.iter().copied())
@@ -355,7 +416,8 @@ impl AppRuntime {
             .with_permission_handler(self.permission_handler.clone())
             .with_system_message(crate::config::system_message_config())
             .with_system_message_transform(crate::config::system_message_transform())
-            .with_suppress_resume_event(true)
+            .with_suppress_resume_event(true);
+        apply_provider_registry(config, self.provider_registry.as_ref())
     }
 }
 
@@ -364,7 +426,10 @@ pub enum StartupError {
     CurrentDirectory(std::io::Error),
     Client(SdkError),
     Configuration(ConfigError),
+    ProviderDiscovery(ProviderError),
     Session(SdkError),
+    SessionCatalog(SdkError),
+    InvalidSessionCatalog(CatalogError),
 }
 
 impl fmt::Display for StartupError {
@@ -380,7 +445,16 @@ impl fmt::Display for StartupError {
             Self::Configuration(error) => {
                 write!(formatter, "invalid startup configuration: {error}")
             }
+            Self::ProviderDiscovery(error) => {
+                write!(formatter, "could not discover provider models: {error}")
+            }
             Self::Session(error) => write!(formatter, "could not create Copilot session: {error}"),
+            Self::SessionCatalog(error) => {
+                write!(formatter, "could not list session models: {error}")
+            }
+            Self::InvalidSessionCatalog(error) => {
+                write!(formatter, "could not decode session model catalog: {error}")
+            }
         }
     }
 }
@@ -389,32 +463,146 @@ impl std::error::Error for StartupError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::CurrentDirectory(error) => Some(error),
-            Self::Client(error) | Self::Session(error) => Some(error),
+            Self::Client(error) | Self::Session(error) | Self::SessionCatalog(error) => Some(error),
             Self::Configuration(error) => Some(error),
+            Self::ProviderDiscovery(error) => Some(error),
+            Self::InvalidSessionCatalog(error) => Some(error),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum CatalogError {
+    InvalidEntry {
+        index: usize,
+        source: serde_json::Error,
+    },
+    MissingModelId {
+        index: usize,
+    },
+    MissingRegisteredModel {
+        model: String,
+    },
+}
+
+impl fmt::Display for CatalogError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidEntry { index, .. } => {
+                write!(formatter, "session model catalog entry {index} is invalid")
+            }
+            Self::MissingModelId { index } => {
+                write!(
+                    formatter,
+                    "session model catalog entry {index} has no model id"
+                )
+            }
+            Self::MissingRegisteredModel { model } => write!(
+                formatter,
+                "session model catalog did not include registered model '{model}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CatalogError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidEntry { source, .. } => Some(source),
+            Self::MissingModelId { .. } | Self::MissingRegisteredModel { .. } => None,
+        }
+    }
+}
+
+fn models_from_session_catalog(entries: Vec<Value>) -> Result<Vec<Model>, CatalogError> {
+    entries
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut entry)| decode_session_model(index, &mut entry))
+        .collect()
+}
+
+fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, CatalogError> {
+    let Some(object) = entry.as_object_mut() else {
+        let source = serde_json::from_value::<Model>(entry.clone()).unwrap_err();
+        return Err(CatalogError::InvalidEntry { index, source });
+    };
+    let model_id = object
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|model_id| !model_id.trim().is_empty())
+        .ok_or(CatalogError::MissingModelId { index })?
+        .to_string();
+    if matches!(object.get("name"), None | Some(Value::Null)) {
+        object.insert("name".to_string(), Value::String(model_id.clone()));
+    }
+    if matches!(object.get("capabilities"), None | Some(Value::Null)) {
+        object.insert(
+            "capabilities".to_string(),
+            Value::Object(serde_json::Map::new()),
+        );
+    }
+    serde_json::from_value(entry.clone())
+        .map_err(|source| CatalogError::InvalidEntry { index, source })
 }
 
 pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
     let working_directory = std::env::current_dir().map_err(StartupError::CurrentDirectory)?;
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
+    let provider_settings = config
+        .provider_settings()
+        .map_err(StartupError::Configuration)?;
     let client = Client::start(config.client_options_in(&working_directory))
         .await
         .map_err(StartupError::Client)?;
-    let models = client.list_models().await.map_err(StartupError::Client)?;
+    let hosted_models = client.list_models().await.map_err(StartupError::Client)?;
+    let provider_registry = match provider_settings.as_ref() {
+        Some(settings) => Some(
+            crate::provider::discover(settings)
+                .await
+                .map_err(StartupError::ProviderDiscovery)?,
+        ),
+        None => None,
+    };
 
-    config
-        .validate_against(&models)
-        .map_err(StartupError::Configuration)?;
+    match provider_registry.as_ref() {
+        Some(registry) => config
+            .validate_against_registry(&hosted_models, registry)
+            .map_err(StartupError::Configuration)?,
+        None => config
+            .validate_against(&hosted_models)
+            .map_err(StartupError::Configuration)?,
+    }
 
     let session = client
         .create_session(
             config
-                .session_config_in(&working_directory)
+                .session_config_in_with_registry(&working_directory, provider_registry.as_ref())
                 .with_permission_handler(permission_handler.clone()),
         )
         .await
         .map_err(StartupError::Session)?;
+    let models = match provider_registry.as_ref() {
+        Some(registry) => {
+            let catalog = session
+                .rpc()
+                .model()
+                .list()
+                .await
+                .map_err(StartupError::SessionCatalog)?;
+            let models = models_from_session_catalog(catalog.list)
+                .map_err(StartupError::InvalidSessionCatalog)?;
+            for model_id in registry.qualified_model_ids() {
+                if !models.iter().any(|model| model.id == model_id) {
+                    return Err(StartupError::InvalidSessionCatalog(
+                        CatalogError::MissingRegisteredModel { model: model_id },
+                    ));
+                }
+            }
+            models
+        }
+        None => hosted_models,
+    };
     let session_start_time = client
         .get_session_metadata(session.id())
         .await
@@ -427,6 +615,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         permission_handler,
         session,
         models,
+        provider_registry,
         working_directory,
         startup_config: config.clone(),
         session_start_time,

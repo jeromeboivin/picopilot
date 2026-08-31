@@ -11,6 +11,11 @@ use github_copilot_sdk::{
     ClientOptions,
 };
 
+use crate::provider::{
+    ProviderError, ProviderRegistry, ProviderSettings, DEFAULT_PROVIDER_NAME,
+    DEFAULT_PROVIDER_WIRE_API,
+};
+
 #[cfg(windows)]
 pub const V1_AVAILABLE_TOOLS: &[&str] = &[
     "powershell",
@@ -89,6 +94,12 @@ pub enum ConfigError {
         tier: String,
         supported: Vec<String>,
     },
+    ProviderOptionRequiresUrl {
+        option: &'static str,
+    },
+    InvalidProviderConfiguration {
+        message: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -106,20 +117,38 @@ impl fmt::Display for ConfigError {
                 model,
                 effort,
                 supported,
-            } => write!(
-                formatter,
-                "reasoning effort '{effort}' is not supported by model '{model}'; supported values: {}",
-                supported.join(", ")
-            ),
+            } => {
+                let supported = if supported.is_empty() {
+                    "none".to_string()
+                } else {
+                    supported.join(", ")
+                };
+                write!(
+                    formatter,
+                    "reasoning effort '{effort}' is not supported by model '{model}'; supported values: {supported}"
+                )
+            }
             Self::ContextTierNotSupported {
                 model,
                 tier,
                 supported,
-            } => write!(
-                formatter,
-                "context tier '{tier}' is not supported by model '{model}'; supported values: {}",
-                supported.join(", ")
-            ),
+            } => {
+                let supported = if supported.is_empty() {
+                    "none".to_string()
+                } else {
+                    supported.join(", ")
+                };
+                write!(
+                    formatter,
+                    "context tier '{tier}' is not supported by model '{model}'; supported values: {supported}"
+                )
+            }
+            Self::ProviderOptionRequiresUrl { option } => {
+                write!(formatter, "{option} requires --provider-url")
+            }
+            Self::InvalidProviderConfiguration { message } => {
+                write!(formatter, "provider configuration is invalid: {message}")
+            }
         }
     }
 }
@@ -141,6 +170,15 @@ pub struct AppConfig {
 
     #[arg(long, value_name = "TIER")]
     pub context_tier: Option<String>,
+
+    #[arg(long, env = "PICOPILOT_PROVIDER_URL", value_name = "URL")]
+    pub provider_url: Option<String>,
+
+    #[arg(long, value_name = "NAME")]
+    pub provider_name: Option<String>,
+
+    #[arg(long, value_name = "API")]
+    pub provider_wire_api: Option<String>,
 }
 
 impl AppConfig {
@@ -148,7 +186,55 @@ impl AppConfig {
         ClientOptions::new().with_cwd(working_directory)
     }
 
+    pub fn provider_settings(&self) -> Result<Option<ProviderSettings>, ConfigError> {
+        let api_key = std::env::var("PICOPILOT_PROVIDER_API_KEY")
+            .ok()
+            .filter(|api_key| !api_key.trim().is_empty());
+        if self.provider_url.is_none() {
+            if self.provider_name.is_some() {
+                return Err(ConfigError::ProviderOptionRequiresUrl {
+                    option: "--provider-name",
+                });
+            }
+            if self.provider_wire_api.is_some() {
+                return Err(ConfigError::ProviderOptionRequiresUrl {
+                    option: "--provider-wire-api",
+                });
+            }
+            if api_key.is_some() {
+                return Err(ConfigError::ProviderOptionRequiresUrl {
+                    option: "PICOPILOT_PROVIDER_API_KEY",
+                });
+            }
+            return Ok(None);
+        }
+
+        let name = self
+            .provider_name
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROVIDER_NAME.to_string());
+        let wire_api = self
+            .provider_wire_api
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROVIDER_WIRE_API.to_string());
+        ProviderSettings::new(
+            name,
+            self.provider_url.as_deref().unwrap_or_default(),
+            wire_api,
+            api_key,
+        )
+        .map(Some)
+        .map_err(provider_config_error)
+    }
+
     pub fn session_config(&self) -> SessionConfig {
+        self.session_config_with_registry(None)
+    }
+
+    pub fn session_config_with_registry(
+        &self,
+        registry: Option<&ProviderRegistry>,
+    ) -> SessionConfig {
         let mut session = SessionConfig::default()
             .with_client_name("picopilot")
             .with_streaming(true)
@@ -156,6 +242,11 @@ impl AppConfig {
             .with_excluded_tools(V1_EXCLUDED_TOOLS.iter().copied())
             .with_system_message(system_message_config())
             .with_system_message_transform(system_message_transform());
+        if let Some(registry) = registry {
+            session = session
+                .with_providers(registry.providers().to_vec())
+                .with_models(registry.models().to_vec());
+        }
         session.model = self.model.clone();
         session.reasoning_effort = self.reasoning_effort.clone();
         session.context_tier = self.context_tier.clone();
@@ -163,7 +254,15 @@ impl AppConfig {
     }
 
     pub fn session_config_in(&self, working_directory: impl Into<PathBuf>) -> SessionConfig {
-        let mut session = self.session_config();
+        self.session_config_in_with_registry(working_directory, None)
+    }
+
+    pub fn session_config_in_with_registry(
+        &self,
+        working_directory: impl Into<PathBuf>,
+        registry: Option<&ProviderRegistry>,
+    ) -> SessionConfig {
+        let mut session = self.session_config_with_registry(registry);
         session.working_directory = Some(working_directory.into());
         session
     }
@@ -193,6 +292,60 @@ impl AppConfig {
             });
         };
 
+        self.validate_model_options(model)
+    }
+
+    pub fn validate_against_registry(
+        &self,
+        hosted_models: &[Model],
+        registry: &ProviderRegistry,
+    ) -> Result<(), ConfigError> {
+        let Some(model_id) = self.model.as_deref() else {
+            if self.reasoning_effort.is_some() {
+                return Err(ConfigError::OptionRequiresModel {
+                    option: "reasoning-effort",
+                });
+            }
+            if self.context_tier.is_some() {
+                return Err(ConfigError::OptionRequiresModel {
+                    option: "context-tier",
+                });
+            }
+            return Ok(());
+        };
+
+        if let Some(model) = hosted_models
+            .iter()
+            .find(|candidate| candidate.id == model_id)
+        {
+            return self.validate_model_options(model);
+        }
+
+        if registry
+            .qualified_model_ids()
+            .iter()
+            .any(|candidate| candidate == model_id)
+        {
+            let local_model = Model {
+                id: model_id.to_string(),
+                name: model_id.to_string(),
+                ..Model::default()
+            };
+            return self.validate_model_options(&local_model);
+        }
+
+        let mut available = hosted_models
+            .iter()
+            .map(|candidate| candidate.id.clone())
+            .collect::<Vec<_>>();
+        available.extend(registry.qualified_model_ids());
+        Err(ConfigError::ModelNotFound {
+            model: model_id.to_string(),
+            available,
+        })
+    }
+
+    fn validate_model_options(&self, model: &Model) -> Result<(), ConfigError> {
         if let Some(effort) = self.reasoning_effort.as_deref() {
             let supported = model
                 .supported_reasoning_efforts
@@ -222,6 +375,12 @@ impl AppConfig {
     }
 }
 
+fn provider_config_error(error: ProviderError) -> ConfigError {
+    ConfigError::InvalidProviderConfiguration {
+        message: error.to_string(),
+    }
+}
+
 pub(crate) fn supported_context_tiers(model: &Model) -> Vec<String> {
     let mut supported = model.supported_context_tiers.clone().unwrap_or_default();
     if let Some(token_prices) = model
@@ -248,6 +407,8 @@ mod tests {
     use clap::Parser;
     use github_copilot_sdk::transforms::{SystemMessageTransform, TransformContext};
     use github_copilot_sdk::types::{Model, ModelCapabilities, SessionId};
+
+    use crate::provider::{ProviderRegistry, ProviderSettings};
 
     use super::{system_message_config, AppConfig, PicopilotSystemMessageTransform, CONCISE_TONE};
 
@@ -446,6 +607,84 @@ mod tests {
         assert_eq!(
             session_config.working_directory.as_deref(),
             Some(working_directory)
+        );
+    }
+
+    #[test]
+    fn parses_provider_options_without_exposing_an_api_key_flag() {
+        let config = AppConfig::try_parse_from([
+            "picopilot",
+            "--provider-url",
+            "http://localhost:11434/v1/",
+            "--provider-name",
+            "ollama",
+            "--provider-wire-api",
+            "responses",
+        ])
+        .expect("valid provider options should parse");
+
+        let settings = config
+            .provider_settings()
+            .expect("provider settings should be valid")
+            .expect("provider URL should enable provider settings");
+        assert_eq!(settings.name, "ollama");
+        assert_eq!(settings.base_url, "http://localhost:11434/v1");
+        assert_eq!(settings.wire_api, "responses");
+    }
+
+    #[test]
+    fn rejects_provider_options_without_a_provider_url() {
+        let config = AppConfig::try_parse_from(["picopilot", "--provider-name", "ollama"])
+            .expect("provider name should parse");
+
+        assert_eq!(
+            config.provider_settings().unwrap_err().to_string(),
+            "--provider-name requires --provider-url"
+        );
+    }
+
+    #[test]
+    fn applies_a_registry_to_session_creation_without_changing_hosted_defaults() {
+        let config =
+            AppConfig::try_parse_from(["picopilot"]).expect("default options should parse");
+        let settings = ProviderSettings::default_for("http://localhost:11434/v1").unwrap();
+        let registry = ProviderRegistry::from_model_ids(&settings, ["qwen:7b"]).unwrap();
+
+        let session = config.session_config_with_registry(Some(&registry));
+
+        assert_eq!(session.providers.as_ref().map(Vec::len), Some(1));
+        assert_eq!(session.models.as_ref().map(Vec::len), Some(1));
+        assert_eq!(session.models.as_ref().unwrap()[0].id, "qwen:7b");
+        assert!(session.provider.is_none());
+    }
+
+    #[test]
+    fn validates_qualified_local_models_without_inventing_capabilities() {
+        let config = AppConfig::try_parse_from([
+            "picopilot",
+            "--model",
+            "local/qwen:7b",
+            "--context-tier",
+            "long_context",
+        ])
+        .expect("valid local model options should parse");
+        let settings = ProviderSettings::default_for("http://localhost:11434/v1").unwrap();
+        let registry = ProviderRegistry::from_model_ids(&settings, ["qwen:7b"]).unwrap();
+
+        let error = config
+            .validate_against_registry(
+                &[Model {
+                    id: "gpt-5".to_string(),
+                    name: "GPT-5".to_string(),
+                    ..Model::default()
+                }],
+                &registry,
+            )
+            .expect_err("local models must not accept unknown context tiers");
+
+        assert_eq!(
+            error.to_string(),
+            "context tier 'long_context' is not supported by model 'local/qwen:7b'; supported values: none"
         );
     }
 }

@@ -2,6 +2,7 @@ use crate::events::{
     context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
     ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
@@ -164,6 +165,7 @@ pub struct App {
     modal: Option<ModalKind>,
     sessions: Vec<SessionMetadata>,
     models: Vec<Model>,
+    local_model_ids: HashSet<String>,
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
     picker_context_tier: Option<String>,
@@ -269,6 +271,13 @@ impl App {
         self.modal = Some(ModalKind::Models);
     }
 
+    pub fn set_local_model_ids<I>(&mut self, model_ids: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.local_model_ids = model_ids.into_iter().collect();
+    }
+
     pub fn set_usage(
         &mut self,
         metrics: UsageMetricsSnapshot,
@@ -352,6 +361,10 @@ impl App {
     fn reset_picker_options(&mut self) {
         self.picker_reasoning_effort = None;
         self.picker_context_tier = None;
+    }
+
+    fn is_local_model(&self, model_id: &str) -> bool {
+        self.local_model_ids.contains(model_id)
     }
 
     fn cycle_picker_option(&mut self, reasoning: bool) {
@@ -933,7 +946,13 @@ async fn run_loop(
         model.as_deref(),
         runtime.active_model_options.reasoning_effort.as_deref(),
     );
+    let local_model_ids = runtime
+        .provider_registry
+        .as_ref()
+        .map(|registry| registry.qualified_model_ids())
+        .unwrap_or_default();
     let mut app = App::new(model);
+    app.set_local_model_ids(local_model_ids);
     app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
@@ -1539,7 +1558,7 @@ fn draw_model_picker(frame: &mut Frame, app: &App, area: Rect) {
     let items: Vec<ListItem<'static>> = app
         .models
         .iter()
-        .map(|model| ListItem::new(model_picker_row(model)))
+        .map(|model| ListItem::new(model_picker_row_for(model, app.is_local_model(&model.id))))
         .collect();
     let list = List::new(items).highlight_symbol("› ").highlight_style(
         Style::default()
@@ -1568,11 +1587,11 @@ fn draw_model_picker(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn model_picker_row(model: &Model) -> String {
+fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
         "{:<28}  {:<9}  {} tokens",
         model.name,
-        model_cost_label(model),
+        model_cost_label_for(model, is_local),
         model_context_label(model)
     )
 }
@@ -1581,6 +1600,7 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
     let Some(model) = app.models.get(app.selected_item) else {
         return vec![Line::from("No models available.")];
     };
+    let is_local = app.is_local_model(&model.id);
     let reasoning = app
         .picker_reasoning_effort
         .as_deref()
@@ -1590,19 +1610,19 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
         .as_ref()
         .filter(|values| !values.is_empty())
         .map(|values| values.join(" · "))
-        .unwrap_or_else(|| "fixed".to_string());
+        .unwrap_or_else(|| "unavailable".to_string());
     let context = app
         .picker_context_tier
         .as_deref()
         .unwrap_or("model default");
     let context_values = crate::config::supported_context_tiers(model);
     let context_values = if context_values.is_empty() {
-        "fixed".to_string()
+        "unavailable".to_string()
     } else {
         context_values.join(" · ")
     };
 
-    vec![
+    let mut lines = vec![
         Line::from(Span::styled(
             format!("{}  ({})", model.name, model.id),
             Style::default().add_modifier(Modifier::BOLD),
@@ -1613,7 +1633,11 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(format!(
             "Context:   {context}   Available: {context_values}"
         )),
-    ]
+    ];
+    if is_local {
+        lines.push(Line::from("Billing:   local inference (provider-tracked)"));
+    }
+    lines
 }
 
 fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
@@ -1623,7 +1647,11 @@ fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
     }
 }
 
-fn model_cost_label(model: &Model) -> String {
+fn model_cost_label_for(model: &Model, is_local: bool) -> String {
+    if is_local {
+        return "local".to_string();
+    }
+
     let category = serde_json::to_value(model).ok().and_then(|value| {
         value
             .get("modelPickerPriceCategory")
@@ -2211,7 +2239,7 @@ mod tests {
 
     use super::{
         displayed_reasoning_effort, draw, draw_model_picker, handle_key, modal_area,
-        model_context_label, model_cost_label, model_picker_detail_lines, model_picker_row,
+        model_context_label, model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
         send_with_fleet_fallback, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
         ModelSelection, SendPath, UiAction,
     };
@@ -2686,11 +2714,46 @@ mod tests {
         }))
         .expect("model metadata should deserialize");
 
-        assert_eq!(model_cost_label(&model), "high");
+        assert_eq!(model_cost_label_for(&model, false), "high");
         assert_eq!(model_context_label(&model), "200,000");
         assert_eq!(
-            model_picker_row(&model),
+            model_picker_row_for(&model, false),
             "GPT-5                         high       200,000 tokens"
+        );
+    }
+
+    #[test]
+    fn local_model_rows_show_provider_tracked_cost_and_unknown_context() {
+        let model = Model {
+            id: "local/qwen:7b".to_string(),
+            name: "local/qwen:7b".to_string(),
+            ..Model::default()
+        };
+        let mut app = App::new(Some(model.id.clone()));
+        app.set_local_model_ids(vec![model.id.clone()]);
+        app.set_models(vec![model.clone()]);
+
+        assert_eq!(model_cost_label_for(&model, true), "local");
+        assert_eq!(model_context_label(&model), "unknown");
+        assert!(model_picker_row_for(&model, true).contains("local"));
+        let details: Vec<String> = model_picker_detail_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(details.iter().any(|line| line.contains("local inference")));
+        assert!(details
+            .iter()
+            .any(|line| line.contains("Context:   model default   Available: unavailable")));
+
+        handle_key(&mut app, key(KeyCode::Char('r'), KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Char('c'), KeyEventKind::Press));
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::SwitchModel(ModelSelection {
+                model: "local/qwen:7b".to_string(),
+                reasoning_effort: None,
+                context_tier: None,
+            })
         );
     }
 
