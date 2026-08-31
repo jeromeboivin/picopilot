@@ -26,7 +26,9 @@ use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
-use crate::runtime::AppRuntime;
+use crate::runtime::{
+    recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSelection {
@@ -99,6 +101,7 @@ pub enum ChatEntry {
         tool_name: String,
         output: String,
         success: Option<bool>,
+        unknown: bool,
         agent_id: Option<String>,
     },
     Subagent {
@@ -147,6 +150,7 @@ pub struct App {
     fleet_active: bool,
     todos: Option<TodoSnapshot>,
     todo_refresh_requested: bool,
+    reconnecting: bool,
     should_quit: bool,
 }
 
@@ -260,6 +264,23 @@ impl App {
         std::mem::take(&mut self.todo_refresh_requested)
     }
 
+    pub fn set_reconnecting(&mut self, reconnecting: bool) {
+        self.reconnecting = reconnecting;
+    }
+
+    pub fn mark_in_flight_tools_unknown(&mut self) {
+        for entry in &mut self.entries {
+            if let ChatEntry::Tool {
+                success, unknown, ..
+            } = entry
+            {
+                if success.is_none() {
+                    *unknown = true;
+                }
+            }
+        }
+    }
+
     fn close_modal(&mut self) {
         self.modal = None;
         self.selected_item = 0;
@@ -358,6 +379,12 @@ impl App {
         self.pending_approvals.pop_front()
     }
 
+    fn reject_pending_approvals(&mut self) {
+        while let Some(request) = self.pending_approvals.pop_front() {
+            let _ = request.respond_to.send(ApprovalDecision::Deny);
+        }
+    }
+
     pub fn push_input(&mut self, character: char) {
         self.input.push(character);
     }
@@ -414,6 +441,7 @@ impl App {
                 tool_name,
                 output: String::new(),
                 success: None,
+                unknown: false,
                 agent_id,
             }),
             EventUpdate::ToolOutput {
@@ -438,6 +466,7 @@ impl App {
                 if let Some(ChatEntry::Tool {
                     output,
                     success: state,
+                    unknown,
                     ..
                 }) = self
                     .entries
@@ -445,6 +474,7 @@ impl App {
                     .find(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
                 {
                     *state = Some(success);
+                    *unknown = false;
                     if let Some(message) = message {
                         output.push_str(&message);
                     }
@@ -606,6 +636,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
 
+    if app.reconnecting {
+        return UiAction::None;
+    }
+
     if app.pending_approval().is_some() {
         return match key.code {
             KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
@@ -747,12 +781,7 @@ async fn run_loop(
                         url: None,
                     }),
                     RecvErrorKind::Closed => {
-                        app.apply(crate::events::EventUpdate::Banner {
-                            severity: crate::events::BannerSeverity::BlockingError,
-                            message: "Copilot event stream closed".to_string(),
-                            url: None,
-                        });
-                        app.quit();
+                        recover_connection(&mut app, &mut runtime, &mut events).await?;
                     }
                     _ => app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::Warning,
@@ -793,18 +822,27 @@ async fn process_terminal_events(
                     let _ = request.respond_to.send(decision);
                 }
             }
-            UiAction::LoadSessions => {
-                let sessions = runtime.client.list_sessions(None).await.map_err(|error| {
-                    io::Error::other(format!("could not list sessions: {error}"))
-                })?;
-                app.set_sessions(sessions);
-            }
+            UiAction::LoadSessions => match runtime.client.list_sessions(None).await {
+                Ok(sessions) => app.set_sessions(sessions),
+                Err(error) if error.is_transport_failure() => {
+                    recover_connection(app, runtime, events).await?;
+                }
+                Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                    severity: crate::events::BannerSeverity::RecoverableError,
+                    message: format!("could not list sessions: {error}"),
+                    url: None,
+                }),
+            },
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
             }
             UiAction::LoadUsage => {
                 let metrics = match runtime.session.rpc().usage().get_metrics().await {
                     Ok(metrics) => metrics,
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
+                        continue;
+                    }
                     Err(error) => {
                         app.apply(crate::events::EventUpdate::Banner {
                             severity: crate::events::BannerSeverity::RecoverableError,
@@ -829,11 +867,15 @@ async fn process_terminal_events(
             }
             UiAction::Resume(session_id) => {
                 if let Err(error) = runtime.resume(session_id).await {
-                    app.apply(crate::events::EventUpdate::Banner {
-                        severity: crate::events::BannerSeverity::RecoverableError,
-                        message: error.to_string(),
-                        url: None,
-                    });
+                    if error.is_transport_failure() {
+                        recover_connection(app, runtime, events).await?;
+                    } else {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::RecoverableError,
+                            message: error.to_string(),
+                            url: None,
+                        });
+                    }
                 } else {
                     *events = runtime.session.subscribe();
                     app.apply(crate::events::EventUpdate::Banner {
@@ -857,11 +899,15 @@ async fn process_terminal_events(
                     }
                 };
                 if let Err(error) = runtime.session.set_model(&model, options).await {
-                    app.apply(crate::events::EventUpdate::Banner {
-                        severity: crate::events::BannerSeverity::RecoverableError,
-                        message: format!("could not switch model: {error}"),
-                        url: None,
-                    });
+                    if error.is_transport_failure() {
+                        recover_connection(app, runtime, events).await?;
+                    } else {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::RecoverableError,
+                            message: format!("could not switch model: {error}"),
+                            url: None,
+                        });
+                    }
                 } else {
                     runtime.set_active_model_options(
                         model.clone(),
@@ -883,18 +929,78 @@ async fn process_terminal_events(
                 {
                     Ok(SendPath::Fleet) => app.set_fleet_active(true),
                     Ok(SendPath::Single) => app.set_fleet_active(false),
-                    Err(error) => {
-                        app.apply(crate::events::EventUpdate::Banner {
-                            severity: crate::events::BannerSeverity::BlockingError,
-                            message: format!("message could not be sent: {error}"),
-                            url: None,
-                        });
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
                     }
+                    Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::BlockingError,
+                        message: format!("message could not be sent: {error}"),
+                        url: None,
+                    }),
                 }
             }
         }
     }
     Ok(())
+}
+
+async fn recover_connection(
+    app: &mut App,
+    runtime: &mut AppRuntime,
+    events: &mut EventSubscription,
+) -> io::Result<()> {
+    let session_id = runtime.session.id().clone();
+    app.mark_in_flight_tools_unknown();
+    app.reject_pending_approvals();
+    app.set_reconnecting(true);
+
+    for attempt in 1..=MAX_RECOVERY_ATTEMPTS {
+        app.apply(crate::events::EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::Warning,
+            message: format!(
+                "connection lost; reconnecting session '{session_id}' (attempt {attempt}/{MAX_RECOVERY_ATTEMPTS})"
+            ),
+            url: None,
+        });
+
+        match runtime.recover_transport().await {
+            Ok(()) => {
+                *events = runtime.session.subscribe();
+                app.set_reconnecting(false);
+                app.apply(crate::events::EventUpdate::Banner {
+                    severity: crate::events::BannerSeverity::Warning,
+                    message: "connection restored; in-flight tool outcomes remain unknown"
+                        .to_string(),
+                    url: None,
+                });
+                return Ok(());
+            }
+            Err(error) if is_fatal_recovery_error(&error) || attempt == MAX_RECOVERY_ATTEMPTS => {
+                app.set_reconnecting(false);
+                app.apply(crate::events::EventUpdate::Banner {
+                    severity: crate::events::BannerSeverity::BlockingError,
+                    message: format!(
+                        "could not reconnect session '{session_id}' after {attempt} attempt(s): {error}"
+                    ),
+                    url: None,
+                });
+                app.quit();
+                return Ok(());
+            }
+            Err(_) => tokio::time::sleep(recovery_backoff(attempt)).await,
+        }
+    }
+
+    Ok(())
+}
+
+fn is_fatal_recovery_error(error: &RecoveryError) -> bool {
+    matches!(
+        error,
+        RecoveryError::Resume(
+            ResumeError::MissingSession { .. } | ResumeError::IdentityMismatch { .. }
+        )
+    )
 }
 
 async fn load_todos(app: &mut App, runtime: &AppRuntime) -> io::Result<()> {
@@ -950,6 +1056,18 @@ fn status_bar(app: &App) -> Paragraph<'static> {
 }
 
 fn input_box(app: &App) -> Paragraph<'static> {
+    if app.reconnecting {
+        return Paragraph::new("Connection lost; reconnecting. Input is paused.")
+            .style(Style::default().fg(Color::Rgb(242, 204, 96)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(242, 177, 94)))
+                    .title("reconnecting"),
+            )
+            .wrap(Wrap { trim: false });
+    }
+
     if let Some(request) = app.pending_approval() {
         let prompt = format!(
             "{} ({}): {} | y allow once, n deny, a trust for session",
@@ -1268,13 +1386,18 @@ fn entry_lines(entry: &ChatEntry) -> Vec<Line<'static>> {
             tool_name,
             output,
             success,
+            unknown,
             agent_id,
             ..
         } => {
-            let state = match success {
-                None => "running",
-                Some(true) => "done",
-                Some(false) => "failed",
+            let state = if *unknown {
+                "unknown"
+            } else {
+                match success {
+                    None => "running",
+                    Some(true) => "done",
+                    Some(false) => "failed",
+                }
             };
             let label = format!(
                 "tool {} [{}]{}",
@@ -1702,6 +1825,48 @@ mod tests {
         .expect("single-agent fallback should handle a Fleet error");
 
         assert_eq!(path, SendPath::Single);
+    }
+
+    #[test]
+    fn reconnecting_hijacks_input_and_marks_in_flight_tools_unknown() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "edit".to_string(),
+            agent_id: None,
+        });
+        app.set_reconnecting(true);
+
+        app.push_input('x');
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('y'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.input(), "x");
+        app.mark_in_flight_tools_unknown();
+        assert!(matches!(
+            app.entries().first(),
+            Some(ChatEntry::Tool {
+                unknown: true,
+                success: None,
+                ..
+            })
+        ));
+
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "tool-1".to_string(),
+            success: true,
+            message: None,
+            agent_id: None,
+        });
+        assert!(matches!(
+            app.entries().first(),
+            Some(ChatEntry::Tool {
+                unknown: false,
+                success: Some(true),
+                ..
+            })
+        ));
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
