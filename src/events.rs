@@ -1,4 +1,6 @@
-use github_copilot_sdk::rpc::{MetadataContextAttributionResult, UsageGetMetricsResult};
+use github_copilot_sdk::rpc::{
+    MetadataContextAttributionResult, PlanReadSqlTodosWithDependenciesResult, UsageGetMetricsResult,
+};
 use github_copilot_sdk::session_events::{
     AssistantMessageData, AssistantMessageDeltaData, AssistantReasoningData,
     AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionTodosChangedData,
@@ -49,6 +51,26 @@ pub struct ContextAttributionSnapshot {
     pub compactions: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoRowSnapshot {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoDependencySnapshot {
+    pub todo_id: String,
+    pub depends_on: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoSnapshot {
+    pub rows: Vec<TodoRowSnapshot>,
+    pub dependencies: Vec<TodoDependencySnapshot>,
+}
+
 pub fn usage_metrics_snapshot(metrics: &UsageGetMetricsResult) -> UsageMetricsSnapshot {
     UsageMetricsSnapshot {
         total_nano_aiu: metrics.total_nano_aiu,
@@ -93,6 +115,32 @@ pub fn context_attribution_snapshot(
         categories,
         compactions: context.compactions.count,
     })
+}
+
+pub fn todo_snapshot(result: &PlanReadSqlTodosWithDependenciesResult) -> TodoSnapshot {
+    TodoSnapshot {
+        rows: result
+            .rows
+            .iter()
+            .map(|row| TodoRowSnapshot {
+                id: row.id.clone().unwrap_or_else(|| "<unknown>".to_string()),
+                title: row
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "(untitled)".to_string()),
+                description: row.description.clone().unwrap_or_default(),
+                status: row.status.clone().unwrap_or_else(|| "unknown".to_string()),
+            })
+            .collect(),
+        dependencies: result
+            .dependencies
+            .iter()
+            .map(|dependency| TodoDependencySnapshot {
+                todo_id: dependency.todo_id.clone(),
+                depends_on: dependency.depends_on.clone(),
+            })
+            .collect(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,12 +358,17 @@ mod tests {
     use github_copilot_sdk::rpc::{
         MetadataContextAttributionResult, MetadataContextAttributionResultContextAttribution,
         MetadataContextAttributionResultContextAttributionCategories,
-        MetadataContextAttributionResultContextAttributionCompactions, UsageGetMetricsResult,
+        MetadataContextAttributionResultContextAttributionCompactions,
+        PlanReadSqlTodosWithDependenciesResult, PlanSqlTodoDependency, PlanSqlTodosRow,
+        UsageGetMetricsResult,
     };
     use github_copilot_sdk::types::SessionEvent;
     use serde_json::json;
 
-    use super::{context_attribution_snapshot, event_update, usage_metrics_snapshot, EventUpdate};
+    use super::{
+        context_attribution_snapshot, event_update, todo_snapshot, usage_metrics_snapshot,
+        EventUpdate,
+    };
 
     #[test]
     fn maps_assistant_message_delta_to_a_stream_update() {
@@ -412,5 +465,38 @@ mod tests {
         };
 
         assert_eq!(event_update(&event), Some(EventUpdate::TodosChanged));
+    }
+
+    #[test]
+    fn maps_todo_rows_and_dependencies_to_a_renderable_snapshot() {
+        let todos = PlanReadSqlTodosWithDependenciesResult {
+            dependencies: vec![PlanSqlTodoDependency {
+                depends_on: "todo-1".to_string(),
+                todo_id: "todo-2".to_string(),
+            }],
+            rows: vec![
+                PlanSqlTodosRow {
+                    description: Some("Inspect the transport path".to_string()),
+                    id: Some("todo-1".to_string()),
+                    status: Some("completed".to_string()),
+                    title: Some("Read the uploader".to_string()),
+                    ..Default::default()
+                },
+                PlanSqlTodosRow {
+                    description: Some("Add bounded retries".to_string()),
+                    id: Some("todo-2".to_string()),
+                    status: Some("in_progress".to_string()),
+                    title: Some("Patch the uploader".to_string()),
+                    ..Default::default()
+                },
+            ],
+        };
+
+        let snapshot = todo_snapshot(&todos);
+
+        assert_eq!(snapshot.rows[1].title, "Patch the uploader");
+        assert_eq!(snapshot.rows[1].status, "in_progress");
+        assert_eq!(snapshot.dependencies[0].depends_on, "todo-1");
+        assert_eq!(snapshot.dependencies[0].todo_id, "todo-2");
     }
 }
