@@ -358,6 +358,8 @@ impl AppRuntime {
             .with_excluded_tools(crate::config::V1_EXCLUDED_TOOLS.iter().copied())
             .with_working_directory(self.working_directory.clone())
             .with_permission_handler(self.permission_handler.clone())
+            .with_system_message(crate::config::system_message_config())
+            .with_system_message_transform(crate::config::system_message_transform())
             .with_suppress_resume_event(true)
     }
 }

@@ -1,14 +1,65 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use clap::Parser;
 use github_copilot_sdk::{
-    types::{Model, SessionConfig},
+    transforms::{SystemMessageTransform, TransformContext},
+    types::{Model, SectionOverride, SessionConfig, SystemMessageConfig},
     ClientOptions,
 };
 
 pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
 pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
+const CONCISE_TONE: &str = "Be concise, direct, and professional.";
+const CONCISE_RUNTIME_INSTRUCTIONS: &str =
+    "Work autonomously until the task is complete. Use available tools efficiently and obey host permission decisions.";
+
+struct PicopilotSystemMessageTransform;
+
+#[async_trait]
+impl SystemMessageTransform for PicopilotSystemMessageTransform {
+    fn section_ids(&self) -> Vec<String> {
+        vec!["tone".to_string(), "runtime_instructions".to_string()]
+    }
+
+    async fn transform_section(
+        &self,
+        section_id: &str,
+        _content: &str,
+        _context: TransformContext,
+    ) -> Option<String> {
+        match section_id {
+            "tone" => Some(CONCISE_TONE.to_string()),
+            "runtime_instructions" => Some(CONCISE_RUNTIME_INSTRUCTIONS.to_string()),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn system_message_config() -> SystemMessageConfig {
+    let sections = ["guidelines", "custom_instructions"]
+        .into_iter()
+        .map(|section_id| {
+            (
+                section_id.to_string(),
+                SectionOverride {
+                    action: Some("remove".to_string()),
+                    content: None,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    SystemMessageConfig::new()
+        .with_mode("customize")
+        .with_sections(sections)
+}
+
+pub(crate) fn system_message_transform() -> Arc<dyn SystemMessageTransform> {
+    Arc::new(PicopilotSystemMessageTransform)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -93,7 +144,9 @@ impl AppConfig {
             .with_client_name("picopilot")
             .with_streaming(true)
             .with_available_tools(V1_AVAILABLE_TOOLS.iter().copied())
-            .with_excluded_tools(V1_EXCLUDED_TOOLS.iter().copied());
+            .with_excluded_tools(V1_EXCLUDED_TOOLS.iter().copied())
+            .with_system_message(system_message_config())
+            .with_system_message_transform(system_message_transform());
         session.model = self.model.clone();
         session.reasoning_effort = self.reasoning_effort.clone();
         session.context_tier = self.context_tier.clone();
@@ -184,9 +237,13 @@ mod tests {
     use std::path::Path;
 
     use clap::Parser;
-    use github_copilot_sdk::types::{Model, ModelCapabilities};
+    use github_copilot_sdk::transforms::{SystemMessageTransform, TransformContext};
+    use github_copilot_sdk::types::{Model, ModelCapabilities, SessionId};
 
-    use super::AppConfig;
+    use super::{
+        system_message_config, AppConfig, PicopilotSystemMessageTransform, CONCISE_RUNTIME_INSTRUCTIONS,
+        CONCISE_TONE,
+    };
 
     #[test]
     fn parses_startup_model_overrides() {
@@ -316,6 +373,54 @@ mod tests {
                     .map(String::from)
                     .collect()
             )
+        );
+        assert_eq!(
+            session.system_message.as_ref().and_then(|config| config.mode.as_deref()),
+            Some("customize")
+        );
+        assert!(session.system_message_transform.is_some());
+    }
+
+    #[test]
+    fn removes_only_the_planned_system_message_sections() {
+        let config = system_message_config();
+        let sections = config.sections.expect("section overrides should be configured");
+
+        assert_eq!(sections.len(), 2);
+        assert_eq!(
+            sections["guidelines"].action.as_deref(),
+            Some("remove")
+        );
+        assert_eq!(
+            sections["custom_instructions"].action.as_deref(),
+            Some("remove")
+        );
+    }
+
+    #[tokio::test]
+    async fn rewrites_tone_and_runtime_instructions_concisely() {
+        let transform = PicopilotSystemMessageTransform;
+        let context = TransformContext {
+            session_id: SessionId::from("session-1"),
+        };
+
+        assert_eq!(
+            transform
+                .transform_section("tone", "long default tone", context.clone())
+                .await
+                .as_deref(),
+            Some(CONCISE_TONE)
+        );
+        assert_eq!(
+            transform
+                .transform_section(
+                    "runtime_instructions",
+                    "long default runtime instructions",
+                    context,
+                )
+                .await
+                .as_deref(),
+            Some(CONCISE_RUNTIME_INSTRUCTIONS)
         );
     }
 
