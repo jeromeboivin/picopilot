@@ -1157,6 +1157,7 @@ dependencies = [
  "crossterm",
  "github-copilot-sdk",
  "ratatui",
+ "serde_json",
  "tokio",
 ]
 
