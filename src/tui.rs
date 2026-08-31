@@ -1554,7 +1554,7 @@ fn format_count(value: i64) -> String {
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
-    use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
+    use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
 
     use super::{
         handle_key, send_with_fleet_fallback, todo_detail_lines, App, ChatEntry, ModelSelection,
@@ -1727,6 +1727,23 @@ mod tests {
                 context_tier: Some("default".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn model_selection_converts_supported_options_for_the_sdk() {
+        let selection = ModelSelection {
+            model: "gpt-5".to_string(),
+            reasoning_effort: Some("high".to_string()),
+            context_tier: Some("long_context".to_string()),
+        };
+
+        let options = selection
+            .sdk_options()
+            .expect("supported context tier should convert")
+            .expect("selected options should be forwarded");
+
+        assert_eq!(options.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(options.context_tier, Some(ContextTier::LongContext));
     }
 
     #[test]
