@@ -1,4 +1,12 @@
 use crate::events::{BannerSeverity, EventUpdate, UsageSnapshot};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiAction {
+    None,
+    Quit,
+    Send(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatEntry {
@@ -317,9 +325,40 @@ impl App {
     }
 }
 
+pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
+    if key.kind != KeyEventKind::Press {
+        return UiAction::None;
+    }
+
+    match key.code {
+        KeyCode::Esc => UiAction::Quit,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
+        KeyCode::Char('q') if app.input().is_empty() => UiAction::Quit,
+        KeyCode::Enter => {
+            let input = app.take_input();
+            if input.trim().is_empty() {
+                UiAction::None
+            } else {
+                UiAction::Send(input)
+            }
+        }
+        KeyCode::Backspace => {
+            app.pop_input();
+            UiAction::None
+        }
+        KeyCode::Char(character) => {
+            app.push_input(character);
+            UiAction::None
+        }
+        _ => UiAction::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{App, ChatEntry};
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+    use super::{handle_key, App, ChatEntry, UiAction};
     use crate::events::EventUpdate;
 
     #[test]
@@ -345,5 +384,41 @@ mod tests {
                 agent_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn submits_input_on_enter_and_ignores_key_release_events() {
+        let mut app = App::new(None);
+        app.push_input('h');
+        app.push_input('i');
+
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Press,
+                    state: crossterm::event::KeyEventState::NONE,
+                }
+            ),
+            UiAction::Send("hi".to_string())
+        );
+        assert!(app.input().is_empty());
+
+        app.push_input('x');
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    code: KeyCode::Enter,
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Release,
+                    state: crossterm::event::KeyEventState::NONE,
+                }
+            ),
+            UiAction::None
+        );
+        assert_eq!(app.input(), "x");
     }
 }
