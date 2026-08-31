@@ -12,8 +12,8 @@ sources:
   - src/lib.rs
   - session b8030d13 (implementation)
   - session 7028bf67 (audit + fixes, TUI simplification, install scripts)
-  - session 73ea30cc (local provider investigation)
-generated: "2026-08-31T19:03:00Z"
+  - session 73ea30cc (local provider implementation, prompt elimination, toolset)
+generated: "2026-08-31T21:34:00Z"
 ---
 
 # Architecture
@@ -32,6 +32,7 @@ generated: "2026-08-31T19:03:00Z"
 | Async        | `tokio` (macros, rt-multi-thread, sync) | 1                 |
 | Serialization| `serde` + `serde_json`                  | 1                 |
 | Markdown     | `pulldown-cmark`                        | 0.13              |
+| HTTP         | `reqwest` (json, rustls-tls)             | 0.12              |
 | Traits       | `async-trait`                           | 0.1               |
 
 ## Module layout
@@ -43,9 +44,11 @@ src/
   config.rs       — AppConfig (Clap), session/client builders, catalog validation
   events.rs       — SDK SessionEvent → typed EventUpdate adapter
   permissions.rs  — PermissionHandler: auto-approve, workspace confinement, approval queue
+  provider.rs     — Local provider discovery, HTTP model listing, registry construction
   runtime.rs      — AppRuntime: client lifecycle, session resume, recovery
+  toolset.rs      — Toolset domain: mask-backed tool profiles, provenance, serialization
   tui.rs          — App state, Ratatui renderer, keyboard handler, async event loop,
-                    Fleet fallback dispatch
+                    Fleet fallback dispatch, tool picker
 ```
 
 ## Key design invariants

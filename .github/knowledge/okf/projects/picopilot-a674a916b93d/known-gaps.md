@@ -10,7 +10,8 @@ sources:
   - session 7028bf67 (audit report)
   - src/tui.rs
   - src/runtime.rs
-generated: "2026-08-31T18:04:00Z"
+  - session 73ea30cc (prompt pollution elimination)
+generated: "2026-08-31T21:30:00Z"
 ---
 
 # Known implementation gaps
@@ -40,3 +41,10 @@ The transport recovery path (kill CLI → auto-restart → resume → verify
 identity) has unit tests for each component, but no end-to-end integration
 test that actually kills the CLI process mid-session. This is a known
 residual risk.
+
+## Live budget test requires external services
+
+The opt-in context-budget regression test
+(`PICOPILOT_CONTEXT_BUDGET_E2E=1 cargo test --test context_budget -- --ignored`)
+requires Copilot authentication and, optionally, a running local provider.
+It cannot run in CI without those external services.

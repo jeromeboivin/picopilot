@@ -9,7 +9,8 @@ status: verified
 sources:
   - session b8030d13 (explicit user instruction)
   - session 7028bf67 (applied consistently)
-generated: "2026-08-31T17:28:00Z"
+  - session 73ea30cc (96-test validation)
+generated: "2026-08-31T21:30:00Z"
 ---
 
 # Development workflow
@@ -41,8 +42,21 @@ cargo test --all-targets
 cargo build --locked
 ```
 
-All 49+ library tests must pass. A live smoke test (start TUI, send a message,
+All 96+ library tests must pass. A live smoke test (start TUI, send a message,
 quit via `q`) is the final executable verification.
+
+## Context budget regression test (opt-in)
+
+A live integration test (`tests/context_budget.rs`) asserts zero system-prompt
+tokens and enforces tool schema token ceilings. Requires Copilot authentication:
+
+```
+PICOPILOT_CONTEXT_BUDGET_E2E=1 cargo test --test context_budget -- --ignored --nocapture
+```
+
+With a configured local provider, the test also verifies a real shell tool
+call completes. Any nonzero system prompt, tool-budget regression, or lifecycle
+mismatch is release-blocking.
 
 ## Test organization
 

@@ -14,7 +14,8 @@ sources:
   - session 7028bf67 (audit fixes a17e9cb, 9bd3d1e, f21987c)
   - session 7028bf67 (Ctrl-key migration 46de582, picker simplification 5d1eafd, debug resume 849c061)
   - session 7028bf67 (Claude Code-like simplification 3a79fff, Markdown rendering, ❯/●/✻ glyphs)
-generated: "2026-08-31T19:03:00Z"
+  - session 73ea30cc (Ctrl+K tools picker, tools status indicator)
+generated: "2026-08-31T21:34:00Z"
 ---
 
 # TUI conventions
@@ -46,6 +47,7 @@ conflicted with normal text entry.
 | `Ctrl+C`  | Any           | Quit (restore terminal) |
 | `Ctrl+O`  | Normal        | Open session picker (full-screen modal) |
 | `Ctrl+P`  | Normal        | Open model picker (full-screen modal) |
+| `Ctrl+K`  | Normal        | Open tool picker (full-height checkbox modal) |
 | `Ctrl+U`  | Normal        | Open usage/cost detail modal |
 | `Ctrl+T`  | Fleet active  | Open todo modal |
 | `Ctrl+I`  | Any           | Toggle reasoning/tool telemetry visibility |
@@ -64,8 +66,13 @@ are silently ignored rather than passed to the input field.
 ## Shortcut bar
 
 A 2-line bar rendered below the input box shows discoverable key labels:
-`^O Sessions`, `^P Models`, `^U Usage`, `^T Todos`, `^I Internals`,
+`^O Sessions`, `^P Models`, `^K Tools`, `^U Usage`, `^T Todos`, `^I Internals`,
 `^X Exit`. Always visible; no toggle.
+
+## Status bar
+
+The top metadata bar shows: model name, mode, reasoning level, live cost in
+AIU, and `tools N/7` count reflecting the active toolset profile.
 
 ## Transcript display
 
@@ -129,3 +136,20 @@ The model picker uses a three-panel vertical layout:
 Reasoning effort and context tier are cycled via `r` / `c` inside the picker
 rather than inlined into the list rows; the detail pane gives immediate
 feedback on the selected configuration.
+
+### Tool picker
+
+The tool picker (`Ctrl+K`) is a full-height checkbox modal:
+
+| Key   | Action |
+|-------|--------|
+| Space | Toggle highlighted tool |
+| `s`   | Shell only |
+| `a`   | All tools |
+| Enter | Apply (triggers same-session reconnect) |
+| Esc   | Cancel |
+
+Applying a selection reconnects the same session with a new tool allowlist;
+it is available only while idle. Failed changes are rolled back. The picker
+can still be opened during an approval or reconnect, but applying a change
+waits until that work is finished.

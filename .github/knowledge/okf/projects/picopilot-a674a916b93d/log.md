@@ -1,5 +1,65 @@
 # Knowledge extraction log
 
+## 2026-08-31T21:34:00Z — Fourteenth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (VS Code, 3257 lines) — Re-reviewed msgs 5–14. Confirmed all
+  durable knowledge (prompt-pollution elimination, toolset management, context
+  budget testing) already captured in passes 9–13.
+- `aca7cee8` (9 events) — "hi" with local model. Transient.
+- `73b24588` (11 events) — READY probe. Transient.
+- `4bcffad6` (11 events) — READY probe. Transient.
+- `fc907ef4` (25 events) — Multiple READY probes. Transient.
+- `f00eaa95` (25 events) — Multiple READY probes. Transient.
+
+**Frontmatter audit:** All 12 concept files pass validation. index.md and
+log.md are exempt.
+
+**Changes:**
+- Fixed duplicate `Ctrl+K` entry in `tui-conventions.md` keyboard table.
+- Fixed duplicate sections in `sdk-api-surface.md`: merged two "System
+  message configuration" sections (type-level + field-level) into one;
+  merged two "Context attribution" sections (simple + detailed) into one;
+  moved "Session disconnect" next to context attribution; removed redundant
+  bottom duplicates.
+- All 96 library tests pass. All frontmatter validated.
+
+## 2026-08-31T21:30:30Z — Thirteenth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (VS Code, 3227 events, 1809 KB) — Re-reviewed new events since
+  eighth pass (2909 events). Content covers prompt-pollution elimination:
+  user explicitly rejected ~4,699 system tokens, drove switch from
+  `mode="customize"` to `mode="replace"` with empty content. Five parallel
+  SDK investigations verified SystemMessageConfig replace semantics, tool
+  costs (~657 tokens/tool), no mid-session tool update RPC, and context
+  attribution API. Implementation plan saved as prompt file. Implementation
+  in progress (uncommitted changes to config, runtime, tui, lib; new
+  toolset.rs and context_budget test). All durable knowledge already captured
+  in prior passes; this pass verified accuracy of existing concepts.
+- `aca7cee8` (9 events) — "hi" with local model `qwen3.5:4b`. Transient.
+- `73b24588` (11 events) — READY probe. Transient.
+- `4bcffad6` (11 events) — READY probe. Transient.
+- `fc907ef4` (25 events) — Multiple READY probes. Transient.
+
+**Frontmatter audit:** All 12 concept files pass validation (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Updated `system-message-trimming.md` — corrected verification section to
+  reference actual test path (`tests/context_budget.rs`) and env var
+  (`PICOPILOT_CONTEXT_BUDGET_E2E`).
+- Updated `local-provider-support.md` — fixed description that still said
+  "not yet implemented" (committed in `05a1132`).
+- Updated `tui-conventions.md` — added tool picker modal section with
+  keybindings and transactional reconnect semantics.
+- Updated `sdk-api-surface.md` — added SystemMessageConfig verified fields,
+  tool management constraints, context attribution details.
+- Updated `development-workflow.md` — added context budget regression test
+  section.
+- Updated `known-gaps.md` — corrected budget test env var and path.
+
 ## 2026-08-31T21:34:24Z — Twelfth consolidation pass
 
 **Reviewed transcripts:**
