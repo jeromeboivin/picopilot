@@ -153,6 +153,7 @@ pub struct App {
     todos: Option<TodoSnapshot>,
     todo_refresh_requested: bool,
     reconnecting: bool,
+    blocked: bool,
     should_quit: bool,
 }
 
@@ -535,11 +536,18 @@ impl App {
                 severity,
                 message,
                 url,
-            } => self.entries.push(ChatEntry::Banner {
-                severity,
-                message,
-                url,
-            }),
+            } => {
+                if severity == BannerSeverity::BlockingError {
+                    self.blocked = true;
+                    self.status.busy = false;
+                    self.reject_pending_approvals();
+                }
+                self.entries.push(ChatEntry::Banner {
+                    severity,
+                    message,
+                    url,
+                });
+            }
             EventUpdate::ModelChanged { model } => self.status.model = Some(model),
             EventUpdate::TodosChanged => {
                 if self.fleet_active && matches!(self.modal, Some(ModalKind::Todos)) {
@@ -650,6 +658,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if app.reconnecting {
         return UiAction::None;
+    }
+
+    if app.blocked {
+        return match key.code {
+            KeyCode::Esc => UiAction::Quit,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
+            KeyCode::Char('q') => UiAction::Quit,
+            _ => UiAction::None,
+        };
     }
 
     if app.pending_approval().is_some() {
@@ -1099,6 +1116,17 @@ fn status_bar(app: &App) -> Paragraph<'static> {
 }
 
 fn input_box(app: &App) -> Paragraph<'static> {
+    if app.blocked {
+        return Paragraph::new("Session ended. Press q or esc to close.")
+            .style(Style::default().fg(Color::Rgb(255, 117, 117)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(255, 117, 117)))
+                    .title("session ended"),
+            );
+    }
+
     if app.reconnecting {
         return Paragraph::new("Connection lost; reconnecting. Input is paused.")
             .style(Style::default().fg(Color::Rgb(242, 204, 96)))
@@ -1944,6 +1972,37 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn blocking_error_ends_input_but_leaves_the_final_message_visible() {
+        let mut app = App::new(None);
+        app.add_user_message("keep working".to_string());
+
+        app.apply(EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::BlockingError,
+            message: "quota exhausted".to_string(),
+            url: None,
+        });
+
+        assert!(!app.status().busy);
+        assert!(matches!(
+            app.entries().last(),
+            Some(ChatEntry::Banner {
+                severity: crate::events::BannerSeverity::BlockingError,
+                message,
+                ..
+            }) if message == "quota exhausted"
+        ));
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('x'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(app.input().is_empty());
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('q'), KeyEventKind::Press)),
+            UiAction::Quit
+        );
     }
 
     #[test]
