@@ -1,15 +1,24 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use github_copilot_sdk::{
     handler::PermissionHandler,
     types::{Model, ResumeSessionConfig, SessionId},
-    Client, Error as SdkError,
+    Client, ClientOptions, Error as SdkError,
 };
 
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
+
+pub const MAX_RECOVERY_ATTEMPTS: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionIdentity {
+    session_id: SessionId,
+    start_time: Option<String>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActiveModelOptions {
@@ -26,6 +35,7 @@ pub struct AppRuntime {
     pub models: Vec<Model>,
     pub working_directory: PathBuf,
     pub active_model_options: ActiveModelOptions,
+    session_start_time: Option<String>,
 }
 
 fn apply_active_model_options(config: &mut ResumeSessionConfig, options: &ActiveModelOptions) {
@@ -38,7 +48,10 @@ fn apply_active_model_options(config: &mut ResumeSessionConfig, options: &Active
 mod tests {
     use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
 
-    use super::{apply_active_model_options, ActiveModelOptions};
+    use super::{
+        apply_active_model_options, recovery_backoff, verify_session_identity, ActiveModelOptions,
+        SessionIdentity,
+    };
 
     #[test]
     fn resume_configuration_restores_active_model_options() {
@@ -55,14 +68,54 @@ mod tests {
         assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(config.context_tier.as_deref(), Some("long_context"));
     }
+
+    #[test]
+    fn resume_identity_requires_the_same_session_and_start_time() {
+        let expected = SessionIdentity {
+            session_id: SessionId::from("session-1"),
+            start_time: Some("2026-08-31T12:00:00Z".to_string()),
+        };
+        let actual = expected.clone();
+
+        verify_session_identity(&expected, &actual)
+            .expect("matching session identity should be accepted");
+        assert!(verify_session_identity(
+            &expected,
+            &SessionIdentity {
+                session_id: SessionId::from("session-2"),
+                ..actual.clone()
+            }
+        )
+        .is_err());
+        assert!(verify_session_identity(
+            &expected,
+            &SessionIdentity {
+                start_time: Some("2026-08-31T12:01:00Z".to_string()),
+                ..actual
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn recovery_backoff_grows_with_each_attempt() {
+        assert_eq!(recovery_backoff(1).as_millis(), 250);
+        assert_eq!(recovery_backoff(2).as_millis(), 500);
+        assert_eq!(recovery_backoff(3).as_millis(), 1_000);
+    }
 }
 
 #[derive(Debug)]
 pub enum ResumeError {
     Session(SdkError),
+    MissingSession {
+        session_id: SessionId,
+    },
     IdentityMismatch {
         expected: SessionId,
         actual: SessionId,
+        expected_start_time: Option<String>,
+        actual_start_time: Option<String>,
     },
 }
 
@@ -70,9 +123,17 @@ impl fmt::Display for ResumeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Session(error) => write!(formatter, "could not resume session: {error}"),
-            Self::IdentityMismatch { expected, actual } => write!(
+            Self::MissingSession { session_id } => {
+                write!(formatter, "session '{session_id}' could not be found")
+            }
+            Self::IdentityMismatch {
+                expected,
+                actual,
+                expected_start_time,
+                actual_start_time,
+            } => write!(
                 formatter,
-                "resume returned session '{actual}' instead of requested session '{expected}'"
+                "resume returned session '{actual}' instead of requested session '{expected}' (start time expected {expected_start_time:?}, actual {actual_start_time:?})"
             ),
         }
     }
@@ -82,9 +143,61 @@ impl std::error::Error for ResumeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Session(error) => Some(error),
-            Self::IdentityMismatch { .. } => None,
+            Self::MissingSession { .. } | Self::IdentityMismatch { .. } => None,
         }
     }
+}
+
+impl ResumeError {
+    pub fn is_transport_failure(&self) -> bool {
+        matches!(self, Self::Session(error) if error.is_transport_failure())
+    }
+}
+
+#[derive(Debug)]
+pub enum RecoveryError {
+    Client(SdkError),
+    Resume(ResumeError),
+}
+
+impl fmt::Display for RecoveryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Client(error) => write!(formatter, "could not restart Copilot: {error}"),
+            Self::Resume(error) => write!(formatter, "could not reconnect session: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for RecoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Client(error) => Some(error),
+            Self::Resume(error) => Some(error),
+        }
+    }
+}
+
+fn verify_session_identity(
+    expected: &SessionIdentity,
+    actual: &SessionIdentity,
+) -> Result<(), ResumeError> {
+    let start_time_mismatch =
+        expected.start_time.is_some() && expected.start_time != actual.start_time;
+    if expected.session_id != actual.session_id || start_time_mismatch {
+        return Err(ResumeError::IdentityMismatch {
+            expected: expected.session_id.clone(),
+            actual: actual.session_id.clone(),
+            expected_start_time: expected.start_time.clone(),
+            actual_start_time: actual.start_time.clone(),
+        });
+    }
+    Ok(())
+}
+
+pub fn recovery_backoff(attempt: usize) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(2);
+    Duration::from_millis(250 * (1_u64 << exponent))
 }
 
 impl AppRuntime {
@@ -102,27 +215,87 @@ impl AppRuntime {
     }
 
     pub async fn resume(&mut self, session_id: SessionId) -> Result<(), ResumeError> {
+        let expected_metadata = self
+            .client
+            .get_session_metadata(&session_id)
+            .await
+            .map_err(ResumeError::Session)?
+            .ok_or_else(|| ResumeError::MissingSession {
+                session_id: session_id.clone(),
+            })?;
+        let expected_start_time = Some(expected_metadata.start_time);
+
         self.session
             .disconnect()
             .await
             .map_err(ResumeError::Session)?;
 
-        let resumed = self
-            .client
-            .resume_session(self.resume_config(session_id.clone()))
-            .await
-            .map_err(ResumeError::Session)?;
-        if resumed.id() != &session_id {
-            let actual = resumed.id().clone();
-            let _ = resumed.disconnect().await;
-            return Err(ResumeError::IdentityMismatch {
-                expected: session_id,
-                actual,
-            });
-        }
+        let (resumed, actual_start_time) = self
+            .resume_on_client(
+                &self.client,
+                SessionIdentity {
+                    session_id,
+                    start_time: expected_start_time,
+                },
+            )
+            .await?;
 
         self.session = resumed;
+        self.session_start_time = actual_start_time;
         Ok(())
+    }
+
+    pub async fn recover_transport(&mut self) -> Result<(), RecoveryError> {
+        let expected = SessionIdentity {
+            session_id: self.session.id().clone(),
+            start_time: self.session_start_time.clone(),
+        };
+        self.session.stop_event_loop().await;
+        self.client.force_stop();
+
+        let replacement = Client::start(self.client_options())
+            .await
+            .map_err(RecoveryError::Client)?;
+        let (resumed, actual_start_time) = self
+            .resume_on_client(&replacement, expected)
+            .await
+            .map_err(RecoveryError::Resume)?;
+
+        let _old_client = std::mem::replace(&mut self.client, replacement);
+        self.session = resumed;
+        self.session_start_time = actual_start_time;
+        Ok(())
+    }
+
+    async fn resume_on_client(
+        &self,
+        client: &Client,
+        expected: SessionIdentity,
+    ) -> Result<(github_copilot_sdk::session::Session, Option<String>), ResumeError> {
+        let resumed = client
+            .resume_session(self.resume_config(expected.session_id.clone()))
+            .await
+            .map_err(ResumeError::Session)?;
+        let actual_start_time = match client.get_session_metadata(resumed.id()).await {
+            Ok(metadata) => metadata.map(|metadata| metadata.start_time),
+            Err(error) => {
+                let _ = resumed.disconnect().await;
+                return Err(ResumeError::Session(error));
+            }
+        };
+        let actual = SessionIdentity {
+            session_id: resumed.id().clone(),
+            start_time: actual_start_time.clone(),
+        };
+        if let Err(error) = verify_session_identity(&expected, &actual) {
+            let _ = resumed.disconnect().await;
+            return Err(error);
+        }
+        Ok((resumed, actual_start_time))
+    }
+
+    fn client_options(&self) -> ClientOptions {
+        ClientOptions::new().with_cwd(self.working_directory.clone())
     }
 
     fn resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
@@ -145,6 +318,7 @@ pub enum StartupError {
     Client(SdkError),
     Configuration(ConfigError),
     Session(SdkError),
+    SessionMetadataMissing { session_id: SessionId },
 }
 
 impl fmt::Display for StartupError {
@@ -161,6 +335,10 @@ impl fmt::Display for StartupError {
                 write!(formatter, "invalid startup configuration: {error}")
             }
             Self::Session(error) => write!(formatter, "could not create Copilot session: {error}"),
+            Self::SessionMetadataMissing { session_id } => write!(
+                formatter,
+                "could not determine the start time for Copilot session '{session_id}'"
+            ),
         }
     }
 }
@@ -171,6 +349,7 @@ impl std::error::Error for StartupError {
             Self::CurrentDirectory(error) => Some(error),
             Self::Client(error) | Self::Session(error) => Some(error),
             Self::Configuration(error) => Some(error),
+            Self::SessionMetadataMissing { .. } => None,
         }
     }
 }
@@ -195,6 +374,14 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         )
         .await
         .map_err(StartupError::Session)?;
+    let session_start_time = client
+        .get_session_metadata(session.id())
+        .await
+        .map_err(StartupError::Client)?
+        .map(|metadata| metadata.start_time)
+        .ok_or_else(|| StartupError::SessionMetadataMissing {
+            session_id: session.id().clone(),
+        })?;
 
     Ok(AppRuntime {
         client,
@@ -203,6 +390,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         session,
         models,
         working_directory,
+        session_start_time: Some(session_start_time),
         active_model_options: ActiveModelOptions {
             model: config.model.clone(),
             reasoning_effort: config.reasoning_effort.clone(),
