@@ -66,7 +66,7 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-#[derive(Debug, Parser, PartialEq, Eq)]
+#[derive(Debug, Clone, Parser, PartialEq, Eq)]
 #[command(
     name = "picopilot",
     version,

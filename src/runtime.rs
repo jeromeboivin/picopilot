@@ -35,6 +35,7 @@ pub struct AppRuntime {
     pub models: Vec<Model>,
     pub working_directory: PathBuf,
     pub active_model_options: ActiveModelOptions,
+    startup_config: AppConfig,
     session_start_time: Option<String>,
 }
 
@@ -295,7 +296,8 @@ impl AppRuntime {
     }
 
     fn client_options(&self) -> ClientOptions {
-        ClientOptions::new().with_cwd(self.working_directory.clone())
+        self.startup_config
+            .client_options_in(&self.working_directory)
     }
 
     fn resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
@@ -390,6 +392,7 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         session,
         models,
         working_directory,
+        startup_config: config.clone(),
         session_start_time: Some(session_start_time),
         active_model_options: ActiveModelOptions {
             model: config.model.clone(),
