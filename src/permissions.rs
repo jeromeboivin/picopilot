@@ -423,13 +423,20 @@ fn default_trust_directory() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use github_copilot_sdk::handler::PermissionResult;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use github_copilot_sdk::handler::{PermissionHandler, PermissionResult};
     use github_copilot_sdk::types::{
         PermissionRequestData, PermissionRequestKind, RequestId, SessionId,
     };
     use serde_json::json;
+    use tokio::sync::mpsc;
 
-    use super::permission_handler;
+    use super::{
+        permission_handler, ApprovalCategory, ApprovalDecision, PermissionGate, TrustStore,
+    };
 
     #[tokio::test]
     async fn auto_approves_read_requests_without_waiting_for_the_ui() {
@@ -450,5 +457,214 @@ mod tests {
 
         assert!(matches!(result, PermissionResult::Decision { .. }));
         assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn auto_approves_writes_inside_the_workspace() {
+        let workspace = std::env::current_dir().unwrap();
+        let (handler, mut requests) = permission_handler(workspace.clone());
+        let request = PermissionRequestData {
+            kind: Some(PermissionRequestKind::Write),
+            extra: json!({
+                "path": workspace.join("src").join("lib.rs")
+            }),
+            ..Default::default()
+        };
+
+        let result = handler
+            .handle(
+                SessionId::from("session-write"),
+                RequestId::new("request-write"),
+                request,
+            )
+            .await;
+
+        assert!(matches!(result, PermissionResult::Decision { .. }));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_writes_outside_the_workspace_and_through_traversal() {
+        let workspace = std::env::current_dir().unwrap();
+        let (handler, mut requests) = permission_handler(workspace);
+        for (index, path) in ["../outside.txt", "C:\\outside.txt"]
+            .into_iter()
+            .enumerate()
+        {
+            let result = handler
+                .handle(
+                    SessionId::from("session-write"),
+                    RequestId::new(format!("request-outside-{index}")),
+                    PermissionRequestData {
+                        kind: Some(PermissionRequestKind::Write),
+                        extra: json!({ "path": path }),
+                        ..Default::default()
+                    },
+                )
+                .await;
+
+            assert!(matches!(result, PermissionResult::Decision { .. }));
+        }
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_permission_categories() {
+        let (handler, mut requests) = permission_handler(std::env::current_dir().unwrap());
+        let result = handler
+            .handle(
+                SessionId::from("session-url"),
+                RequestId::new("request-url"),
+                PermissionRequestData {
+                    kind: Some(PermissionRequestKind::Url),
+                    extra: json!({ "url": "https://example.com" }),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(matches!(result, PermissionResult::Decision { .. }));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn blocks_shell_and_task_requests_until_the_ui_decides() {
+        let (handler, mut requests, trust_directory) = test_gate();
+
+        let shell = confirm_request(
+            handler.clone(),
+            SessionId::from("session-confirm"),
+            PermissionRequestData {
+                kind: Some(PermissionRequestKind::Shell),
+                extra: json!({ "command": "cargo test" }),
+                ..Default::default()
+            },
+            &mut requests,
+            ApprovalDecision::ApproveOnce,
+        )
+        .await;
+        assert!(matches!(shell, PermissionResult::Decision { .. }));
+
+        let task = confirm_request(
+            handler,
+            SessionId::from("session-confirm"),
+            PermissionRequestData {
+                kind: Some(PermissionRequestKind::Unknown),
+                extra: json!({ "toolName": "task", "prompt": "inspect the code" }),
+                ..Default::default()
+            },
+            &mut requests,
+            ApprovalDecision::Deny,
+        )
+        .await;
+        assert!(matches!(task, PermissionResult::Decision { .. }));
+        assert!(!trust_directory.exists());
+        cleanup_trust_directory(trust_directory);
+    }
+
+    #[tokio::test]
+    async fn persists_task_trust_without_trusting_shell() {
+        let (handler, mut requests, trust_directory) = test_gate();
+        let task = confirm_request(
+            handler,
+            SessionId::from("session-trust"),
+            PermissionRequestData {
+                kind: Some(PermissionRequestKind::Unknown),
+                extra: json!({ "toolName": "fleet.start", "prompt": "parallel work" }),
+                ..Default::default()
+            },
+            &mut requests,
+            ApprovalDecision::Trust,
+        )
+        .await;
+        assert!(matches!(task, PermissionResult::Decision { .. }));
+
+        let (handler, mut requests) = test_gate_with_directory(trust_directory.clone());
+        let trusted_task = handler
+            .handle(
+                SessionId::from("session-trust"),
+                RequestId::new("request-trusted-task"),
+                PermissionRequestData {
+                    kind: Some(PermissionRequestKind::Unknown),
+                    extra: json!({ "toolName": "task", "prompt": "another task" }),
+                    ..Default::default()
+                },
+            )
+            .await;
+        assert!(matches!(trusted_task, PermissionResult::Decision { .. }));
+        assert!(requests.try_recv().is_err());
+
+        let shell = confirm_request(
+            handler,
+            SessionId::from("session-trust"),
+            PermissionRequestData {
+                kind: Some(PermissionRequestKind::Shell),
+                extra: json!({ "command": "cargo test" }),
+                ..Default::default()
+            },
+            &mut requests,
+            ApprovalDecision::Deny,
+        )
+        .await;
+        assert!(matches!(shell, PermissionResult::Decision { .. }));
+        cleanup_trust_directory(trust_directory);
+    }
+
+    async fn confirm_request(
+        handler: Arc<PermissionGate>,
+        session_id: SessionId,
+        data: PermissionRequestData,
+        requests: &mut mpsc::UnboundedReceiver<super::ApprovalRequest>,
+        decision: ApprovalDecision,
+    ) -> PermissionResult {
+        let task = tokio::spawn(async move {
+            handler
+                .handle(session_id, RequestId::new("request-confirm"), data)
+                .await
+        });
+        let request = requests
+            .recv()
+            .await
+            .expect("confirmation should reach the UI queue");
+        assert!(matches!(
+            request.category,
+            ApprovalCategory::Shell | ApprovalCategory::Task
+        ));
+        request
+            .respond_to
+            .send(decision)
+            .expect("permission handler should still be waiting");
+        task.await.expect("permission task should finish")
+    }
+
+    fn test_gate() -> (
+        Arc<PermissionGate>,
+        mpsc::UnboundedReceiver<super::ApprovalRequest>,
+        PathBuf,
+    ) {
+        let directory =
+            std::env::temp_dir().join(format!("picopilot-permissions-{}", std::process::id()));
+        cleanup_trust_directory(directory.clone());
+        let (handler, requests) = test_gate_with_directory(directory.clone());
+        (handler, requests, directory)
+    }
+
+    fn test_gate_with_directory(
+        directory: PathBuf,
+    ) -> (
+        Arc<PermissionGate>,
+        mpsc::UnboundedReceiver<super::ApprovalRequest>,
+    ) {
+        let (requests, receiver) = mpsc::unbounded_channel();
+        let gate = PermissionGate {
+            workspace_root: std::env::current_dir().unwrap(),
+            requests,
+            trust_store: TrustStore::new(directory),
+        };
+        (Arc::new(gate), receiver)
+    }
+
+    fn cleanup_trust_directory(directory: PathBuf) {
+        let _ = fs::remove_dir_all(directory);
     }
 }
