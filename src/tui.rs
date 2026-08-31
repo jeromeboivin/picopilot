@@ -1529,7 +1529,8 @@ mod tests {
     use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
     use super::{
-        handle_key, send_with_fleet_fallback, App, ChatEntry, ModelSelection, SendPath, UiAction,
+        handle_key, send_with_fleet_fallback, todo_detail_lines, App, ChatEntry, ModelSelection,
+        SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
@@ -1867,6 +1868,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn todo_modal_renders_dependency_titles() {
+        let mut app = App::new(None);
+        app.set_fleet_active(true);
+        app.set_todos(TodoSnapshot {
+            rows: vec![
+                TodoRowSnapshot {
+                    id: "todo-1".to_string(),
+                    title: "Inspect transport".to_string(),
+                    description: String::new(),
+                    status: "completed".to_string(),
+                },
+                TodoRowSnapshot {
+                    id: "todo-2".to_string(),
+                    title: "Patch transport".to_string(),
+                    description: String::new(),
+                    status: "in_progress".to_string(),
+                },
+            ],
+            dependencies: vec![TodoDependencySnapshot {
+                todo_id: "todo-2".to_string(),
+                depends_on: "todo-1".to_string(),
+            }],
+        });
+
+        let rendered: Vec<String> = todo_detail_lines(&app)
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(
+            rendered[1],
+            "[in_progress] Patch transport | blocked by: Inspect transport"
+        );
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
