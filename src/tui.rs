@@ -155,6 +155,7 @@ pub struct StatusState {
 #[derive(Debug, Default)]
 pub struct App {
     entries: Vec<ChatEntry>,
+    pending_user_messages: VecDeque<String>,
     status: StatusState,
     input: String,
     pending_approvals: VecDeque<ApprovalRequest>,
@@ -487,12 +488,14 @@ impl App {
     }
 
     pub fn add_user_message(&mut self, content: String) {
+        self.pending_user_messages.push_back(content.clone());
         self.entries.push(ChatEntry::User(content));
         self.status.busy = true;
     }
 
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
         self.entries.clear();
+        self.pending_user_messages.clear();
         self.status.busy = false;
         self.blocked = false;
         for event in events {
@@ -505,7 +508,20 @@ impl App {
     pub fn apply(&mut self, update: EventUpdate) {
         match update {
             EventUpdate::UserMessage { content } => {
-                self.entries.push(ChatEntry::User(content));
+                if let Some(pending) = self.pending_user_messages.pop_front() {
+                    if let Some(ChatEntry::User(current)) = self
+                        .entries
+                        .iter_mut()
+                        .rev()
+                        .find(|entry| matches!(entry, ChatEntry::User(value) if value == &pending))
+                    {
+                        *current = content;
+                    } else {
+                        self.entries.push(ChatEntry::User(content));
+                    }
+                } else {
+                    self.entries.push(ChatEntry::User(content));
+                }
             }
             EventUpdate::AssistantDelta {
                 message_id,
@@ -1966,6 +1982,18 @@ mod tests {
             app.entries(),
             &[ChatEntry::User("resumed session".to_string())]
         );
+    }
+
+    #[test]
+    fn live_user_event_reconciles_the_optimistic_message() {
+        let mut app = App::new(None);
+        app.add_user_message("Hi".to_string());
+
+        app.apply(EventUpdate::UserMessage {
+            content: "Hi".to_string(),
+        });
+
+        assert_eq!(app.entries(), &[ChatEntry::User("Hi".to_string())]);
     }
 
     #[test]
