@@ -12,11 +12,12 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use pulldown_cmark::{Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
@@ -145,6 +146,7 @@ pub enum ApprovalStatus {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusState {
     pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub usage: Option<UsageSnapshot>,
     pub usage_metrics: Option<UsageMetricsSnapshot>,
     pub context_attribution: Option<ContextAttributionSnapshot>,
@@ -280,6 +282,10 @@ impl App {
 
     pub fn set_usage_metrics(&mut self, metrics: UsageMetricsSnapshot) {
         self.status.usage_metrics = Some(metrics);
+    }
+
+    pub fn set_reasoning_effort(&mut self, reasoning_effort: Option<String>) {
+        self.status.reasoning_effort = reasoning_effort;
     }
 
     pub fn set_fleet_active(&mut self, active: bool) {
@@ -872,7 +878,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(3),
-            Constraint::Length(2),
+            Constraint::Length(1),
         ])
         .split(frame.area());
 
@@ -881,6 +887,17 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(input_box(app), layout[2]);
     frame.render_widget(shortcut_bar(), layout[3]);
     draw_modal(frame, app);
+
+    if app.modal.is_none() && app.pending_approval().is_none() && !app.blocked && !app.reconnecting
+    {
+        let input_width = app.input().chars().count().min(u16::MAX as usize) as u16;
+        let cursor_x = layout[2]
+            .x
+            .saturating_add(4)
+            .saturating_add(input_width)
+            .min(layout[2].right().saturating_sub(1));
+        frame.set_cursor_position((cursor_x, layout[2].y.saturating_add(1)));
+    }
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -911,7 +928,13 @@ async fn run_loop(
     mut runtime: AppRuntime,
     model: Option<String>,
 ) -> io::Result<()> {
+    let reasoning_effort = displayed_reasoning_effort(
+        &runtime.models,
+        model.as_deref(),
+        runtime.active_model_options.reasoning_effort.as_deref(),
+    );
     let mut app = App::new(model);
+    app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
     let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
@@ -926,6 +949,13 @@ async fn run_loop(
             result = events.recv() => match result {
                 Ok(event) => {
                     if let Some(update) = crate::events::event_update(&event) {
+                        if let EventUpdate::ModelChanged { model } = &update {
+                            app.set_reasoning_effort(displayed_reasoning_effort(
+                                &runtime.models,
+                                Some(model),
+                                runtime.active_model_options.reasoning_effort.as_deref(),
+                            ));
+                        }
                         app.apply(update);
                     }
                 }
@@ -1083,11 +1113,17 @@ async fn process_terminal_events(
                         });
                     }
                 } else {
+                    let displayed_reasoning = displayed_reasoning_effort(
+                        &runtime.models,
+                        Some(&model),
+                        selection.reasoning_effort.as_deref(),
+                    );
                     runtime.set_active_model_options(
                         model.clone(),
-                        selection.reasoning_effort,
+                        selection.reasoning_effort.clone(),
                         selection.context_tier,
                     );
+                    app.set_reasoning_effort(displayed_reasoning);
                     app.apply(crate::events::EventUpdate::ModelChanged { model });
                 }
             }
@@ -1250,6 +1286,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 fn status_bar(app: &App) -> Paragraph<'static> {
     let status = app.status();
     let model = status.model.as_deref().unwrap_or("auto");
+    let reasoning = status.reasoning_effort.as_deref().unwrap_or("default");
     let mode = if status.busy { "working" } else { "ready" };
     let context = status
         .usage
@@ -1262,10 +1299,24 @@ fn status_bar(app: &App) -> Paragraph<'static> {
         .map(format_cost)
         .unwrap_or_else(|| "--".to_string());
     let label = format!(
-        " picopilot | model: {model} | mode: autopilot/{mode} | context: {context} | cost: {cost} "
+        " {model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  {context} tokens  ·  {cost} "
     );
 
-    Paragraph::new(label).style(Style::default().fg(Color::White).bg(Color::Rgb(28, 38, 50)))
+    Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
+}
+
+fn displayed_reasoning_effort(
+    models: &[Model],
+    model_id: Option<&str>,
+    configured_effort: Option<&str>,
+) -> Option<String> {
+    configured_effort.map(str::to_owned).or_else(|| {
+        let model_id = model_id?;
+        models
+            .iter()
+            .find(|model| model.id == model_id)
+            .and_then(|model| model.default_reasoning_effort.clone())
+    })
 }
 
 fn shortcut_bar() -> Paragraph<'static> {
@@ -1273,31 +1324,27 @@ fn shortcut_bar() -> Paragraph<'static> {
         Span::styled(
             key,
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Rgb(220, 224, 230))
+                .fg(Color::Rgb(240, 177, 94))
                 .add_modifier(Modifier::BOLD),
         )
     };
 
-    Paragraph::new(vec![
-        Line::from(vec![
-            shortcut("^O"),
-            Span::raw(" Sessions   "),
-            shortcut("^P"),
-            Span::raw(" Models   "),
-            shortcut("^U"),
-            Span::raw(" Usage"),
-        ]),
-        Line::from(vec![
-            shortcut("^T"),
-            Span::raw(" Todos      "),
-            shortcut("^I"),
-            Span::raw(" Internals "),
-            shortcut("^X"),
-            Span::raw(" Exit"),
-        ]),
-    ])
-    .style(Style::default().fg(Color::Rgb(220, 224, 230)))
+    Paragraph::new(Line::from(vec![
+        Span::raw("  "),
+        shortcut("^O"),
+        Span::raw(" sessions  "),
+        shortcut("^P"),
+        Span::raw(" models  "),
+        shortcut("^U"),
+        Span::raw(" usage  "),
+        shortcut("^T"),
+        Span::raw(" todos  "),
+        shortcut("^I"),
+        Span::raw(" internals  "),
+        shortcut("^X"),
+        Span::raw(" exit"),
+    ]))
+    .style(Style::default().fg(Color::DarkGray))
 }
 
 fn input_box(app: &App) -> Paragraph<'static> {
@@ -1348,14 +1395,13 @@ fn input_box(app: &App) -> Paragraph<'static> {
     }
 
     Paragraph::new(Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Rgb(240, 177, 94))),
+        Span::styled("  ❯ ", Style::default().fg(Color::Rgb(240, 177, 94))),
         Span::raw(app.input().to_string()),
     ]))
     .block(
         Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
-            .title("message"),
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(Color::DarkGray)),
     )
 }
 
@@ -1713,12 +1759,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
-        .title("conversation");
-    let inner_width = area.width.saturating_sub(2);
-    let visible_height = area.height.saturating_sub(2);
+    let block = Block::default().padding(Padding::horizontal(2));
+    let inner_width = area.width.saturating_sub(4);
+    let visible_height = area.height;
     let lines = chat_lines(app);
     let total_lines = wrapped_line_count(&lines, inner_width);
     let paragraph = Paragraph::new(lines)
@@ -1740,27 +1783,47 @@ fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> usize {
 }
 
 fn chat_lines(app: &App) -> Vec<Line<'static>> {
-    if app.entries().is_empty() {
-        return vec![Line::from(Span::styled(
-            "Waiting for a prompt.",
-            Style::default().fg(Color::Rgb(132, 147, 160)),
-        ))];
+    let mut lines = Vec::new();
+    for entry in app.entries() {
+        let rendered = entry_lines(entry, app.show_internals);
+        if rendered.is_empty() {
+            continue;
+        }
+        lines.extend(rendered);
+        lines.push(Line::default());
     }
-
-    app.entries()
-        .iter()
-        .flat_map(|entry| entry_lines(entry, app.show_internals))
-        .collect()
+    lines.pop();
+    if app.status.busy {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                "✻ ",
+                Style::default()
+                    .fg(Color::Rgb(240, 177, 94))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Copilot is responding…",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+    lines
 }
 
 fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
     match entry {
-        ChatEntry::User(content) => labeled_lines(
-            "you",
+        ChatEntry::User(content) => markdown_prefixed_lines(
+            "❯ ",
             content,
             Style::default()
                 .fg(Color::Rgb(240, 177, 94))
                 .add_modifier(Modifier::BOLD),
+            Style::default(),
         ),
         ChatEntry::Diagnostic(message) if show_internals => labeled_lines(
             "debug",
@@ -1770,26 +1833,22 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         ChatEntry::Diagnostic(_) => Vec::new(),
         ChatEntry::Assistant {
             content, agent_id, ..
-        } => labeled_lines(
-            &speaker_label("agent", agent_id.as_deref()),
+        } => markdown_prefixed_lines(
+            &speaker_prefix("●", agent_id.as_deref()),
             content,
             Style::default().fg(Color::Rgb(154, 230, 180)),
+            Style::default(),
         ),
         ChatEntry::Reasoning {
             content, agent_id, ..
-        } => {
-            if show_internals {
-                labeled_lines(
-                    &speaker_label("think", agent_id.as_deref()),
-                    content,
-                    Style::default()
-                        .fg(Color::Rgb(165, 174, 187))
-                        .add_modifier(Modifier::ITALIC),
-                )
-            } else {
-                Vec::new()
-            }
-        }
+        } => markdown_prefixed_lines(
+            &speaker_prefix("  ", agent_id.as_deref()),
+            content,
+            Style::default().fg(Color::DarkGray),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ),
         ChatEntry::Tool {
             tool_name,
             output,
@@ -1904,10 +1963,7 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             )
         }
-        ChatEntry::Completed => vec![Line::from(Span::styled(
-            "done",
-            Style::default().fg(Color::Rgb(132, 147, 160)),
-        ))],
+        ChatEntry::Completed => Vec::new(),
     }
 }
 
@@ -1927,8 +1983,200 @@ fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'st
     rendered
 }
 
-fn speaker_label(label: &str, agent_id: Option<&str>) -> String {
-    format!("{}{}", label, agent_suffix(agent_id))
+fn markdown_prefixed_lines(
+    prefix: &str,
+    content: &str,
+    prefix_style: Style,
+    body_style: Style,
+) -> Vec<Line<'static>> {
+    let mut body_lines = markdown_lines(content, body_style);
+    if body_lines.is_empty() {
+        body_lines.push(Line::default());
+    }
+
+    body_lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let prefix = if index == 0 {
+                prefix.to_string()
+            } else {
+                "  ".to_string()
+            };
+            let mut spans = vec![Span::styled(prefix, prefix_style)];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>> {
+    let mut renderer = MarkdownRenderer::new(base_style);
+    let parser = Parser::new_ext(
+        content,
+        Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
+    );
+    for event in parser {
+        renderer.push(event);
+    }
+    renderer.finish()
+}
+
+struct MarkdownRenderer {
+    lines: Vec<Line<'static>>,
+    spans: Vec<Span<'static>>,
+    styles: Vec<Style>,
+    muted: bool,
+    list_depth: usize,
+    code_block: bool,
+}
+
+impl MarkdownRenderer {
+    fn new(base_style: Style) -> Self {
+        Self {
+            lines: Vec::new(),
+            spans: Vec::new(),
+            muted: base_style.fg == Some(Color::DarkGray),
+            styles: vec![base_style],
+            list_depth: 0,
+            code_block: false,
+        }
+    }
+
+    fn push(&mut self, event: MarkdownEvent<'_>) {
+        match event {
+            MarkdownEvent::Start(tag) => self.start(tag),
+            MarkdownEvent::End(tag) => self.end(tag),
+            MarkdownEvent::Text(text) => self.push_text(&text),
+            MarkdownEvent::Code(code) => self.spans.push(Span::styled(
+                code.into_string(),
+                self.accent(Color::Rgb(242, 204, 96)),
+            )),
+            MarkdownEvent::SoftBreak => self.spans.push(Span::raw(" ")),
+            MarkdownEvent::HardBreak => self.flush_line(),
+            MarkdownEvent::Rule => {
+                self.flush_line();
+                self.spans.push(Span::styled(
+                    "----------------------------------------",
+                    self.accent(Color::DarkGray),
+                ));
+                self.flush_line();
+            }
+            MarkdownEvent::TaskListMarker(checked) => self.spans.push(Span::styled(
+                if checked { "[x] " } else { "[ ] " },
+                self.accent(Color::Rgb(240, 177, 94)),
+            )),
+            _ => {}
+        }
+    }
+
+    fn start(&mut self, tag: Tag<'_>) {
+        match tag {
+            Tag::Paragraph => {}
+            Tag::Heading { .. } => self.push_style(
+                self.accent(Color::Rgb(139, 181, 255))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Tag::Strong => self.push_style(self.style().add_modifier(Modifier::BOLD)),
+            Tag::Emphasis => self.push_style(self.style().add_modifier(Modifier::ITALIC)),
+            Tag::Strikethrough => self.push_style(self.style().add_modifier(Modifier::CROSSED_OUT)),
+            Tag::Link { .. } => self.push_style(
+                self.accent(Color::Rgb(139, 181, 255))
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            Tag::BlockQuote(_) => self
+                .spans
+                .push(Span::styled("> ", self.accent(Color::Rgb(132, 147, 160)))),
+            Tag::List(_) => self.list_depth += 1,
+            Tag::Item => self.spans.push(Span::styled(
+                format!("{}* ", "  ".repeat(self.list_depth.saturating_sub(1))),
+                self.accent(Color::Rgb(240, 177, 94)),
+            )),
+            Tag::CodeBlock(_) => {
+                self.flush_line();
+                self.code_block = true;
+                self.push_style(self.accent(Color::Rgb(180, 190, 200)));
+            }
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph | TagEnd::Item | TagEnd::BlockQuote(_) => self.flush_line(),
+            TagEnd::Heading(_) => {
+                self.flush_line();
+                self.pop_style();
+            }
+            TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough | TagEnd::Link => {
+                self.pop_style()
+            }
+            TagEnd::List(_) => self.list_depth = self.list_depth.saturating_sub(1),
+            TagEnd::CodeBlock => {
+                self.flush_line();
+                self.code_block = false;
+                self.pop_style();
+            }
+            _ => {}
+        }
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.code_block {
+            for (index, line) in text.split('\n').enumerate() {
+                if index > 0 {
+                    self.flush_line();
+                }
+                if !line.is_empty() {
+                    self.spans
+                        .push(Span::styled(format!("  {line}"), self.style()));
+                }
+            }
+        } else {
+            self.spans
+                .push(Span::styled(text.to_string(), self.style()));
+        }
+    }
+
+    fn style(&self) -> Style {
+        *self.styles.last().expect("base Markdown style is present")
+    }
+
+    fn accent(&self, color: Color) -> Style {
+        if self.muted {
+            self.style()
+        } else {
+            self.style().fg(color)
+        }
+    }
+
+    fn push_style(&mut self, style: Style) {
+        self.styles.push(style);
+    }
+
+    fn pop_style(&mut self) {
+        if self.styles.len() > 1 {
+            self.styles.pop();
+        }
+    }
+
+    fn flush_line(&mut self) {
+        if !self.spans.is_empty() {
+            self.lines.push(Line::from(std::mem::take(&mut self.spans)));
+        }
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.flush_line();
+        self.lines
+    }
+}
+
+fn speaker_prefix(symbol: &str, agent_id: Option<&str>) -> String {
+    match agent_id {
+        Some(agent_id) => format!("{symbol} {agent_id} "),
+        None => format!("{symbol} "),
+    }
 }
 
 fn agent_suffix(agent_id: Option<&str>) -> String {
@@ -1957,13 +2205,15 @@ mod tests {
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
+    use ratatui::style::{Color, Modifier, Style};
     use ratatui::Terminal;
     use serde_json::json;
 
     use super::{
-        draw, draw_model_picker, handle_key, modal_area, model_context_label, model_cost_label,
-        model_picker_detail_lines, model_picker_row, send_with_fleet_fallback, todo_detail_lines,
-        App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
+        displayed_reasoning_effort, draw, draw_model_picker, handle_key, modal_area,
+        model_context_label, model_cost_label, model_picker_detail_lines, model_picker_row,
+        send_with_fleet_fallback, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
+        ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
@@ -1993,7 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_and_tool_telemetry_are_hidden_until_requested() {
+    fn reasoning_is_visible_while_tool_telemetry_requires_internals() {
         let mut app = App::new(None);
         app.apply(EventUpdate::Reasoning {
             reasoning_id: "reasoning-1".to_string(),
@@ -2007,7 +2257,9 @@ mod tests {
         });
         app.add_diagnostic("session resumed");
 
-        assert!(super::chat_lines(&app).is_empty());
+        let rendered = super::chat_lines(&app);
+        assert_eq!(rendered.len(), 1);
+        assert!(rendered[0].to_string().contains("internal chain"));
         assert_eq!(
             handle_key(
                 &mut app,
@@ -2021,11 +2273,124 @@ mod tests {
             UiAction::None
         );
         let rendered = super::chat_lines(&app);
+        let rendered: Vec<String> = rendered
+            .iter()
+            .map(ToString::to_string)
+            .filter(|line| !line.is_empty())
+            .collect();
         assert_eq!(rendered.len(), 3);
-        assert!(rendered[0].to_string().contains("internal chain"));
-        assert!(rendered[1].to_string().contains("grep"));
-        assert!(rendered[2].to_string().starts_with("debug"));
-        assert!(rendered[2].to_string().contains("session resumed"));
+        assert!(rendered[0].contains("internal chain"));
+        assert!(rendered[1].contains("grep"));
+        assert!(rendered[2].starts_with("debug"));
+        assert!(rendered[2].contains("session resumed"));
+    }
+
+    #[test]
+    fn transcript_uses_compact_claude_style_prefixes() {
+        let mut app = App::new(None);
+        app.add_user_message("Inspect this".to_string());
+        app.apply(EventUpdate::Reasoning {
+            reasoning_id: "reasoning-1".to_string(),
+            content: "Checking the files".to_string(),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::AssistantMessage {
+            message_id: "message-1".to_string(),
+            content: "Done".to_string(),
+            agent_id: None,
+        });
+
+        let lines = super::chat_lines(&app);
+        assert_eq!(lines[0].to_string(), "❯ Inspect this");
+        assert_eq!(lines[2].to_string(), "   Checking the files");
+        assert_eq!(lines[4].to_string(), "● Done");
+        assert_eq!(lines[2].spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[6].to_string(), "✻ Copilot is responding…");
+    }
+
+    #[test]
+    fn reasoning_markdown_stays_gray() {
+        let lines = super::markdown_lines(
+            "# Plan\n\nUse **care** and `inspect`.",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        );
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().flat_map(|line| &line.spans).all(|span| {
+            span.style.fg == Some(Color::DarkGray)
+                && span.style.add_modifier.contains(Modifier::ITALIC)
+        }));
+        assert!(lines[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn markdown_formats_lists_emphasis_and_code() {
+        let lines =
+            super::markdown_lines("## Result\n\n- **ready**\n- `cargo test`", Style::default());
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].to_string(), "Result");
+        assert_eq!(lines[1].to_string(), "* ready");
+        assert_eq!(lines[2].to_string(), "* cargo test");
+        assert!(lines[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(lines[1].spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert_eq!(lines[1].spans[1].style.fg, None);
+        assert_eq!(lines[2].spans[1].style.fg, Some(Color::Rgb(242, 204, 96)));
+    }
+
+    #[test]
+    fn status_bar_shows_compact_model_and_reasoning_metadata() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_reasoning_effort(Some("high".to_string()));
+        let backend = TestBackend::new(100, 1);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal
+            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
+            .expect("status bar renders");
+        let rendered =
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .fold(String::new(), |mut text, cell| {
+                    text.push_str(cell.symbol());
+                    text
+                });
+
+        assert!(rendered.contains("gpt-5  ·  high reasoning  ·  autopilot ready"));
+        assert!(!rendered.contains("picopilot"));
+    }
+
+    #[test]
+    fn displayed_reasoning_uses_the_model_default_without_an_override() {
+        let model = Model {
+            id: "gpt-5".to_string(),
+            default_reasoning_effort: Some("medium".to_string()),
+            ..Model::default()
+        };
+
+        assert_eq!(
+            displayed_reasoning_effort(std::slice::from_ref(&model), Some("gpt-5"), None)
+                .as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            displayed_reasoning_effort(&[model], Some("gpt-5"), Some("high")).as_deref(),
+            Some("high")
+        );
     }
 
     #[test]
@@ -2532,7 +2897,7 @@ mod tests {
     }
 
     #[test]
-    fn main_window_renders_nano_shortcuts_at_the_bottom() {
+    fn main_window_renders_a_borderless_transcript_and_one_line_shortcuts() {
         let app = App::new(None);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
 
@@ -2546,8 +2911,10 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(row(28).contains("^O Sessions   ^P Models   ^U Usage"));
-        assert!(row(29).contains("^T Todos      ^I Internals ^X Exit"));
+        assert!(row(29).contains("^O sessions  ^P models  ^U usage"));
+        assert!(row(29).contains("^I internals  ^X exit"));
+        assert!(!row(1).contains('┌'));
+        assert!(!row(1).contains('│'));
     }
 
     #[tokio::test]
