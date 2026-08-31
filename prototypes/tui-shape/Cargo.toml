@@ -1,0 +1,14 @@
+[package]
+name = "tui-shape-prototype"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "THROWAWAY prototype for wayfinder ticket 003-tui-shape. Not part of picopilot."
+
+[[bin]]
+name = "tui-shape-prototype"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
