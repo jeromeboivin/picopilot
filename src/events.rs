@@ -1,4 +1,4 @@
-use github_copilot_sdk::rpc::UsageGetMetricsResult;
+use github_copilot_sdk::rpc::{MetadataContextAttributionResult, UsageGetMetricsResult};
 use github_copilot_sdk::session_events::{
     AssistantMessageData, AssistantMessageDeltaData, AssistantReasoningData,
     AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionUsageInfoData,
@@ -34,6 +34,21 @@ pub struct UsageMetricsSnapshot {
     pub current_model: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextCategorySnapshot {
+    pub label: String,
+    pub tokens: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextAttributionSnapshot {
+    pub model_id: String,
+    pub total_tokens: i64,
+    pub prompt_token_limit: i64,
+    pub categories: Vec<ContextCategorySnapshot>,
+    pub compactions: i64,
+}
+
 pub fn usage_metrics_snapshot(metrics: &UsageGetMetricsResult) -> UsageMetricsSnapshot {
     UsageMetricsSnapshot {
         total_nano_aiu: metrics.total_nano_aiu,
@@ -42,6 +57,42 @@ pub fn usage_metrics_snapshot(metrics: &UsageGetMetricsResult) -> UsageMetricsSn
         total_api_duration_ms: metrics.total_api_duration_ms,
         current_model: metrics.current_model.clone(),
     }
+}
+
+pub fn context_attribution_snapshot(
+    result: &MetadataContextAttributionResult,
+) -> Option<ContextAttributionSnapshot> {
+    let context = result.context_attribution.as_ref()?;
+    let categories = vec![
+        ContextCategorySnapshot {
+            label: "System instructions".to_string(),
+            tokens: context.categories.system_prompt,
+        },
+        ContextCategorySnapshot {
+            label: "Custom instructions".to_string(),
+            tokens: context.categories.custom_instructions,
+        },
+        ContextCategorySnapshot {
+            label: "Tool definitions".to_string(),
+            tokens: context.categories.system_tools,
+        },
+        ContextCategorySnapshot {
+            label: "MCP tool definitions".to_string(),
+            tokens: context.categories.mcp_tools,
+        },
+        ContextCategorySnapshot {
+            label: "Messages and tool results".to_string(),
+            tokens: context.categories.messages,
+        },
+    ];
+
+    Some(ContextAttributionSnapshot {
+        model_id: context.model_id.clone(),
+        total_tokens: context.total_tokens,
+        prompt_token_limit: context.prompt_token_limit,
+        categories,
+        compactions: context.compactions.count,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,11 +303,15 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
 
 #[cfg(test)]
 mod tests {
-    use github_copilot_sdk::rpc::UsageGetMetricsResult;
+    use github_copilot_sdk::rpc::{
+        MetadataContextAttributionResult, MetadataContextAttributionResultContextAttribution,
+        MetadataContextAttributionResultContextAttributionCategories,
+        MetadataContextAttributionResultContextAttributionCompactions, UsageGetMetricsResult,
+    };
     use github_copilot_sdk::types::SessionEvent;
     use serde_json::json;
 
-    use super::{event_update, usage_metrics_snapshot, EventUpdate};
+    use super::{context_attribution_snapshot, event_update, usage_metrics_snapshot, EventUpdate};
 
     #[test]
     fn maps_assistant_message_delta_to_a_stream_update() {
@@ -303,5 +358,38 @@ mod tests {
         assert_eq!(snapshot.total_user_requests, 4);
         assert_eq!(snapshot.total_api_duration_ms, 1250);
         assert_eq!(snapshot.current_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn maps_context_attribution_categories_and_compactions() {
+        let attribution = MetadataContextAttributionResult {
+            context_attribution: Some(MetadataContextAttributionResultContextAttribution {
+                categories: MetadataContextAttributionResultContextAttributionCategories {
+                    custom_instructions: 2,
+                    mcp_tools: 4,
+                    messages: 20,
+                    system_prompt: 10,
+                    system_tools: 4,
+                    ..Default::default()
+                },
+                compactions: MetadataContextAttributionResultContextAttributionCompactions {
+                    count: 3,
+                },
+                model_id: "gpt-5".to_string(),
+                prompt_token_limit: 100,
+                total_tokens: 40,
+                ..Default::default()
+            }),
+        };
+
+        let snapshot = context_attribution_snapshot(&attribution)
+            .expect("initialized attribution should produce a snapshot");
+
+        assert_eq!(snapshot.model_id, "gpt-5");
+        assert_eq!(snapshot.total_tokens, 40);
+        assert_eq!(snapshot.prompt_token_limit, 100);
+        assert_eq!(snapshot.categories[0].tokens, 10);
+        assert_eq!(snapshot.categories[3].tokens, 4);
+        assert_eq!(snapshot.compactions, 3);
     }
 }

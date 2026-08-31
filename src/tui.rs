@@ -1,4 +1,7 @@
-use crate::events::{BannerSeverity, EventUpdate, UsageSnapshot};
+use crate::events::{
+    context_attribution_snapshot, usage_metrics_snapshot, BannerSeverity,
+    ContextAttributionSnapshot, EventUpdate, UsageMetricsSnapshot, UsageSnapshot,
+};
 use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
@@ -62,6 +65,7 @@ pub enum UiAction {
     Approval(ApprovalDecision),
     LoadSessions,
     LoadModels,
+    LoadUsage,
     Resume(SessionId),
     SwitchModel(ModelSelection),
 }
@@ -70,6 +74,7 @@ pub enum UiAction {
 enum ModalKind {
     Sessions,
     Models,
+    Usage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,10 +119,12 @@ pub enum SubagentStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct StatusState {
     pub model: Option<String>,
     pub usage: Option<UsageSnapshot>,
+    pub usage_metrics: Option<UsageMetricsSnapshot>,
+    pub context_attribution: Option<ContextAttributionSnapshot>,
     pub busy: bool,
 }
 
@@ -180,6 +187,17 @@ impl App {
         self.modal = Some(ModalKind::Models);
     }
 
+    pub fn set_usage(
+        &mut self,
+        metrics: UsageMetricsSnapshot,
+        context_attribution: Option<ContextAttributionSnapshot>,
+    ) {
+        self.status.usage_metrics = Some(metrics);
+        self.status.context_attribution = context_attribution;
+        self.selected_item = 0;
+        self.modal = Some(ModalKind::Usage);
+    }
+
     fn close_modal(&mut self) {
         self.modal = None;
         self.selected_item = 0;
@@ -189,6 +207,7 @@ impl App {
         let item_count = match self.modal {
             Some(ModalKind::Sessions) => self.sessions.len(),
             Some(ModalKind::Models) => self.models.len(),
+            Some(ModalKind::Usage) => 0,
             None => 0,
         };
         if item_count == 0 {
@@ -262,6 +281,7 @@ impl App {
                     context_tier: self.picker_context_tier.clone(),
                 })
             }),
+            Some(ModalKind::Usage) => None,
             None => None,
         };
         self.close_modal();
@@ -529,6 +549,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if app.modal.is_some() {
         return match key.code {
+            KeyCode::Char('u') if matches!(app.modal, Some(ModalKind::Usage)) => {
+                app.close_modal();
+                UiAction::None
+            }
             KeyCode::Esc => {
                 app.close_modal();
                 UiAction::None
@@ -561,6 +585,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::LoadSessions
         }
         KeyCode::Char('m') => UiAction::LoadModels,
+        KeyCode::Char('u') => UiAction::LoadUsage,
         KeyCode::Char('q') if app.input().is_empty() => UiAction::Quit,
         KeyCode::Enter => {
             let input = app.take_input();
@@ -701,6 +726,28 @@ async fn process_terminal_events(
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
             }
+            UiAction::LoadUsage => {
+                let metrics = match runtime.session.rpc().usage().get_metrics().await {
+                    Ok(metrics) => metrics,
+                    Err(error) => {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::RecoverableError,
+                            message: format!("could not load usage metrics: {error}"),
+                            url: None,
+                        });
+                        continue;
+                    }
+                };
+                let context_attribution = runtime
+                    .session
+                    .rpc()
+                    .metadata()
+                    .get_context_attribution()
+                    .await
+                    .ok()
+                    .and_then(|result| context_attribution_snapshot(&result));
+                app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
+            }
             UiAction::Resume(session_id) => {
                 if let Err(error) = runtime.resume(session_id).await {
                     app.apply(crate::events::EventUpdate::Banner {
@@ -770,8 +817,13 @@ fn status_bar(app: &App) -> Paragraph<'static> {
         .as_ref()
         .map(|usage| format_tokens(usage.current_tokens, usage.token_limit))
         .unwrap_or_else(|| "--/--".to_string());
+    let cost = status
+        .usage_metrics
+        .as_ref()
+        .map(format_cost)
+        .unwrap_or_else(|| "--".to_string());
     let label = format!(
-        " picopilot | model: {model} | mode: autopilot/{mode} | context: {context} | cost: -- "
+        " picopilot | model: {model} | mode: autopilot/{mode} | context: {context} | cost: {cost} "
     );
 
     Paragraph::new(label).style(Style::default().fg(Color::White).bg(Color::Rgb(28, 38, 50)))
@@ -815,9 +867,25 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     let area = centered_rect(70, 70, frame.area());
     frame.render_widget(ratatui::widgets::Clear, area);
 
+    if matches!(modal, ModalKind::Usage) {
+        frame.render_widget(
+            Paragraph::new(usage_detail_lines(app))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+                        .title("usage and context | u or esc to close"),
+                )
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+
     let title = match modal {
         ModalKind::Sessions => "resume session",
         ModalKind::Models => "choose model | r reasoning, c context, enter, esc",
+        ModalKind::Usage => "usage and context | u or esc to close",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -858,6 +926,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
                 )
             })
             .collect(),
+        ModalKind::Usage => Vec::new(),
     };
     let lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
@@ -888,6 +957,63 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(metrics) = app.status.usage_metrics.as_ref() else {
+        return vec![Line::from("Usage metrics unavailable.")];
+    };
+
+    let mut lines = vec![
+        Line::from(format!("Session cost: {}", format_cost(metrics))),
+        Line::from(format!(
+            "Premium request cost: {:.2}",
+            metrics.total_premium_request_cost
+        )),
+        Line::from(format!("Requests: {}", metrics.total_user_requests)),
+        Line::from(format!("API time: {} ms", metrics.total_api_duration_ms)),
+    ];
+
+    if let Some(usage) = app.status.usage.as_ref() {
+        lines.push(Line::from(format!(
+            "Context window: {} / {} tokens",
+            format_count(usage.current_tokens),
+            format_count(usage.token_limit)
+        )));
+    }
+
+    if let Some(context) = app.status.context_attribution.as_ref() {
+        lines.push(Line::from(format!(
+            "Attribution: {} / {} tokens ({})",
+            format_count(context.total_tokens),
+            format_count(context.prompt_token_limit),
+            context.model_id
+        )));
+        for category in &context.categories {
+            let percentage = if context.total_tokens > 0 {
+                category.tokens as f64 / context.total_tokens as f64 * 100.0
+            } else {
+                0.0
+            };
+            lines.push(Line::from(format!(
+                "  {}: {} ({percentage:.1}%)",
+                category.label,
+                format_count(category.tokens)
+            )));
+        }
+        lines.push(Line::from(format!("Compactions: {}", context.compactions)));
+    } else {
+        lines.push(Line::from("Context attribution unavailable."));
+    }
+
+    lines
+}
+
+fn format_cost(metrics: &UsageMetricsSnapshot) -> String {
+    match metrics.total_nano_aiu {
+        Some(cost) => format!("{cost:.1} nAIU"),
+        None => format!("{:.1} premium", metrics.total_premium_request_cost),
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -1272,6 +1398,45 @@ mod tests {
                 context_tier: Some("default".to_string()),
             })
         );
+    }
+
+    #[test]
+    fn usage_key_requests_the_usage_detail_modal() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
+            UiAction::LoadUsage
+        );
+    }
+
+    #[test]
+    fn usage_metrics_open_the_detail_modal_and_can_be_closed() {
+        let mut app = App::new(None);
+        app.set_usage(
+            crate::events::UsageMetricsSnapshot {
+                total_nano_aiu: Some(3.5),
+                total_premium_request_cost: 2.0,
+                total_user_requests: 4,
+                total_api_duration_ms: 1250,
+                current_model: Some("gpt-5".to_string()),
+            },
+            None,
+        );
+
+        assert!(app.modal_is_open());
+        assert_eq!(
+            app.status()
+                .usage_metrics
+                .as_ref()
+                .and_then(|metrics| metrics.total_nano_aiu),
+            Some(3.5)
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('u'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.modal_is_open());
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
