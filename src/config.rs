@@ -1,78 +1,23 @@
-use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use async_trait::async_trait;
 use clap::Parser;
-use github_copilot_sdk::{
-    transforms::{SystemMessageTransform, TransformContext},
-    types::{Model, SectionOverride, SessionConfig, SystemMessageConfig},
-    ClientOptions,
-};
+use github_copilot_sdk::types::{Model, SessionConfig, SystemMessageConfig};
+use github_copilot_sdk::ClientOptions;
 
 use crate::provider::{
     ProviderError, ProviderRegistry, ProviderSettings, DEFAULT_PROVIDER_NAME,
     DEFAULT_PROVIDER_WIRE_API,
 };
+use crate::toolset::{Toolset, CANONICAL_TOOLS, EXCLUDED_TOOLS};
 
-#[cfg(windows)]
-pub const V1_AVAILABLE_TOOLS: &[&str] = &[
-    "powershell",
-    "view",
-    "edit",
-    "create",
-    "grep",
-    "glob",
-    "task",
-];
-
-#[cfg(not(windows))]
-pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
-pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
-const CONCISE_TONE: &str = "Be concise, direct, and professional.";
-
-struct PicopilotSystemMessageTransform;
-
-#[async_trait]
-impl SystemMessageTransform for PicopilotSystemMessageTransform {
-    fn section_ids(&self) -> Vec<String> {
-        vec!["tone".to_string()]
-    }
-
-    async fn transform_section(
-        &self,
-        section_id: &str,
-        _content: &str,
-        _context: TransformContext,
-    ) -> Option<String> {
-        match section_id {
-            "tone" => Some(CONCISE_TONE.to_string()),
-            _ => None,
-        }
-    }
-}
+pub const V1_AVAILABLE_TOOLS: &[&str] = CANONICAL_TOOLS;
+pub const V1_EXCLUDED_TOOLS: &[&str] = EXCLUDED_TOOLS;
 
 pub(crate) fn system_message_config() -> SystemMessageConfig {
-    let sections = ["guidelines", "custom_instructions"]
-        .into_iter()
-        .map(|section_id| {
-            (
-                section_id.to_string(),
-                SectionOverride {
-                    action: Some("remove".to_string()),
-                    content: None,
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
     SystemMessageConfig::new()
-        .with_mode("customize")
-        .with_sections(sections)
-}
-
-pub(crate) fn system_message_transform() -> Arc<dyn SystemMessageTransform> {
-    Arc::new(PicopilotSystemMessageTransform)
+        .with_mode("replace")
+        .with_content("")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,13 +180,20 @@ impl AppConfig {
         &self,
         registry: Option<&ProviderRegistry>,
     ) -> SessionConfig {
+        self.session_config_with_registry_and_toolset(registry, Toolset::all())
+    }
+
+    pub fn session_config_with_registry_and_toolset(
+        &self,
+        registry: Option<&ProviderRegistry>,
+        toolset: Toolset,
+    ) -> SessionConfig {
         let mut session = SessionConfig::default()
             .with_client_name("picopilot")
             .with_streaming(true)
-            .with_available_tools(V1_AVAILABLE_TOOLS.iter().copied())
-            .with_excluded_tools(V1_EXCLUDED_TOOLS.iter().copied())
-            .with_system_message(system_message_config())
-            .with_system_message_transform(system_message_transform());
+            .with_available_tools(toolset.available_tools())
+            .with_excluded_tools(EXCLUDED_TOOLS.iter().copied())
+            .with_system_message(system_message_config());
         if let Some(registry) = registry {
             session = session
                 .with_providers(registry.providers().to_vec())
@@ -262,7 +214,20 @@ impl AppConfig {
         working_directory: impl Into<PathBuf>,
         registry: Option<&ProviderRegistry>,
     ) -> SessionConfig {
-        let mut session = self.session_config_with_registry(registry);
+        self.session_config_in_with_registry_and_toolset(
+            working_directory,
+            registry,
+            Toolset::all(),
+        )
+    }
+
+    pub fn session_config_in_with_registry_and_toolset(
+        &self,
+        working_directory: impl Into<PathBuf>,
+        registry: Option<&ProviderRegistry>,
+        toolset: Toolset,
+    ) -> SessionConfig {
+        let mut session = self.session_config_with_registry_and_toolset(registry, toolset);
         session.working_directory = Some(working_directory.into());
         session
     }
@@ -405,12 +370,12 @@ mod tests {
     use std::path::Path;
 
     use clap::Parser;
-    use github_copilot_sdk::transforms::{SystemMessageTransform, TransformContext};
-    use github_copilot_sdk::types::{Model, ModelCapabilities, SessionId};
+    use github_copilot_sdk::types::{Model, ModelCapabilities};
 
     use crate::provider::{ProviderRegistry, ProviderSettings};
+    use crate::toolset::Toolset;
 
-    use super::{system_message_config, AppConfig, PicopilotSystemMessageTransform, CONCISE_TONE};
+    use super::{system_message_config, AppConfig};
 
     #[test]
     fn parses_startup_model_overrides() {
@@ -547,51 +512,49 @@ mod tests {
                 .system_message
                 .as_ref()
                 .and_then(|config| config.mode.as_deref()),
-            Some("customize")
+            Some("replace")
         );
-        assert!(session.system_message_transform.is_some());
+        assert_eq!(
+            session
+                .system_message
+                .as_ref()
+                .and_then(|config| config.content.as_deref()),
+            Some("")
+        );
+        assert!(session
+            .system_message
+            .as_ref()
+            .and_then(|config| config.sections.as_ref())
+            .is_none());
+        assert!(session.system_message_transform.is_none());
     }
 
     #[test]
-    fn removes_only_the_planned_system_message_sections() {
-        let config = system_message_config();
-        let sections = config
-            .sections
-            .expect("section overrides should be configured");
+    fn serializes_shell_only_and_empty_toolsets_as_explicit_allowlists() {
+        let config =
+            AppConfig::try_parse_from(["picopilot"]).expect("default options should parse");
 
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections["guidelines"].action.as_deref(), Some("remove"));
+        let shell_only =
+            config.session_config_with_registry_and_toolset(None, Toolset::shell_only());
         assert_eq!(
-            sections["custom_instructions"].action.as_deref(),
-            Some("remove")
+            shell_only.available_tools,
+            Some(vec![if cfg!(windows) {
+                "powershell".to_string()
+            } else {
+                "bash".to_string()
+            }])
         );
+
+        let empty = config.session_config_with_registry_and_toolset(None, Toolset::empty());
+        assert_eq!(empty.available_tools, Some(Vec::new()));
     }
 
-    #[tokio::test]
-    async fn rewrites_tone_but_preserves_runtime_instructions() {
-        let transform = PicopilotSystemMessageTransform;
-        let context = TransformContext {
-            session_id: SessionId::from("session-1"),
-        };
-
-        assert_eq!(transform.section_ids(), vec!["tone"]);
-        assert_eq!(
-            transform
-                .transform_section("tone", "long default tone", context.clone())
-                .await
-                .as_deref(),
-            Some(CONCISE_TONE)
-        );
-        assert_eq!(
-            transform
-                .transform_section(
-                    "runtime_instructions",
-                    "long default runtime instructions",
-                    context,
-                )
-                .await,
-            None
-        );
+    #[test]
+    fn replaces_the_system_message_with_empty_content() {
+        let config = system_message_config();
+        assert_eq!(config.mode.as_deref(), Some("replace"));
+        assert_eq!(config.content.as_deref(), Some(""));
+        assert!(config.sections.is_none());
     }
 
     #[test]

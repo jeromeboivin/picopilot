@@ -31,6 +31,7 @@ use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
+use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelSelection {
@@ -74,8 +75,10 @@ pub enum UiAction {
     LoadModels,
     LoadUsage,
     LoadTodos,
+    LoadTools,
     Resume(SessionId),
     SwitchModel(ModelSelection),
+    ApplyToolset(Toolset),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +87,7 @@ enum ModalKind {
     Models,
     Usage,
     Todos,
+    Tools,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +173,8 @@ pub struct App {
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
     picker_context_tier: Option<String>,
+    toolset: Toolset,
+    picker_toolset: Toolset,
     fleet_active: bool,
     todos: Option<TodoSnapshot>,
     todo_refresh_requested: bool,
@@ -247,6 +253,26 @@ impl App {
 
     pub fn modal_is_open(&self) -> bool {
         self.modal.is_some()
+    }
+
+    pub fn toolset(&self) -> Toolset {
+        self.toolset
+    }
+
+    pub fn set_toolset(&mut self, toolset: Toolset) {
+        self.toolset = toolset;
+        self.picker_toolset = toolset;
+    }
+
+    pub fn set_model(&mut self, model: Option<String>) {
+        self.status.model = model;
+    }
+
+    pub fn open_tool_picker(&mut self) {
+        self.show_approval_details = false;
+        self.picker_toolset = self.toolset;
+        self.selected_item = 0;
+        self.modal = Some(ModalKind::Tools);
     }
 
     fn todo_modal_is_open(&self) -> bool {
@@ -344,6 +370,7 @@ impl App {
         let item_count = match self.modal {
             Some(ModalKind::Sessions) => self.sessions.len(),
             Some(ModalKind::Models) => self.models.len(),
+            Some(ModalKind::Tools) => TOOL_COUNT,
             Some(ModalKind::Usage | ModalKind::Todos) => 0,
             None => 0,
         };
@@ -422,11 +449,34 @@ impl App {
                     context_tier: self.picker_context_tier.clone(),
                 })
             }),
+            Some(ModalKind::Tools) => Some(UiAction::ApplyToolset(self.picker_toolset)),
             Some(ModalKind::Usage | ModalKind::Todos) => None,
             None => None,
         };
         self.close_modal();
         action.unwrap_or(UiAction::None)
+    }
+
+    fn toggle_selected_tool(&mut self) {
+        if matches!(self.modal, Some(ModalKind::Tools)) {
+            let _ = self.picker_toolset.toggle_at(self.selected_item);
+        }
+    }
+
+    fn choose_shell_only(&mut self) {
+        if matches!(self.modal, Some(ModalKind::Tools)) {
+            self.picker_toolset = Toolset::shell_only();
+        }
+    }
+
+    fn choose_all_tools(&mut self) {
+        if matches!(self.modal, Some(ModalKind::Tools)) {
+            self.picker_toolset = Toolset::all();
+        }
+    }
+
+    fn toolset_change_is_blocked(&self) -> bool {
+        self.blocked || self.reconnecting || self.status.busy || self.pending_approval().is_some()
     }
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
@@ -769,6 +819,44 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
 
+    if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if !app.blocked {
+            return UiAction::LoadTools;
+        }
+        return UiAction::None;
+    }
+
+    if matches!(app.modal, Some(ModalKind::Tools)) {
+        return match key.code {
+            KeyCode::Char(' ') => {
+                app.toggle_selected_tool();
+                UiAction::None
+            }
+            KeyCode::Char('s') => {
+                app.choose_shell_only();
+                UiAction::None
+            }
+            KeyCode::Char('a') => {
+                app.choose_all_tools();
+                UiAction::None
+            }
+            KeyCode::Esc => {
+                app.close_modal();
+                UiAction::None
+            }
+            KeyCode::Up => {
+                app.move_selection(-1);
+                UiAction::None
+            }
+            KeyCode::Down => {
+                app.move_selection(1);
+                UiAction::None
+            }
+            KeyCode::Enter => app.choose_selected(),
+            _ => UiAction::None,
+        };
+    }
+
     if app.reconnecting {
         return UiAction::None;
     }
@@ -953,6 +1041,7 @@ async fn run_loop(
         .unwrap_or_default();
     let mut app = App::new(model);
     app.set_local_model_ids(local_model_ids);
+    app.set_toolset(runtime.active_toolset);
     app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
@@ -1058,6 +1147,9 @@ async fn process_terminal_events(
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
             }
+            UiAction::LoadTools => {
+                app.open_tool_picker();
+            }
             UiAction::LoadUsage => {
                 let metrics = match runtime.session.rpc().usage().get_metrics().await {
                     Ok(metrics) => metrics,
@@ -1097,6 +1189,18 @@ async fn process_terminal_events(
                 Ok(history) => {
                     *events = runtime.session.subscribe();
                     app.replace_history(&history);
+                    app.set_toolset(runtime.active_toolset);
+                    app.set_model(runtime.active_model_options.model.clone());
+                    if let Some(model) = runtime.active_model_options.model.clone() {
+                        app.apply(crate::events::EventUpdate::ModelChanged {
+                            model: model.clone(),
+                        });
+                        app.set_reasoning_effort(displayed_reasoning_effort(
+                            &runtime.models,
+                            Some(&model),
+                            runtime.active_model_options.reasoning_effort.as_deref(),
+                        ));
+                    }
                     app.add_diagnostic("session resumed");
                 }
                 Err(error) if error.is_transport_failure() => {
@@ -1121,33 +1225,68 @@ async fn process_terminal_events(
                         continue;
                     }
                 };
-                if let Err(error) = runtime.session.set_model(&model, options).await {
+                if let Err(error) = runtime
+                    .switch_model(
+                        model.clone(),
+                        options,
+                        selection.reasoning_effort.clone(),
+                        selection.context_tier.clone(),
+                    )
+                    .await
+                {
                     if error.is_transport_failure() {
                         recover_connection(app, runtime, events).await?;
                     } else {
                         app.apply(crate::events::EventUpdate::Banner {
                             severity: crate::events::BannerSeverity::RecoverableError,
-                            message: format!("could not switch model: {error}"),
+                            message: error.to_string(),
                             url: None,
                         });
                     }
                 } else {
+                    *events = runtime.session.subscribe();
                     let displayed_reasoning = displayed_reasoning_effort(
                         &runtime.models,
                         Some(&model),
                         selection.reasoning_effort.as_deref(),
                     );
-                    runtime.set_active_model_options(
-                        model.clone(),
-                        selection.reasoning_effort.clone(),
-                        selection.context_tier,
-                    );
+                    app.set_toolset(runtime.active_toolset);
                     app.set_reasoning_effort(displayed_reasoning);
                     app.apply(crate::events::EventUpdate::ModelChanged { model });
                 }
             }
+            UiAction::ApplyToolset(toolset) => {
+                if app.toolset_change_is_blocked() {
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: "tool selection can only change while the session is idle"
+                            .to_string(),
+                        url: None,
+                    });
+                    continue;
+                }
+
+                app.set_reconnecting(true);
+                let result = runtime.set_toolset(toolset).await;
+                app.set_reconnecting(false);
+                match result {
+                    Ok(()) => {
+                        *events = runtime.session.subscribe();
+                        app.set_toolset(runtime.active_toolset);
+                    }
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
+                    }
+                    Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: error.to_string(),
+                        url: None,
+                    }),
+                }
+            }
             UiAction::Send(prompt) => {
                 app.add_user_message(prompt.clone());
+                runtime.mark_conversation_started();
                 match runtime.session.send(prompt).await {
                     Ok(_) => app.set_fleet_active(false),
                     Err(error) if error.is_transport_failure() => {
@@ -1162,6 +1301,7 @@ async fn process_terminal_events(
             }
             UiAction::StartFleet(prompt) => {
                 app.add_user_message(format!("/fleet {prompt}"));
+                runtime.mark_conversation_started();
                 let session = &runtime.session;
                 match send_with_fleet_fallback(
                     prompt,
@@ -1318,7 +1458,9 @@ fn status_bar(app: &App) -> Paragraph<'static> {
         .map(format_cost)
         .unwrap_or_else(|| "--".to_string());
     let label = format!(
-        " {model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  {context} tokens  ·  {cost} "
+        " {model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  {context} tokens  ·  {cost} ",
+        app.toolset.len(),
+        TOOL_COUNT,
     );
 
     Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
@@ -1356,6 +1498,8 @@ fn shortcut_bar() -> Paragraph<'static> {
         Span::raw(" models  "),
         shortcut("^U"),
         Span::raw(" usage  "),
+        shortcut("^K"),
+        Span::raw(" tools  "),
         shortcut("^T"),
         Span::raw(" todos  "),
         shortcut("^I"),
@@ -1452,6 +1596,11 @@ fn draw_modal(frame: &mut Frame, app: &App) {
     let area = modal_area(modal, frame.area());
     frame.render_widget(ratatui::widgets::Clear, area);
 
+    if matches!(modal, ModalKind::Tools) {
+        draw_tool_picker(frame, app, area);
+        return;
+    }
+
     if matches!(modal, ModalKind::Usage) {
         frame.render_widget(
             Paragraph::new(usage_detail_lines(app))
@@ -1492,6 +1641,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         ModalKind::Models => "choose model",
         ModalKind::Usage => "usage and context | ^U or Esc to close",
         ModalKind::Todos => "fleet todos | ^T or Esc to close",
+        ModalKind::Tools => "tools",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -1507,6 +1657,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .collect(),
         ModalKind::Models => Vec::new(),
         ModalKind::Usage | ModalKind::Todos => Vec::new(),
+        ModalKind::Tools => Vec::new(),
     };
     let lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
@@ -1587,6 +1738,35 @@ fn draw_model_picker(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+fn draw_tool_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+        .title("choose tools | Space toggle, s shell only, a all, Enter apply, Esc cancel");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let items: Vec<ListItem<'static>> = CANONICAL_TOOLS
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            let checkbox = if app.picker_toolset.contains_at(index) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            ListItem::new(format!(" {checkbox} {tool}"))
+        })
+        .collect();
+    let list = List::new(items).highlight_symbol("› ").highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(240, 177, 94)),
+    );
+    let mut state = ListState::default().with_selected(Some(app.selected_item));
+    frame.render_stateful_widget(list, inner, &mut state);
+}
+
 fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
         "{:<28}  {:<9}  {} tokens",
@@ -1642,7 +1822,7 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
 
 fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
     match modal {
-        ModalKind::Sessions | ModalKind::Models => terminal_area,
+        ModalKind::Sessions | ModalKind::Models | ModalKind::Tools => terminal_area,
         ModalKind::Usage | ModalKind::Todos => centered_rect(70, 70, terminal_area),
     }
 }
@@ -2238,12 +2418,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        displayed_reasoning_effort, draw, draw_model_picker, handle_key, modal_area,
-        model_context_label, model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
-        send_with_fleet_fallback, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
-        ModelSelection, SendPath, UiAction,
+        displayed_reasoning_effort, draw, draw_model_picker, draw_tool_picker, handle_key,
+        modal_area, model_context_label, model_cost_label_for, model_picker_detail_lines,
+        model_picker_row_for, send_with_fleet_fallback, status_bar, todo_detail_lines, App,
+        ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
+    use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
     #[test]
     fn accumulates_streamed_assistant_deltas_into_one_entry() {
@@ -2398,8 +2579,96 @@ mod tests {
                     text
                 });
 
-        assert!(rendered.contains("gpt-5  ·  high reasoning  ·  autopilot ready"));
+        assert!(rendered.contains("gpt-5  ·  high reasoning  ·  autopilot ready  ·  tools 7/7"));
         assert!(!rendered.contains("picopilot"));
+    }
+
+    #[test]
+    fn tool_picker_supports_toggle_shell_only_all_and_apply() {
+        let mut app = App::new(None);
+
+        assert_eq!(handle_key(&mut app, ctrl_key('k')), UiAction::LoadTools);
+        app.open_tool_picker();
+        assert!(app.modal_is_open());
+        assert_eq!(app.toolset(), Toolset::all());
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.picker_toolset.contains(CANONICAL_TOOLS[0]));
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('s'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.picker_toolset, Toolset::shell_only());
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('a'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.picker_toolset, Toolset::all());
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::ApplyToolset(Toolset::all())
+        );
+        assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn tool_picker_navigation_toggles_the_selected_tool() {
+        let mut app = App::new(None);
+        app.open_tool_picker();
+
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press));
+
+        assert_eq!(app.selected_item, 1);
+        assert!(!app.picker_toolset.contains_at(1));
+        assert_eq!(TOOL_COUNT, CANONICAL_TOOLS.len());
+    }
+
+    #[test]
+    fn tool_picker_fills_the_terminal_and_shows_checkbox_state() {
+        let mut app = App::new(None);
+        app.set_toolset(Toolset::shell_only());
+        app.open_tool_picker();
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw_tool_picker(frame, &app, frame.area()))
+            .expect("tool picker should render");
+
+        let rendered = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("[x]")));
+        assert!(rendered.iter().any(|line| line.contains("[ ]")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("powershell") || line.contains("bash")));
+    }
+
+    #[test]
+    fn status_bar_displays_the_selected_tool_count() {
+        let mut app = App::new(None);
+        app.set_toolset(Toolset::shell_only());
+        let mut terminal = Terminal::new(TestBackend::new(120, 1)).expect("test terminal");
+        terminal
+            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
+            .expect("status bar renders");
+        let line = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(line.contains("tools 1/7"));
     }
 
     #[test]
@@ -2611,7 +2880,49 @@ mod tests {
             terminal_area
         );
         assert_eq!(modal_area(ModalKind::Models, terminal_area), terminal_area);
+        assert_eq!(modal_area(ModalKind::Tools, terminal_area), terminal_area);
         assert_ne!(modal_area(ModalKind::Usage, terminal_area), terminal_area);
+    }
+
+    #[test]
+    fn tool_picker_can_open_while_an_approval_is_pending_but_not_apply_while_busy() {
+        let mut app = App::new(None);
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(crate::permissions::ApprovalRequest {
+            category: crate::permissions::ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "pwd".to_string(),
+            respond_to,
+        });
+
+        assert_eq!(handle_key(&mut app, ctrl_key('k')), UiAction::LoadTools);
+        app.open_tool_picker();
+        assert!(app.toolset_change_is_blocked());
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(app.modal_is_open());
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!app.modal_is_open());
+
+        app.open_tool_picker();
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::ApplyToolset(_)
+        ));
+
+        app.pending_approvals.clear();
+        app.status.busy = true;
+        app.open_tool_picker();
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::ApplyToolset(_)
+        ));
+        assert!(app.toolset_change_is_blocked());
     }
 
     #[test]

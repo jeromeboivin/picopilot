@@ -73,6 +73,41 @@ resume a local-model session in a later picopilot process, provide the same
 needed) again. The current implementation supports one additive provider
 endpoint and does not pull models or manage their lifecycle.
 
+## Prompt and tool budget
+
+picopilot sends an explicitly empty system message to both hosted and local
+models. The SDK's default system instructions are not merged into the session.
+Built-in tools are also sent as an explicit allowlist so an empty selection
+cannot accidentally restore SDK defaults. The selectable set contains the
+platform shell, `view`, `edit`, `create`, `grep`, `glob`, and `task`; web search
+and web fetch are not enabled.
+
+New local-model conversations start with the shell only. New hosted-model
+conversations start with all seven tools. Before the first message, changing
+models recomputes that default unless tools were selected manually. After a
+conversation has history, model changes preserve the current tool selection.
+
+Press `Ctrl+K` to open the full-height tool picker. Use `Space` to toggle the
+highlighted tool, `s` for shell only, `a` for all tools, `Enter` to apply, and
+`Esc` to cancel. Applying a selection reconnects the same session; it is
+available only while idle and failed changes are rolled back. The status bar
+shows the active count as `tools N/7`. The picker can still be opened during an
+approval or reconnect, but applying a change waits until that work is finished.
+
+When resuming a historical session, picopilot first reconnects with shell-only
+tools, then detects the stored model from usage metrics or model-change history.
+Known hosted models are expanded to all seven tools; local and unknown models
+remain shell-only. Custom tool selections are not persisted across processes.
+Automatic transport recovery preserves the exact active selection.
+
+The live context-budget regression is opt-in because it requires a running
+Copilot CLI and authentication. With a configured local provider it also
+requires a tool-capable local model:
+
+```text
+PICOPILOT_CONTEXT_BUDGET_E2E=1 cargo test --test context_budget -- --ignored --nocapture
+```
+
 ## Development
 
 ```text

@@ -5,7 +5,11 @@ use std::time::Duration;
 
 use github_copilot_sdk::{
     handler::PermissionHandler,
-    types::{DeliveryMode, MessageOptions, Model, ResumeSessionConfig, SessionEvent, SessionId},
+    session_events::SessionModelChangeData,
+    types::{
+        DeliveryMode, MessageOptions, Model, ResumeSessionConfig, SessionEvent, SessionId,
+        SetModelOptions,
+    },
     Client, ClientOptions, Error as SdkError,
 };
 use serde_json::Value;
@@ -13,6 +17,7 @@ use serde_json::Value;
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
 use crate::provider::{ProviderError, ProviderRegistry};
+use crate::toolset::{Toolset, ToolsetProvenance};
 
 pub const MAX_RECOVERY_ATTEMPTS: usize = 3;
 const RECOVERY_INSTRUCTION: &str = "The client transport failed while a tool call may have been in flight. Its outcome is unknown. Before continuing, inspect the relevant state; do not assume success and do not retry the operation blindly.";
@@ -47,14 +52,81 @@ pub struct AppRuntime {
     pub provider_registry: Option<ProviderRegistry>,
     pub working_directory: PathBuf,
     pub active_model_options: ActiveModelOptions,
+    pub active_toolset: Toolset,
+    pub toolset_provenance: ToolsetProvenance,
     startup_config: AppConfig,
     session_start_time: Option<String>,
+    conversation_has_history: bool,
 }
 
 fn apply_active_model_options(config: &mut ResumeSessionConfig, options: &ActiveModelOptions) {
     config.model = options.model.clone();
     config.reasoning_effort = options.reasoning_effort.clone();
     config.context_tier = options.context_tier.clone();
+}
+
+fn apply_optional_active_model_options(
+    config: &mut ResumeSessionConfig,
+    options: Option<&ActiveModelOptions>,
+) {
+    if let Some(options) = options {
+        apply_active_model_options(config, options);
+    }
+}
+
+fn apply_toolset(config: ResumeSessionConfig, toolset: Toolset) -> ResumeSessionConfig {
+    config
+        .with_available_tools(toolset.available_tools())
+        .with_excluded_tools(crate::toolset::EXCLUDED_TOOLS.iter().copied())
+}
+
+fn default_toolset_for_model(
+    model: Option<&str>,
+    provider_registry: Option<&ProviderRegistry>,
+) -> Toolset {
+    let is_local = model.is_some_and(|model| {
+        provider_registry.is_some_and(|registry| {
+            registry
+                .qualified_model_ids()
+                .iter()
+                .any(|candidate| candidate == model)
+        })
+    });
+    Toolset::default_for_model(is_local)
+}
+
+fn model_from_history(events: &[SessionEvent]) -> Option<String> {
+    events.iter().rev().find_map(|event| {
+        (event.event_type == "session.model_change")
+            .then(|| event.typed_data::<SessionModelChangeData>())
+            .flatten()
+            .map(|data| data.new_model)
+    })
+}
+
+fn restored_model(usage_model: Option<String>, events: &[SessionEvent]) -> Option<String> {
+    usage_model.or_else(|| model_from_history(events))
+}
+
+fn should_recompute_default_toolset(
+    conversation_has_history: bool,
+    provenance: ToolsetProvenance,
+) -> bool {
+    !conversation_has_history && provenance == ToolsetProvenance::Default
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolsetTransition {
+    ReplaceEmpty,
+    ResumeExisting,
+}
+
+fn toolset_transition(conversation_has_history: bool) -> ToolsetTransition {
+    if conversation_has_history {
+        ToolsetTransition::ResumeExisting
+    } else {
+        ToolsetTransition::ReplaceEmpty
+    }
 }
 
 fn apply_provider_registry(
@@ -74,11 +146,14 @@ mod tests {
     use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, apply_provider_registry, models_from_session_catalog,
-        recovery_backoff, recovery_message, verify_session_identity, ActiveModelOptions,
-        CatalogError, SessionIdentity, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        apply_active_model_options, apply_optional_active_model_options, apply_provider_registry,
+        apply_toolset, default_toolset_for_model, model_from_history, models_from_session_catalog,
+        recovery_backoff, recovery_message, restored_model, should_recompute_default_toolset,
+        toolset_transition, verify_session_identity, ActiveModelOptions, CatalogError,
+        SessionIdentity, ToolsetTransition, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
     use crate::provider::{ProviderRegistry, ProviderSettings};
+    use crate::toolset::{Toolset, ToolsetProvenance};
 
     #[test]
     fn resume_configuration_restores_active_model_options() {
@@ -162,6 +237,91 @@ mod tests {
     }
 
     #[test]
+    fn resume_configuration_serializes_the_active_toolset_explicitly() {
+        let config = apply_toolset(
+            ResumeSessionConfig::new(SessionId::from("session-1")),
+            Toolset::empty(),
+        );
+
+        assert_eq!(config.available_tools, Some(Vec::new()));
+        assert_eq!(config.excluded_tools.as_ref().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn default_toolset_classifies_registered_local_models_only() {
+        let settings = ProviderSettings::default_for("http://localhost:11434/v1").unwrap();
+        let registry = ProviderRegistry::from_model_ids(&settings, ["qwen:7b"]).unwrap();
+
+        assert_eq!(
+            default_toolset_for_model(Some("local/qwen:7b"), Some(&registry)),
+            Toolset::shell_only()
+        );
+        assert_eq!(
+            default_toolset_for_model(Some("gpt-5"), Some(&registry)),
+            Toolset::all()
+        );
+        assert_eq!(
+            default_toolset_for_model(None, Some(&registry)),
+            Toolset::all()
+        );
+        assert_eq!(ToolsetProvenance::default(), ToolsetProvenance::Default);
+    }
+
+    #[test]
+    fn restored_model_prefers_usage_metrics_then_model_change_history() {
+        let history = vec![github_copilot_sdk::types::SessionEvent {
+            id: "event-1".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "session.model_change".to_string(),
+            data: serde_json::json!({"newModel":"gpt-5"}),
+        }];
+
+        assert_eq!(model_from_history(&history).as_deref(), Some("gpt-5"));
+        assert_eq!(
+            restored_model(Some("local/qwen:7b".to_string()), &history).as_deref(),
+            Some("local/qwen:7b")
+        );
+        assert_eq!(restored_model(None, &history).as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn default_toolsets_recompute_only_before_history_without_user_choice() {
+        assert!(should_recompute_default_toolset(
+            false,
+            ToolsetProvenance::Default
+        ));
+        assert!(!should_recompute_default_toolset(
+            true,
+            ToolsetProvenance::Default
+        ));
+        assert!(!should_recompute_default_toolset(
+            false,
+            ToolsetProvenance::User
+        ));
+    }
+
+    #[test]
+    fn empty_sessions_are_replaced_instead_of_resumed_for_toolset_changes() {
+        assert_eq!(toolset_transition(false), ToolsetTransition::ReplaceEmpty);
+        assert_eq!(toolset_transition(true), ToolsetTransition::ResumeExisting);
+    }
+
+    #[test]
+    fn resume_configuration_can_omit_model_overrides_for_historical_bootstrap() {
+        let mut config = ResumeSessionConfig::new(SessionId::from("session-1"));
+        apply_optional_active_model_options(&mut config, None);
+
+        assert!(config.model.is_none());
+        assert!(config.reasoning_effort.is_none());
+        assert!(config.context_tier.is_none());
+    }
+
+    #[test]
     fn decodes_hosted_and_provider_models_from_the_session_catalog() {
         let models = models_from_session_catalog(vec![
             serde_json::json!({
@@ -241,6 +401,84 @@ impl ResumeError {
 }
 
 #[derive(Debug)]
+pub enum ToolsetChangeError {
+    Replace(SdkError),
+    Resume(ResumeError),
+    Rollback {
+        apply: ResumeError,
+        rollback: ResumeError,
+    },
+}
+
+impl fmt::Display for ToolsetChangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Replace(error) => write!(formatter, "could not apply tool selection: {error}"),
+            Self::Resume(error) => write!(formatter, "could not apply tool selection: {error}"),
+            Self::Rollback { apply, rollback } => write!(
+                formatter,
+                "could not apply tool selection: {apply}; restoring the previous selection also failed: {rollback}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ToolsetChangeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Replace(error) => Some(error),
+            Self::Resume(error) => Some(error),
+            Self::Rollback { apply, .. } => Some(apply),
+        }
+    }
+}
+
+impl ToolsetChangeError {
+    pub fn is_transport_failure(&self) -> bool {
+        match self {
+            Self::Replace(error) => error.is_transport_failure(),
+            Self::Resume(error) => error.is_transport_failure(),
+            Self::Rollback { apply, rollback } => {
+                apply.is_transport_failure() || rollback.is_transport_failure()
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ModelSwitchError {
+    Session(SdkError),
+    Toolset(ToolsetChangeError),
+}
+
+impl fmt::Display for ModelSwitchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Session(error) => write!(formatter, "could not switch model: {error}"),
+            Self::Toolset(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ModelSwitchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Session(error) => Some(error),
+            Self::Toolset(error) => Some(error),
+        }
+    }
+}
+
+impl ModelSwitchError {
+    pub fn is_transport_failure(&self) -> bool {
+        match self {
+            Self::Session(error) => error.is_transport_failure(),
+            Self::Toolset(error) => error.is_transport_failure(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum RecoveryError {
     Client(SdkError),
     Resume(ResumeError),
@@ -292,6 +530,27 @@ pub fn recovery_backoff(attempt: usize) -> Duration {
 }
 
 impl AppRuntime {
+    pub fn has_conversation_history(&self) -> bool {
+        self.conversation_has_history
+    }
+
+    pub fn mark_conversation_started(&mut self) {
+        self.conversation_has_history = true;
+    }
+
+    pub fn is_local_model(&self, model: &str) -> bool {
+        self.provider_registry.as_ref().is_some_and(|registry| {
+            registry
+                .qualified_model_ids()
+                .iter()
+                .any(|candidate| candidate == model)
+        })
+    }
+
+    pub fn is_hosted_model(&self, model: &str) -> bool {
+        !self.is_local_model(model) && self.models.iter().any(|candidate| candidate.id == model)
+    }
+
     pub fn set_active_model_options(
         &mut self,
         model: String,
@@ -303,6 +562,161 @@ impl AppRuntime {
             reasoning_effort,
             context_tier,
         };
+    }
+
+    pub async fn set_toolset(&mut self, toolset: Toolset) -> Result<(), ToolsetChangeError> {
+        self.reconnect_toolset(toolset, ToolsetProvenance::User)
+            .await
+    }
+
+    pub async fn switch_model(
+        &mut self,
+        model: String,
+        options: Option<SetModelOptions>,
+        reasoning_effort: Option<String>,
+        context_tier: Option<String>,
+    ) -> Result<(), ModelSwitchError> {
+        let recompute_default = should_recompute_default_toolset(
+            self.conversation_has_history,
+            self.toolset_provenance,
+        );
+        let next_model_options = ActiveModelOptions {
+            model: Some(model.clone()),
+            reasoning_effort,
+            context_tier,
+        };
+        let default_toolset = recompute_default
+            .then(|| default_toolset_for_model(Some(&model), self.provider_registry.as_ref()));
+
+        if default_toolset.is_some_and(|toolset| toolset != self.active_toolset)
+            && toolset_transition(self.conversation_has_history) == ToolsetTransition::ReplaceEmpty
+        {
+            return self
+                .replace_empty_session(
+                    default_toolset.expect("checked above"),
+                    ToolsetProvenance::Default,
+                    next_model_options,
+                )
+                .await
+                .map_err(ModelSwitchError::Session);
+        }
+
+        self.session
+            .set_model(&model, options)
+            .await
+            .map_err(ModelSwitchError::Session)?;
+        self.active_model_options = next_model_options;
+
+        if let Some(toolset) = default_toolset {
+            self.reconnect_toolset(toolset, ToolsetProvenance::Default)
+                .await
+                .map_err(ModelSwitchError::Toolset)?;
+        }
+        Ok(())
+    }
+
+    async fn reconnect_toolset(
+        &mut self,
+        toolset: Toolset,
+        provenance: ToolsetProvenance,
+    ) -> Result<(), ToolsetChangeError> {
+        let previous_toolset = self.active_toolset;
+        if previous_toolset == toolset {
+            self.toolset_provenance = provenance;
+            return Ok(());
+        }
+
+        if toolset_transition(self.conversation_has_history) == ToolsetTransition::ReplaceEmpty {
+            return self
+                .replace_empty_session(toolset, provenance, self.active_model_options.clone())
+                .await
+                .map_err(ToolsetChangeError::Replace);
+        }
+
+        let expected = SessionIdentity {
+            session_id: self.session.id().clone(),
+            start_time: self.session_start_time.clone(),
+        };
+        self.session
+            .disconnect()
+            .await
+            .map_err(|error| ToolsetChangeError::Resume(ResumeError::Session(error)))?;
+
+        let candidate = self
+            .resume_on_client(
+                &self.client,
+                expected.clone(),
+                toolset,
+                Some(&self.active_model_options),
+            )
+            .await;
+        match candidate {
+            Ok((session, start_time)) => {
+                self.session = session;
+                self.session_start_time = start_time;
+                self.active_toolset = toolset;
+                self.toolset_provenance = provenance;
+                Ok(())
+            }
+            Err(apply_error) => match self
+                .resume_on_client(
+                    &self.client,
+                    expected,
+                    previous_toolset,
+                    Some(&self.active_model_options),
+                )
+                .await
+            {
+                Ok((session, start_time)) => {
+                    self.session = session;
+                    self.session_start_time = start_time;
+                    Err(ToolsetChangeError::Resume(apply_error))
+                }
+                Err(rollback_error) => Err(ToolsetChangeError::Rollback {
+                    apply: apply_error,
+                    rollback: rollback_error,
+                }),
+            },
+        }
+    }
+
+    async fn replace_empty_session(
+        &mut self,
+        toolset: Toolset,
+        provenance: ToolsetProvenance,
+        model_options: ActiveModelOptions,
+    ) -> Result<(), SdkError> {
+        let mut config = self
+            .startup_config
+            .session_config_in_with_registry_and_toolset(
+                &self.working_directory,
+                self.provider_registry.as_ref(),
+                toolset,
+            )
+            .with_permission_handler(self.permission_handler.clone());
+        config.model = model_options.model.clone();
+        config.reasoning_effort = model_options.reasoning_effort.clone();
+        config.context_tier = model_options.context_tier.clone();
+
+        let candidate = self.client.create_session(config).await?;
+        let candidate_start_time = match self.client.get_session_metadata(candidate.id()).await {
+            Ok(metadata) => metadata.map(|metadata| metadata.start_time),
+            Err(error) => {
+                let _ = candidate.disconnect().await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.session.disconnect().await {
+            let _ = candidate.disconnect().await;
+            return Err(error);
+        }
+
+        self.session = candidate;
+        self.session_start_time = candidate_start_time;
+        self.active_model_options = model_options;
+        self.active_toolset = toolset;
+        self.toolset_provenance = provenance;
+        Ok(())
     }
 
     pub async fn resume(
@@ -324,22 +738,58 @@ impl AppRuntime {
             .await
             .map_err(ResumeError::Session)?;
 
+        let expected = SessionIdentity {
+            session_id,
+            start_time: expected_start_time,
+        };
         let (resumed, actual_start_time) = self
-            .resume_on_client(
-                &self.client,
-                SessionIdentity {
-                    session_id,
-                    start_time: expected_start_time,
-                },
-            )
+            .resume_on_client(&self.client, expected, Toolset::shell_only(), None)
             .await?;
+
+        let history = match resumed.get_events().await {
+            Ok(history) => history,
+            Err(error) => {
+                let _ = resumed.disconnect().await;
+                return Err(ResumeError::Session(error));
+            }
+        };
+        let usage_model = resumed
+            .rpc()
+            .usage()
+            .get_metrics()
+            .await
+            .ok()
+            .and_then(|metrics| metrics.current_model);
+        let model = restored_model(usage_model, &history);
 
         self.session = resumed;
         self.session_start_time = actual_start_time;
-        self.session
-            .get_events()
-            .await
-            .map_err(ResumeError::Session)
+        self.active_toolset = Toolset::shell_only();
+        self.toolset_provenance = ToolsetProvenance::Default;
+        self.active_model_options = ActiveModelOptions {
+            model: model.clone(),
+            reasoning_effort: None,
+            context_tier: None,
+        };
+        self.conversation_has_history = true;
+
+        if model
+            .as_deref()
+            .is_some_and(|model| self.is_hosted_model(model))
+        {
+            let expected = SessionIdentity {
+                session_id: self.session.id().clone(),
+                start_time: self.session_start_time.clone(),
+            };
+            let (expanded, actual_start_time) = self
+                .resume_on_client(&self.client, expected, Toolset::all(), None)
+                .await?;
+            self.session = expanded;
+            self.session_start_time = actual_start_time;
+            self.active_toolset = Toolset::all();
+        }
+
+        Ok(history)
     }
 
     pub async fn recover_transport(&mut self) -> Result<(), RecoveryError> {
@@ -354,7 +804,12 @@ impl AppRuntime {
             .await
             .map_err(RecoveryError::Client)?;
         let (resumed, actual_start_time) = self
-            .resume_on_client(&replacement, expected)
+            .resume_on_client(
+                &replacement,
+                expected,
+                self.active_toolset,
+                Some(&self.active_model_options),
+            )
             .await
             .map_err(RecoveryError::Resume)?;
         resumed
@@ -372,9 +827,11 @@ impl AppRuntime {
         &self,
         client: &Client,
         expected: SessionIdentity,
+        toolset: Toolset,
+        model_options: Option<&ActiveModelOptions>,
     ) -> Result<(github_copilot_sdk::session::Session, Option<String>), ResumeError> {
         let resumed = client
-            .resume_session(self.resume_config(expected.session_id.clone()))
+            .resume_session(self.resume_config(expected.session_id.clone(), toolset, model_options))
             .await
             .map_err(ResumeError::Session)?;
         let actual_start_time = match client.get_session_metadata(resumed.id()).await {
@@ -400,24 +857,29 @@ impl AppRuntime {
             .client_options_in(&self.working_directory)
     }
 
-    fn resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
-        let mut config = self.base_resume_config(session_id);
-        apply_active_model_options(&mut config, &self.active_model_options);
+    fn resume_config(
+        &self,
+        session_id: SessionId,
+        toolset: Toolset,
+        model_options: Option<&ActiveModelOptions>,
+    ) -> ResumeSessionConfig {
+        let mut config = self.base_resume_config(session_id, toolset);
+        apply_optional_active_model_options(&mut config, model_options);
         config
     }
 
-    fn base_resume_config(&self, session_id: SessionId) -> ResumeSessionConfig {
+    fn base_resume_config(&self, session_id: SessionId, toolset: Toolset) -> ResumeSessionConfig {
         let config = ResumeSessionConfig::new(session_id)
             .with_client_name("picopilot")
             .with_streaming(true)
-            .with_available_tools(crate::config::V1_AVAILABLE_TOOLS.iter().copied())
-            .with_excluded_tools(crate::config::V1_EXCLUDED_TOOLS.iter().copied())
             .with_working_directory(self.working_directory.clone())
             .with_permission_handler(self.permission_handler.clone())
             .with_system_message(crate::config::system_message_config())
-            .with_system_message_transform(crate::config::system_message_transform())
             .with_suppress_resume_event(true);
-        apply_provider_registry(config, self.provider_registry.as_ref())
+        apply_provider_registry(
+            apply_toolset(config, toolset),
+            self.provider_registry.as_ref(),
+        )
     }
 }
 
@@ -547,6 +1009,20 @@ fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, Catalo
 }
 
 pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
+    connect_inner(config, None).await
+}
+
+pub async fn connect_with_toolset(
+    config: &AppConfig,
+    requested_toolset: Toolset,
+) -> Result<AppRuntime, StartupError> {
+    connect_inner(config, Some(requested_toolset)).await
+}
+
+async fn connect_inner(
+    config: &AppConfig,
+    requested_toolset: Option<Toolset>,
+) -> Result<AppRuntime, StartupError> {
     let working_directory = std::env::current_dir().map_err(StartupError::CurrentDirectory)?;
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
     let provider_settings = config
@@ -564,6 +1040,9 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
         ),
         None => None,
     };
+    let active_toolset = requested_toolset.unwrap_or_else(|| {
+        default_toolset_for_model(config.model.as_deref(), provider_registry.as_ref())
+    });
 
     match provider_registry.as_ref() {
         Some(registry) => config
@@ -577,7 +1056,11 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
     let session = client
         .create_session(
             config
-                .session_config_in_with_registry(&working_directory, provider_registry.as_ref())
+                .session_config_in_with_registry_and_toolset(
+                    &working_directory,
+                    provider_registry.as_ref(),
+                    active_toolset,
+                )
                 .with_permission_handler(permission_handler.clone()),
         )
         .await
@@ -624,5 +1107,8 @@ pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
             reasoning_effort: config.reasoning_effort.clone(),
             context_tier: config.context_tier.clone(),
         },
+        active_toolset,
+        toolset_provenance: ToolsetProvenance::Default,
+        conversation_has_history: false,
     })
 }
