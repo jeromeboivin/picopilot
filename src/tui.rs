@@ -3,6 +3,7 @@ use crate::events::{
     ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
 use std::collections::VecDeque;
+use std::future::Future;
 use std::io;
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 
+use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult};
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
@@ -146,6 +148,36 @@ pub struct App {
     todos: Option<TodoSnapshot>,
     todo_refresh_requested: bool,
     should_quit: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendPath {
+    Fleet,
+    Single,
+}
+
+async fn send_with_fleet_fallback<FleetStart, FleetFuture, SingleSend, SingleFuture, Error>(
+    prompt: String,
+    fleet_start: FleetStart,
+    single_send: SingleSend,
+) -> Result<SendPath, Error>
+where
+    FleetStart: FnOnce(FleetStartRequest) -> FleetFuture,
+    FleetFuture: Future<Output = Result<FleetStartResult, Error>>,
+    SingleSend: FnOnce(String) -> SingleFuture,
+    SingleFuture: Future<Output = Result<String, Error>>,
+{
+    match fleet_start(FleetStartRequest {
+        prompt: Some(prompt.clone()),
+    })
+    .await
+    {
+        Ok(result) if result.started => Ok(SendPath::Fleet),
+        Ok(_) | Err(_) => {
+            single_send(prompt).await?;
+            Ok(SendPath::Single)
+        }
+    }
 }
 
 impl App {
@@ -841,12 +873,23 @@ async fn process_terminal_events(
             }
             UiAction::Send(prompt) => {
                 app.add_user_message(prompt.clone());
-                if let Err(error) = runtime.session.send(prompt).await {
-                    app.apply(crate::events::EventUpdate::Banner {
-                        severity: crate::events::BannerSeverity::BlockingError,
-                        message: format!("message could not be sent: {error}"),
-                        url: None,
-                    });
+                let session = &runtime.session;
+                match send_with_fleet_fallback(
+                    prompt,
+                    |request| async move { session.rpc().fleet().start(request).await },
+                    |prompt| async move { session.send(prompt).await },
+                )
+                .await
+                {
+                    Ok(SendPath::Fleet) => app.set_fleet_active(true),
+                    Ok(SendPath::Single) => app.set_fleet_active(false),
+                    Err(error) => {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::BlockingError,
+                            message: format!("message could not be sent: {error}"),
+                            url: None,
+                        });
+                    }
                 }
             }
         }
@@ -1359,9 +1402,12 @@ fn format_count(value: i64) -> String {
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{Model, SessionId, SessionMetadata};
 
-    use super::{handle_key, App, ChatEntry, ModelSelection, UiAction};
+    use super::{
+        handle_key, send_with_fleet_fallback, App, ChatEntry, ModelSelection, SendPath, UiAction,
+    };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
 
     #[test]
@@ -1608,6 +1654,54 @@ mod tests {
             UiAction::None
         );
         assert!(!app.modal_is_open());
+    }
+
+    #[tokio::test]
+    async fn fleet_start_owns_the_prompt_when_supported() {
+        let path = send_with_fleet_fallback(
+            "parallelize this".to_string(),
+            |request| async move {
+                assert_eq!(request.prompt.as_deref(), Some("parallelize this"));
+                Ok::<_, String>(FleetStartResult { started: true })
+            },
+            |_prompt| async { panic!("single-agent fallback should not send") },
+        )
+        .await
+        .expect("Fleet start should succeed");
+
+        assert_eq!(path, SendPath::Fleet);
+    }
+
+    #[tokio::test]
+    async fn fleet_start_falls_back_to_one_single_agent_send() {
+        let path = send_with_fleet_fallback(
+            "inspect this".to_string(),
+            |_request| async { Ok::<_, String>(FleetStartResult { started: false }) },
+            |prompt| async move {
+                assert_eq!(prompt, "inspect this");
+                Ok::<_, String>("message-1".to_string())
+            },
+        )
+        .await
+        .expect("single-agent fallback should succeed");
+
+        assert_eq!(path, SendPath::Single);
+    }
+
+    #[tokio::test]
+    async fn fleet_start_errors_are_silently_fallbacked() {
+        let path = send_with_fleet_fallback(
+            "repair this".to_string(),
+            |_request| async { Err::<FleetStartResult, _>("unsupported".to_string()) },
+            |prompt| async move {
+                assert_eq!(prompt, "repair this");
+                Ok::<_, String>("message-2".to_string())
+            },
+        )
+        .await
+        .expect("single-agent fallback should handle a Fleet error");
+
+        assert_eq!(path, SendPath::Single);
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
