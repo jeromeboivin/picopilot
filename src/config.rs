@@ -1,7 +1,10 @@
 use std::fmt;
 
 use clap::Parser;
-use github_copilot_sdk::types::Model;
+use github_copilot_sdk::types::{Model, SessionConfig};
+
+pub const V1_AVAILABLE_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
+pub const V1_EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
@@ -77,6 +80,18 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn session_config(&self) -> SessionConfig {
+        let mut session = SessionConfig::default()
+            .with_client_name("picopilot")
+            .with_streaming(true)
+            .with_available_tools(V1_AVAILABLE_TOOLS.iter().copied())
+            .with_excluded_tools(V1_EXCLUDED_TOOLS.iter().copied());
+        session.model = self.model.clone();
+        session.reasoning_effort = self.reasoning_effort.clone();
+        session.context_tier = self.context_tier.clone();
+        session
+    }
+
     pub fn validate_against(&self, models: &[Model]) -> Result<(), ConfigError> {
         let Some(model_id) = self.model.as_deref() else {
             if self.reasoning_effort.is_some() {
@@ -200,6 +215,45 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "reasoning effort 'medium' is not supported by model 'claude-sonnet-4.5'; supported values: low, high"
+        );
+    }
+
+    #[test]
+    fn builds_a_streaming_session_with_the_v1_tool_policy() {
+        let config = AppConfig::try_parse_from([
+            "picopilot",
+            "--model",
+            "claude-sonnet-4.5",
+            "--reasoning-effort",
+            "high",
+            "--context-tier",
+            "long_context",
+        ])
+        .expect("valid startup options should parse");
+
+        let session = config.session_config();
+
+        assert_eq!(session.model.as_deref(), Some("claude-sonnet-4.5"));
+        assert_eq!(session.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(session.context_tier.as_deref(), Some("long_context"));
+        assert_eq!(session.streaming, Some(true));
+        assert_eq!(
+            session.available_tools,
+            Some(
+                ["bash", "view", "edit", "create", "grep", "glob", "task"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            session.excluded_tools,
+            Some(
+                ["web_fetch", "web_search"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+            )
         );
     }
 }
