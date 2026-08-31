@@ -1,7 +1,11 @@
 use clap::Parser;
 
 #[derive(Debug, Parser, PartialEq, Eq)]
-#[command(name = "picopilot", version, about = "A minimalist Copilot coding agent")]
+#[command(
+    name = "picopilot",
+    version,
+    about = "A minimalist Copilot coding agent"
+)]
 pub struct AppConfig {
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
