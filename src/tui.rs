@@ -67,6 +67,7 @@ pub enum UiAction {
     None,
     Quit,
     Send(String),
+    StartFleet(String),
     Approval(ApprovalDecision),
     LoadSessions,
     LoadSessionPreview(SessionId),
@@ -829,6 +830,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             let input = app.take_input();
             if input.trim().is_empty() {
                 UiAction::None
+            } else if let Some(prompt) = input.strip_prefix("/fleet ") {
+                let prompt = prompt.trim();
+                if prompt.is_empty() {
+                    UiAction::None
+                } else {
+                    UiAction::StartFleet(prompt.to_string())
+                }
             } else {
                 UiAction::Send(input)
             }
@@ -1083,6 +1091,20 @@ async fn process_terminal_events(
             }
             UiAction::Send(prompt) => {
                 app.add_user_message(prompt.clone());
+                match runtime.session.send(prompt).await {
+                    Ok(_) => app.set_fleet_active(false),
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
+                    }
+                    Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::BlockingError,
+                        message: format!("message could not be sent: {error}"),
+                        url: None,
+                    }),
+                }
+            }
+            UiAction::StartFleet(prompt) => {
+                app.add_user_message(format!("/fleet {prompt}"));
                 let session = &runtime.session;
                 match send_with_fleet_fallback(
                     prompt,
@@ -1932,6 +1954,27 @@ mod tests {
             UiAction::None
         );
         assert_eq!(app.input(), "x");
+    }
+
+    #[test]
+    fn fleet_requires_an_explicit_command() {
+        let mut app = App::new(None);
+        for character in "/fleet inspect the parser".chars() {
+            app.push_input(character);
+        }
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::StartFleet("inspect the parser".to_string())
+        );
+
+        for character in "Hi".chars() {
+            app.push_input(character);
+        }
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Send("Hi".to_string())
+        );
     }
 
     #[tokio::test]
