@@ -1,5 +1,136 @@
 # Knowledge extraction log
 
+## 2026-08-31T21:34:24Z — Twelfth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (VS Code copilot-chat, ~1.9MB) — Re-reviewed via sampling.
+  Extracted three incremental durable facts not yet captured: (1) no CLI
+  API-key flag design rule (env-only to avoid shell/process-list leakage),
+  (2) client drop auto-cleans child Copilot process on startup failure,
+  (3) `recomputeContextTokens` includes protocol overhead (unreliable for
+  exact-zero system-prompt assertions), (4) `SessionMetadata` lacks model ID
+  (cross-process resume cannot know local vs hosted up front).
+- `aca7cee8` events — Trivial greeting with local model. No durable knowledge.
+- `73b24588` events — `READY` control turn only. No durable knowledge.
+- `4bcffad6` events — `READY` control turn only. No durable knowledge.
+- `fc907ef4` events — `READY` control turn only. No durable knowledge.
+- `f00eaa95` events — `READY` control turn only. No durable knowledge.
+
+**Frontmatter audit:** All 12 concept files pass validation (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Updated `local-provider-support.md` — added explicit no-CLI-API-key-flag
+  design rule and startup cleanup (client drop) behavior to Constraints.
+- Updated `sdk-api-surface.md` — added "no model ID" to `SessionMetadata`
+  notes; added `recomputeContextTokens` protocol-overhead caveat to
+  Absent/generated section.
+- Verified `toolset-management.md` provenance enum matches code (`User` not
+  `Explicit`); no change needed.
+
+## 2026-08-31T21:36:00Z — Eleventh consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (VS Code copilot-chat transcript) — Re-reviewed. SDK version,
+  startup flow, and import facts already captured in existing concepts.
+- `aca7cee8` events — Trivial `hi` control turn with local model. No durable
+  knowledge.
+- `73b24588` events — `READY` control turn only. No durable knowledge.
+- `4bcffad6` events — `READY` control turn only. No durable knowledge.
+- `fc907ef4` events — `READY` control turn only. No durable knowledge.
+- `f00eaa95` events — `READY` control turn only. No durable knowledge.
+- `9375234c` events — `READY` control turn only. No durable knowledge.
+
+**Frontmatter audit:** All 12 concept files pass validation (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Merged `toolset-and-tool-budget.md` into `toolset-management.md` —
+  consolidated canonical tools table, excluded tools (`web_fetch`/`web_search`),
+  `from_tools` rejection, picker keybindings (`Space`/`s`/`a`), model-change
+  recomputation rule, and context-budget regression test details. Deleted
+  the duplicate file.
+- Recreated `okf-project-index.instructions.md` — corrected all concept
+  names and relative paths to match actual filenames (12 entries).
+
+## 2026-08-31T21:34:00Z — Tenth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (VS Code, re-reviewed) — Prior pass created a `toolset-management.md`
+  index entry but the file was not committed. Created `toolset-and-tool-budget.md`
+  with full content covering explicit allowlist rationale, bitmask implementation,
+  Ctrl+K picker, default tool sets, reconnect semantics, and context-budget test.
+- `aca7cee8` (9 events) — Trivial `local/qwen3.5:4b` greeting. Transient.
+- `73b24588` (11 events) — READY test. Transient.
+- `4bcffad6` (11 events) — READY test. Transient.
+- `fc907ef4` (25 events) — READY tests. Transient.
+- `f00eaa95` (25 events) — READY tests. Transient.
+
+**Frontmatter audit:** All 12 concept files validated (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Verified `toolset-management.md` already exists with comprehensive content
+  from prior pass; no duplicate created.
+- Fixed `index.md` — corrected broken `toolset-management.md` link (was
+  pointing to nonexistent `toolset-and-tool-budget.md` in a mid-session state).
+- Updated `architecture.md` — added `toolset.rs` to module layout, updated
+  sources and generated timestamp.
+- Updated `tui-conventions.md` — added Ctrl+K tool picker to keyboard
+  shortcuts table and shortcut bar.
+- Verified test count: 96 passed (matches existing documentation).
+- All 12 concept files pass frontmatter validation.
+
+## 2026-08-31T21:30:00Z — Ninth consolidation pass
+
+**Reviewed transcripts:**
+- `73ea30cc` (3126 events, ~56 KB extracted) — VS Code session. Full
+  implementation of local provider support (committed as 05a1132) and
+  prompt pollution elimination with toolset management (96 tests).
+  User explicitly rejected the ~4,699 system tokens from `customize` mode,
+  asking "what are these system instructions? Supposed to be empty."
+  Extensive SDK API investigation confirmed `mode="replace"` with empty
+  content. Toolset management implemented with Ctrl+K picker, mask-backed
+  Toolset domain type, model-aware defaults (shell-only for local, all for
+  hosted), and transactional same-session resume. Live budget regression
+  test added (opt-in, requires external services).
+- `aca7cee8` (9 events) — CLI session. Model changed to `local/qwen3.5:4b`,
+  user said "hi". Transient.
+- `73b24588` (11 events) — CLI session. READY test. Transient.
+- `4bcffad6` (11 events) — CLI session. READY test. Transient.
+- `fc907ef4` (25 events) — CLI session. Multiple READY tests. Transient.
+
+**Frontmatter audit:** All 12 concept files validated (fenced YAML with
+non-empty `type` key, plus title, description, tags, status, sources,
+generated). index.md and log.md are exempt.
+
+**Changes:**
+- Updated `local-provider-support.md` — status draft→verified, marked as
+  implemented (commit 05a1132), added implementation details including
+  secret-safe Debug, capability-empty label wording, r/c no-op behavior.
+- Rewrote `system-message-trimming.md` — superseded customize-mode approach
+  with strict empty replacement (mode="replace", content=""), documented
+  removal of PicopilotSystemMessageTransform, added SDK semantics and
+  verification method.
+- Updated `architecture.md` — added `provider.rs`, `toolset.rs` modules,
+  `reqwest` dependency.
+- Created `toolset-management.md` — mask-backed Toolset domain, selectable
+  profiles (all/shell-only/empty), Ctrl+K picker, model-aware defaults,
+  transactional reconnect, status bar indicator, SDK disconnect semantics.
+- Updated `tui-conventions.md` — added Ctrl+K shortcut, tools N/7 status
+  bar indicator.
+- Updated `sdk-api-surface.md` — added SystemMessageConfig fields/semantics,
+  Session::disconnect(), context attribution endpoints with null caveats.
+- Updated `known-gaps.md` — added live budget test external dependency gap.
+- Updated `development-workflow.md` — test count 49→96.
+- Updated `index.md` — added toolset-management entry, updated descriptions
+  for system-message, local-provider, development-workflow, known-gaps.
+- Updated `okf-project-index.instructions.md` — corrected concept names
+  and paths, added toolset-management entry.
+
 ## 2026-08-31T19:03:00Z — Eighth consolidation pass
 
 **Reviewed transcripts:**

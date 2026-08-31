@@ -4,22 +4,23 @@ title: Local provider support (BYOK)
 description: >
   Additive local model registration via SDK NamedProviderConfig for Ollama and
   OpenAI-compatible endpoints, coexisting with hosted Copilot models in the
-  same picker. Investigated and planned; not yet implemented.
+  same picker. Implemented and committed (05a1132).
 tags: [picopilot, ollama, byok, local-models, providers]
-status: draft
+status: verified
 sources:
-  - session 73ea30cc (investigation + plan)
+  - session 73ea30cc (investigation, plan, implementation)
   - github/copilot-sdk rust/src/types.rs (NamedProviderConfig, ProviderModelConfig)
-generated: "2026-08-31T19:03:00Z"
+  - commit 05a1132 (Add OpenAI-compatible local provider support)
+generated: "2026-08-31T21:30:00Z"
 ---
 
 # Local provider support (BYOK)
 
 ## Status
 
-Investigated and planned in session `73ea30cc`. **Not yet implemented** — no
-code committed. The design was agreed, and implementation was started but the
-session ended before any commits landed.
+Implemented and committed in session `73ea30cc` (commit `05a1132`).
+79 tests pass including 17 provider-focused tests with real async HTTP
+fixtures. The `NamedProviderConfig` API is experimental in the SDK.
 
 ## Design choice: additive registry
 
@@ -69,24 +70,34 @@ api_key: None  (Ollama requires no auth)
 | `--provider-wire-api`     | —                           | `completions` |
 | —                         | `PICOPILOT_PROVIDER_API_KEY`| (none)        |
 
-### Key integration points
+### Implementation (committed)
 
-1. New `src/provider.rs` module: HTTP discovery (`GET {url}/models`),
-   validation, construction of `NamedProviderConfig` + `ProviderModelConfig`.
+1. `src/provider.rs` — HTTP discovery (`GET {url}/models`), bounded `reqwest`
+   client, bearer authentication via `PICOPILOT_PROVIDER_API_KEY`, sorted and
+   deduplicated model IDs, qualified names (e.g. `local/qwen:7b`),
+   secret-safe error output and `Debug` impl (never delegates to SDK's
+   secret-printing provider formatter).
 2. Startup fail-fast: provider URL must be reachable, authorized, and return
    at least one model before the TUI opens.
-3. `--model` validation expanded to accept qualified IDs (e.g.
-   `local/qwen2.5-coder:14b`).
+3. `--model` validation expanded to accept qualified IDs.
 4. Provider registry stored in `AppRuntime`, reapplied to every
    `ResumeSessionConfig` including transport recovery.
 5. Picker shows local models honestly: no fabricated pricing, context limits,
-   or reasoning controls. Label as "local inference."
+   or reasoning controls. Label as "local inference." Capability-missing
+   local rows say "unavailable" (not "fixed"). `r`/`c` cycling is a no-op
+   for local models.
 6. Local models must implement OpenAI-compatible tool calling.
 
 ## Constraints
 
 - No config file — all provider configuration via CLI flags and env vars,
   consistent with picopilot's "no config file" policy.
+- **No CLI API-key flag** — API keys are accepted only via
+  `PICOPILOT_PROVIDER_API_KEY` to prevent exposure in shell history and
+  process lists.
 - No capability fabrication — unknown local models are registered with
   `capabilities: None`.
 - The `NamedProviderConfig` API is marked experimental in the SDK.
+- **Startup cleanup** — dropping the SDK `Client` automatically cleans up
+  the child Copilot CLI process, so provider-discovery failures during
+  startup do not require explicit shutdown logic.
