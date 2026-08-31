@@ -8,7 +8,10 @@ use std::future::Future;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, MouseEvent, MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -182,6 +185,7 @@ pub struct App {
     reconnecting: bool,
     blocked: bool,
     show_internals: bool,
+    chat_scroll_offset: usize,
     should_quit: bool,
 }
 
@@ -365,6 +369,22 @@ impl App {
     fn close_modal(&mut self) {
         self.modal = None;
         self.selected_item = 0;
+    }
+
+    fn scroll_chat_up(&mut self, lines: usize) {
+        self.chat_scroll_offset = self.chat_scroll_offset.saturating_add(lines);
+    }
+
+    fn scroll_chat_down(&mut self, lines: usize) {
+        self.chat_scroll_offset = self.chat_scroll_offset.saturating_sub(lines);
+    }
+
+    fn scroll_chat_to_top(&mut self) {
+        self.chat_scroll_offset = usize::MAX;
+    }
+
+    fn scroll_chat_to_bottom(&mut self) {
+        self.chat_scroll_offset = 0;
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -951,6 +971,30 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             app.show_internals = !app.show_internals;
             UiAction::None
         }
+        KeyCode::PageUp => {
+            app.scroll_chat_up(10);
+            UiAction::None
+        }
+        KeyCode::PageDown => {
+            app.scroll_chat_down(10);
+            UiAction::None
+        }
+        KeyCode::Up => {
+            app.scroll_chat_up(1);
+            UiAction::None
+        }
+        KeyCode::Down => {
+            app.scroll_chat_down(1);
+            UiAction::None
+        }
+        KeyCode::Home => {
+            app.scroll_chat_to_top();
+            UiAction::None
+        }
+        KeyCode::End => {
+            app.scroll_chat_to_bottom();
+            UiAction::None
+        }
         KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::None,
         KeyCode::Enter => {
             let input = app.take_input();
@@ -976,6 +1020,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::None
         }
         _ => UiAction::None,
+    }
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => app.scroll_chat_up(3),
+        MouseEventKind::ScrollDown => app.scroll_chat_down(3),
+        _ => {}
     }
 }
 
@@ -1011,7 +1063,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
         let _ = disable_raw_mode();
         return Err(error);
     }
@@ -1021,7 +1073,7 @@ pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
             return Err(error);
         }
     };
@@ -1128,9 +1180,12 @@ async fn process_terminal_events(
     events: &mut EventSubscription,
 ) -> io::Result<()> {
     while event::poll(Duration::ZERO)? {
-        let Event::Key(key) = event::read()? else {
+        let event = event::read()?;
+        if let Event::Mouse(mouse) = event {
+            handle_mouse(app, mouse);
             continue;
-        };
+        }
+        let Event::Key(key) = event else { continue };
 
         match handle_key(app, key) {
             UiAction::None => {}
@@ -1445,7 +1500,11 @@ async fn refresh_todos_if_requested(
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()
 }
 
@@ -1978,23 +2037,20 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     let inner_width = area.width.saturating_sub(4);
     let visible_height = area.height;
     let lines = chat_lines(app);
-    let total_lines = wrapped_line_count(&lines, inner_width);
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
-    let scroll = total_lines
-        .saturating_sub(visible_height as usize)
+    let total_lines = paragraph.line_count(inner_width);
+    let scroll = chat_scroll_position(app, total_lines, visible_height as usize)
         .min(u16::MAX as usize) as u16;
 
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
 }
 
-fn wrapped_line_count(lines: &[Line<'static>], width: u16) -> usize {
-    let width = usize::from(width.max(1));
-    lines
-        .iter()
-        .map(|line| line.width().max(1).div_ceil(width))
-        .sum()
+fn chat_scroll_position(app: &App, total_lines: usize, visible_height: usize) -> usize {
+    total_lines
+        .saturating_sub(visible_height)
+        .saturating_sub(app.chat_scroll_offset)
 }
 
 fn chat_lines(app: &App) -> Vec<Line<'static>> {
@@ -2551,7 +2607,9 @@ fn format_count(value: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
@@ -2560,10 +2618,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        displayed_reasoning_effort, draw, draw_model_picker, draw_tool_picker, handle_key,
-        modal_area, model_context_label, model_cost_label_for, model_picker_detail_lines,
-        model_picker_row_for, send_with_fleet_fallback, status_bar, todo_detail_lines, App,
-        ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
+        chat_scroll_position, displayed_reasoning_effort, draw, draw_model_picker,
+        draw_tool_picker, handle_key, handle_mouse, modal_area, model_context_label,
+        model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
+        send_with_fleet_fallback, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
+        ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -2591,6 +2650,50 @@ mod tests {
                 agent_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn page_keys_scroll_the_response_and_end_restores_bottom_follow() {
+        let mut app = App::new(None);
+        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(chat_scroll_position(&app, 100, 20), 70);
+
+        handle_key(&mut app, key(KeyCode::PageDown, KeyEventKind::Press));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+
+        handle_key(&mut app, key(KeyCode::Up, KeyEventKind::Press));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 79);
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+
+        handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::End, KeyEventKind::Press));
+        assert_eq!(chat_scroll_position(&app, 120, 20), 100);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_the_response_area() {
+        let mut app = App::new(None);
+        let mouse = |kind| MouseEvent {
+            kind,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        handle_mouse(&mut app, mouse(MouseEventKind::ScrollUp));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 77);
+
+        handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+
+        handle_mouse(&mut app, mouse(MouseEventKind::Down(MouseButton::Left)));
+        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
     }
 
     #[test]
@@ -2658,6 +2761,37 @@ mod tests {
         assert_eq!(lines[4].to_string(), "● Done");
         assert_eq!(lines[2].spans[1].style.fg, Some(Color::DarkGray));
         assert_eq!(lines[6].to_string(), "✻ Copilot is responding…");
+    }
+
+    #[test]
+    fn bottom_follow_shows_the_last_word_wrapped_response_row() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::AssistantMessage {
+            message_id: "message-long".to_string(),
+            content: [
+                "aaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbb",
+                "cccccccccccccccccccc",
+                "dddddddddddddddddddd",
+                "eeeeeeeeeeeeeeeeeeee",
+                "FINAL_RESPONSE_MARKER",
+            ]
+            .join(" "),
+            agent_id: None,
+        });
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+
+        terminal.draw(|frame| draw(frame, &app)).expect("draw TUI");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(rendered.contains("FINAL_RESPONSE_MARKER"));
     }
 
     #[test]
