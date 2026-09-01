@@ -2,6 +2,42 @@
 
 A minimalist Rust coding agent built on the GitHub Copilot SDK.
 
+## Command-line usage
+
+picopilot uses the process's current directory as the project directory by
+default. Specify a project directory either as the positional `PROJECT`
+argument:
+
+```text
+picopilot PROJECT
+cargo run -- PROJECT
+```
+
+or with the explicit `--project` option:
+
+```text
+picopilot --project PROJECT
+cargo run -- --project PROJECT
+```
+
+Relative project paths are resolved from the directory where picopilot is
+started. The positional argument and `--project` cannot be used together.
+
+The available startup options are:
+
+| Option | Description |
+| --- | --- |
+| `PROJECT` | Project directory, positional form |
+| `--project PROJECT` | Project directory, explicit form |
+| `--model MODEL` | Select the initial model |
+| `--reasoning-effort EFFORT` | Set the initial reasoning effort |
+| `--context-tier TIER` | Set the initial context tier |
+| `--provider-url URL` | Add an OpenAI-compatible model provider |
+| `--provider-name NAME` | Name the provider (requires `--provider-url`) |
+| `--provider-wire-api API` | Select `completions` or `responses` (requires `--provider-url`) |
+
+Use `picopilot --help` for the generated command reference.
+
 ## Local model providers (experimental)
 
 picopilot can add models from one OpenAI-compatible provider alongside the

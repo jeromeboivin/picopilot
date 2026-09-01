@@ -107,6 +107,12 @@ impl std::error::Error for ConfigError {}
     about = "A minimalist Copilot coding agent"
 )]
 pub struct AppConfig {
+    #[arg(value_name = "PROJECT", conflicts_with = "project")]
+    pub project_path: Option<PathBuf>,
+
+    #[arg(long, value_name = "PROJECT", conflicts_with = "project_path")]
+    pub project: Option<PathBuf>,
+
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
 
@@ -127,6 +133,17 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn working_directory(&self) -> Result<PathBuf, std::io::Error> {
+        let current_directory = std::env::current_dir()?;
+        Ok(
+            match self.project.as_deref().or(self.project_path.as_deref()) {
+                Some(project) if project.is_absolute() => project.to_path_buf(),
+                Some(project) => current_directory.join(project),
+                None => current_directory,
+            },
+        )
+    }
+
     pub fn client_options_in(&self, working_directory: &Path) -> ClientOptions {
         ClientOptions::new().with_cwd(working_directory)
     }
@@ -393,6 +410,43 @@ mod tests {
         assert_eq!(config.model.as_deref(), Some("claude-sonnet-4.5"));
         assert_eq!(config.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(config.context_tier.as_deref(), Some("long_context"));
+    }
+
+    #[test]
+    fn parses_a_positional_project_path() {
+        let config = AppConfig::try_parse_from(["picopilot", "projects/demo"])
+            .expect("a positional project path should parse");
+
+        assert_eq!(
+            config.project_path.as_deref(),
+            Some(Path::new("projects/demo"))
+        );
+        assert!(config.project.is_none());
+    }
+
+    #[test]
+    fn parses_and_resolves_the_named_project_path() {
+        let config = AppConfig::try_parse_from(["picopilot", "--project", "projects/demo"])
+            .expect("the named project path should parse");
+        let expected = std::env::current_dir()
+            .expect("the test should have a current directory")
+            .join("projects/demo");
+
+        assert_eq!(config.working_directory().unwrap(), expected);
+        assert!(config.project_path.is_none());
+    }
+
+    #[test]
+    fn rejects_both_project_path_forms() {
+        let error = AppConfig::try_parse_from([
+            "picopilot",
+            "projects/demo",
+            "--project",
+            "projects/other",
+        ])
+        .expect_err("the positional and named project paths should conflict");
+
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]

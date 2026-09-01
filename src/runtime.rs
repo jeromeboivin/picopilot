@@ -1034,7 +1034,9 @@ async fn connect_inner(
     config: &AppConfig,
     requested_toolset: Option<Toolset>,
 ) -> Result<AppRuntime, StartupError> {
-    let working_directory = std::env::current_dir().map_err(StartupError::CurrentDirectory)?;
+    let working_directory = config
+        .working_directory()
+        .map_err(StartupError::CurrentDirectory)?;
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
     let provider_settings = config
         .provider_settings()

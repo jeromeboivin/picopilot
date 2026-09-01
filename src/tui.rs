@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{
@@ -167,6 +168,7 @@ pub struct StatusState {
 pub struct App {
     entries: Vec<ChatEntry>,
     pending_user_messages: VecDeque<String>,
+    project_name: Option<String>,
     status: StatusState,
     input: String,
     pending_approvals: VecDeque<ApprovalRequest>,
@@ -239,6 +241,12 @@ impl App {
             },
             ..Self::default()
         }
+    }
+
+    pub fn new_with_working_directory(model: Option<String>, working_directory: &Path) -> Self {
+        let mut app = Self::new(model);
+        app.project_name = Some(working_directory_name(working_directory));
+        app
     }
 
     pub fn entries(&self) -> &[ChatEntry] {
@@ -1125,7 +1133,7 @@ async fn run_loop(
         .as_ref()
         .map(|registry| registry.qualified_model_ids())
         .unwrap_or_default();
-    let mut app = App::new(model);
+    let mut app = App::new_with_working_directory(model, &runtime.working_directory);
     app.set_local_model_ids(local_model_ids);
     app.set_toolset(runtime.active_toolset);
     app.set_reasoning_effort(reasoning_effort);
@@ -1552,6 +1560,11 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
 
 fn status_bar(app: &App) -> Paragraph<'static> {
     let status = app.status();
+    let project = app
+        .project_name
+        .as_deref()
+        .map(|project| format!("{project}  ·  "))
+        .unwrap_or_default();
     let model = status.model.as_deref().unwrap_or("auto");
     let reasoning = status.reasoning_effort.as_deref().unwrap_or("default");
     let mode = if status.busy { "working" } else { "ready" };
@@ -1566,12 +1579,20 @@ fn status_bar(app: &App) -> Paragraph<'static> {
         .map(format_cost)
         .unwrap_or_else(|| "--".to_string());
     let label = format!(
-        " {model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  {context} tokens  ·  {cost} ",
+        " {project}{model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  {context} tokens  ·  {cost} ",
         app.toolset.len(),
         TOOL_COUNT,
     );
 
     Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
+}
+
+fn working_directory_name(working_directory: &Path) -> String {
+    working_directory
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "project".to_string())
 }
 
 fn displayed_reasoning_effort(
@@ -2651,6 +2672,8 @@ fn format_count(value: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use crossterm::event::{
         KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -2930,7 +2953,10 @@ mod tests {
 
     #[test]
     fn status_bar_shows_compact_model_and_reasoning_metadata() {
-        let mut app = App::new(Some("gpt-5".to_string()));
+        let mut app = App::new_with_working_directory(
+            Some("gpt-5".to_string()),
+            Path::new("C:\\dev\\picopilot"),
+        );
         app.set_reasoning_effort(Some("high".to_string()));
         let backend = TestBackend::new(100, 1);
         let mut terminal = Terminal::new(backend).expect("test terminal");
@@ -2949,8 +2975,9 @@ mod tests {
                     text
                 });
 
-        assert!(rendered.contains("gpt-5  ·  high reasoning  ·  autopilot ready  ·  tools 7/7"));
-        assert!(!rendered.contains("picopilot"));
+        assert!(rendered
+            .contains("picopilot  ·  gpt-5  ·  high reasoning  ·  autopilot ready  ·  tools 7/7"));
+        assert!(!rendered.contains("C:\\dev\\picopilot"));
     }
 
     #[test]
