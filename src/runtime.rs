@@ -538,6 +538,17 @@ impl AppRuntime {
         self.conversation_has_history = true;
     }
 
+    pub async fn new_conversation(&mut self) -> Result<(), SdkError> {
+        let toolset = self.active_toolset;
+        let provenance = self.toolset_provenance;
+        let model_options = self.active_model_options.clone();
+
+        self.replace_empty_session(toolset, provenance, model_options)
+            .await?;
+        self.conversation_has_history = false;
+        Ok(())
+    }
+
     pub fn is_local_model(&self, model: &str) -> bool {
         self.provider_registry.as_ref().is_some_and(|registry| {
             registry

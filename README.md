@@ -94,6 +94,11 @@ available only while idle and failed changes are rolled back. The status bar
 shows the active count as `tools N/7`. The picker can still be opened during an
 approval or reconnect, but applying a change waits until that work is finished.
 
+Press `Ctrl+N` while idle to start a new conversation immediately. The current
+model, reasoning/context choices, and tool selection are retained; the
+transcript, usage details, fleet state, and pending conversation input are
+cleared. Previous conversations remain available through `Ctrl+O`.
+
 When resuming a historical session, picopilot first reconnects with shell-only
 tools, then detects the stored model from usage metrics or model-change history.
 Known hosted models are expanded to all seven tools; local and unknown models

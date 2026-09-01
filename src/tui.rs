@@ -73,6 +73,7 @@ pub enum UiAction {
     Quit,
     Send(String),
     StartFleet(String),
+    NewConversation,
     Approval(ApprovalDecision),
     LoadSessions,
     LoadModels,
@@ -561,6 +562,27 @@ impl App {
         std::mem::take(&mut self.input)
     }
 
+    pub fn reset_for_new_conversation(&mut self) {
+        self.reject_pending_approvals();
+        self.entries.clear();
+        self.pending_user_messages.clear();
+        self.input.clear();
+        self.status.usage = None;
+        self.status.usage_metrics = None;
+        self.status.context_attribution = None;
+        self.status.busy = false;
+        self.close_modal();
+        self.picker_reasoning_effort = None;
+        self.picker_context_tier = None;
+        self.picker_toolset = self.toolset;
+        self.fleet_active = false;
+        self.todos = None;
+        self.todo_refresh_requested = false;
+        self.reconnecting = false;
+        self.blocked = false;
+        self.chat_scroll_offset = 0;
+    }
+
     pub fn should_quit(&self) -> bool {
         self.should_quit
     }
@@ -899,7 +921,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     if app.pending_approval().is_some() {
         return match key.code {
             KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
-            KeyCode::Char('n') => UiAction::Approval(ApprovalDecision::Deny),
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
+                UiAction::Approval(ApprovalDecision::Deny)
+            }
             KeyCode::Char('a')
                 if app
                     .pending_approval()
@@ -959,6 +983,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     match key.code {
         KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) && !app.status.busy => {
+            UiAction::NewConversation
+        }
         KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             UiAction::LoadSessions
         }
@@ -1203,6 +1230,21 @@ async fn process_terminal_events(
                 Err(error) => app.apply(crate::events::EventUpdate::Banner {
                     severity: crate::events::BannerSeverity::RecoverableError,
                     message: format!("could not list sessions: {error}"),
+                    url: None,
+                }),
+            },
+            UiAction::NewConversation => match runtime.new_conversation().await {
+                Ok(()) => {
+                    *events = runtime.session.subscribe();
+                    app.reset_for_new_conversation();
+                    app.add_diagnostic("new conversation started");
+                }
+                Err(error) if error.is_transport_failure() => {
+                    recover_connection(app, runtime, events).await?;
+                }
+                Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                    severity: crate::events::BannerSeverity::RecoverableError,
+                    message: format!("could not start new conversation: {error}"),
                     url: None,
                 }),
             },
@@ -1558,18 +1600,20 @@ fn shortcut_bar() -> Paragraph<'static> {
 
     Paragraph::new(Line::from(vec![
         Span::raw("  "),
+        shortcut("^N"),
+        Span::raw(" new "),
         shortcut("^O"),
-        Span::raw(" sessions  "),
+        Span::raw(" sessions "),
         shortcut("^P"),
-        Span::raw(" models  "),
+        Span::raw(" models "),
         shortcut("^U"),
-        Span::raw(" usage  "),
+        Span::raw(" usage "),
         shortcut("^K"),
-        Span::raw(" tools  "),
+        Span::raw(" tools "),
         shortcut("^T"),
-        Span::raw(" todos  "),
+        Span::raw(" todos "),
         shortcut("^I"),
-        Span::raw(" internals  "),
+        Span::raw(" internals "),
         shortcut("^X"),
         Span::raw(" exit"),
     ]))
@@ -3041,6 +3085,89 @@ mod tests {
     }
 
     #[test]
+    fn new_conversation_reset_clears_transcript_state_and_keeps_preferences() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_reasoning_effort(Some("high".to_string()));
+        app.set_toolset(Toolset::shell_only());
+        app.show_internals = true;
+        app.add_user_message("old session".to_string());
+        app.push_input('x');
+        app.set_usage_metrics(crate::events::UsageMetricsSnapshot {
+            total_nano_aiu: Some(2.0),
+            total_premium_request_cost: 1.0,
+            total_user_requests: 1,
+            total_api_duration_ms: 250,
+            current_model: Some("gpt-5".to_string()),
+        });
+        app.set_fleet_active(true);
+        app.set_todos(TodoSnapshot {
+            rows: Vec::new(),
+            dependencies: Vec::new(),
+        });
+        app.chat_scroll_offset = 7;
+        app.reconnecting = true;
+        app.blocked = true;
+
+        app.reset_for_new_conversation();
+
+        assert!(app.entries().is_empty());
+        assert!(app.pending_user_messages.is_empty());
+        assert!(app.input().is_empty());
+        assert_eq!(app.status().model.as_deref(), Some("gpt-5"));
+        assert_eq!(app.status().reasoning_effort.as_deref(), Some("high"));
+        assert!(app.status().usage_metrics.is_none());
+        assert!(app.status().context_attribution.is_none());
+        assert!(!app.status().busy);
+        assert!(!app.modal_is_open());
+        assert_eq!(app.toolset(), Toolset::shell_only());
+        assert!(!app.fleet_active);
+        assert!(app.todos.is_none());
+        assert!(!app.reconnecting);
+        assert!(!app.blocked);
+        assert!(app.show_internals);
+        assert_eq!(app.chat_scroll_offset, 0);
+    }
+
+    #[test]
+    fn new_conversation_requires_an_idle_control_press() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('n'), KeyEventKind::Release)),
+            UiAction::None
+        );
+        assert_eq!(
+            handle_key(&mut app, ctrl_key('n')),
+            UiAction::NewConversation
+        );
+
+        app.status.busy = true;
+        assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
+        app.status.busy = false;
+
+        app.set_reconnecting(true);
+        assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
+        app.set_reconnecting(false);
+
+        app.blocked = true;
+        assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
+        app.blocked = false;
+
+        app.open_tool_picker();
+        assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
+        app.close_modal();
+
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(crate::permissions::ApprovalRequest {
+            category: crate::permissions::ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "pwd".to_string(),
+            respond_to,
+        });
+        assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
+    }
+
+    #[test]
     fn live_user_event_reconciles_the_optimistic_message() {
         let mut app = App::new(None);
         app.add_user_message("Hi".to_string());
@@ -3589,11 +3716,20 @@ mod tests {
         }
         assert_eq!(app.input(), "quantum");
 
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('n'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.input(), "quantumn");
+        assert_eq!(
+            handle_key(&mut app, ctrl_key('n')),
+            UiAction::NewConversation
+        );
         assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::LoadSessions);
         assert_eq!(handle_key(&mut app, ctrl_key('p')), UiAction::LoadModels);
         assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
         assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
-        assert_eq!(app.input(), "quantum");
+        assert_eq!(app.input(), "quantumn");
     }
 
     #[test]
@@ -3611,8 +3747,9 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(row(29).contains("^O sessions  ^P models  ^U usage"));
-        assert!(row(29).contains("^I internals  ^X exit"));
+        assert!(row(29).contains("^O sessions ^P models ^U usage"));
+        assert!(row(29).contains("^N new ^O sessions"));
+        assert!(row(29).contains("^I internals ^X exit"));
         assert!(!row(1).contains('┌'));
         assert!(!row(1).contains('│'));
     }
