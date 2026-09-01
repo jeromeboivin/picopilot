@@ -141,6 +141,19 @@ Known hosted models are expanded to all seven tools; local and unknown models
 remain shell-only. Custom tool selections are not persisted across processes.
 Automatic transport recovery preserves the exact active selection.
 
+### Input and terminal controls
+
+The prompt is a multiline editor. Press `Enter` to send the current prompt and
+`Shift+Enter` to insert a newline. Pasting text, including text with line
+breaks, inserts it as one editable prompt. Use the arrow keys, `Home`, `End`,
+`Backspace`, and `Delete` to correct the prompt before sending. `Ctrl+Alt`
+characters are accepted for keyboard layouts that use AltGr.
+
+Use `PageUp` and `PageDown` to scroll the transcript. `Ctrl+Home` and
+`Ctrl+End` jump to the top and bottom of the transcript. The terminal keeps
+mouse selection and clipboard handling, so drag-select and copy using the
+normal behavior of the VS Code or Windows Terminal window.
+
 The live context-budget regression is opt-in because it requires a running
 Copilot CLI and authentication. With a configured local provider it also
 requires a tool-capable local model:

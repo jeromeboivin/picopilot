@@ -1,3 +1,5 @@
+mod input_editor;
+
 pub mod config;
 pub mod events;
 pub mod permissions;

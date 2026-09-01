@@ -10,8 +10,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -25,12 +25,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
+use unicode_width::UnicodeWidthChar;
 
 use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
+use crate::input_editor::InputEditor;
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
@@ -170,7 +172,7 @@ pub struct App {
     pending_user_messages: VecDeque<String>,
     project_name: Option<String>,
     status: StatusState,
-    input: String,
+    input: InputEditor,
     pending_approvals: VecDeque<ApprovalRequest>,
     show_approval_details: bool,
     modal: Option<ModalKind>,
@@ -258,7 +260,11 @@ impl App {
     }
 
     pub fn input(&self) -> &str {
-        &self.input
+        self.input.text()
+    }
+
+    fn input_cursor_byte_offset(&self) -> usize {
+        self.input.cursor_byte_offset()
     }
 
     pub fn pending_approval(&self) -> Option<&ApprovalRequest> {
@@ -559,15 +565,51 @@ impl App {
     }
 
     pub fn push_input(&mut self, character: char) {
-        self.input.push(character);
+        self.input.insert_char(character);
     }
 
     pub fn pop_input(&mut self) {
-        self.input.pop();
+        self.input.backspace();
+    }
+
+    fn insert_newline(&mut self) {
+        self.input.insert_newline();
+    }
+
+    fn insert_paste(&mut self, pasted: &str) {
+        self.input.insert_paste(pasted);
+    }
+
+    fn move_input_left(&mut self) {
+        self.input.move_left();
+    }
+
+    fn move_input_right(&mut self) {
+        self.input.move_right();
+    }
+
+    fn move_input_up(&mut self) {
+        self.input.move_up();
+    }
+
+    fn move_input_down(&mut self) {
+        self.input.move_down();
+    }
+
+    fn move_input_home(&mut self, all_lines: bool) {
+        self.input.move_home(all_lines);
+    }
+
+    fn move_input_end(&mut self, all_lines: bool) {
+        self.input.move_end(all_lines);
+    }
+
+    fn delete_input(&mut self) {
+        self.input.delete();
     }
 
     pub fn take_input(&mut self) -> String {
-        std::mem::take(&mut self.input)
+        self.input.take()
     }
 
     pub fn reset_for_new_conversation(&mut self) {
@@ -876,7 +918,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
 
-    if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+    if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
         if !app.blocked {
             return UiAction::LoadTools;
         }
@@ -920,8 +962,8 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if app.blocked {
         return match key.code {
-            KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
+            KeyCode::Char('x') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
+            KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
             _ => UiAction::None,
         };
     }
@@ -950,14 +992,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     if app.modal.is_some() {
         return match key.code {
             KeyCode::Char('u')
-                if key.modifiers.contains(KeyModifiers::CONTROL)
+                if key.modifiers == KeyModifiers::CONTROL
                     && matches!(app.modal, Some(ModalKind::Usage)) =>
             {
                 app.close_modal();
                 UiAction::None
             }
             KeyCode::Char('t')
-                if key.modifiers.contains(KeyModifiers::CONTROL)
+                if key.modifiers == KeyModifiers::CONTROL
                     && matches!(app.modal, Some(ModalKind::Todos)) =>
             {
                 app.close_modal();
@@ -989,20 +1031,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     }
 
     match key.code {
-        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::Quit,
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) && !app.status.busy => {
+        KeyCode::Char('x') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
+        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
+        KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL && !app.status.busy => {
             UiAction::NewConversation
         }
-        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            UiAction::LoadSessions
-        }
-        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::LoadModels,
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::LoadUsage,
-        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) && app.fleet_active => {
+        KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadSessions,
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadModels,
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadUsage,
+        KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL && app.fleet_active => {
             UiAction::LoadTodos
         }
-        KeyCode::Char('i') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => {
             app.show_internals = !app.show_internals;
             UiAction::None
         }
@@ -1015,22 +1055,45 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::None
         }
         KeyCode::Up => {
-            app.scroll_chat_up(1);
+            app.move_input_up();
             UiAction::None
         }
         KeyCode::Down => {
-            app.scroll_chat_down(1);
+            app.move_input_down();
             UiAction::None
         }
-        KeyCode::Home => {
+        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.scroll_chat_to_top();
             UiAction::None
         }
-        KeyCode::End => {
+        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.scroll_chat_to_bottom();
             UiAction::None
         }
-        KeyCode::Char(_) if key.modifiers.contains(KeyModifiers::CONTROL) => UiAction::None,
+        KeyCode::Left => {
+            app.move_input_left();
+            UiAction::None
+        }
+        KeyCode::Right => {
+            app.move_input_right();
+            UiAction::None
+        }
+        KeyCode::Home => {
+            app.move_input_home(false);
+            UiAction::None
+        }
+        KeyCode::End => {
+            app.move_input_end(false);
+            UiAction::None
+        }
+        KeyCode::Delete => {
+            app.delete_input();
+            UiAction::None
+        }
+        KeyCode::Enter if is_multiline_enter(key, shift_is_pressed()) => {
+            app.insert_newline();
+            UiAction::None
+        }
         KeyCode::Enter => {
             let input = app.take_input();
             if input.trim().is_empty() {
@@ -1050,6 +1113,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             app.pop_input();
             UiAction::None
         }
+        KeyCode::Char(_)
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            UiAction::None
+        }
         KeyCode::Char(character) => {
             app.push_input(character);
             UiAction::None
@@ -1058,48 +1127,76 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     }
 }
 
-fn handle_mouse(app: &mut App, mouse: MouseEvent) {
-    match mouse.kind {
-        MouseEventKind::ScrollUp => app.scroll_chat_up(3),
-        MouseEventKind::ScrollDown => app.scroll_chat_down(3),
-        _ => {}
-    }
+fn is_multiline_enter(key: KeyEvent, shift_pressed: bool) -> bool {
+    key.code == KeyCode::Enter && (key.modifiers.contains(KeyModifiers::SHIFT) || shift_pressed)
+}
+
+#[cfg(windows)]
+fn shift_is_pressed() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_SHIFT};
+
+    unsafe { GetAsyncKeyState(VK_SHIFT as i32) < 0 }
+}
+
+#[cfg(not(windows))]
+fn shift_is_pressed() -> bool {
+    false
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    let input_height = input_height(app, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(3),
+            Constraint::Length(input_height),
             Constraint::Length(1),
         ])
         .split(frame.area());
 
     frame.render_widget(status_bar(app), layout[0]);
     draw_chat(frame, app, layout[1]);
-    frame.render_widget(input_box(app), layout[2]);
+    frame.render_widget(input_box(app, layout[2]), layout[2]);
     frame.render_widget(shortcut_bar(), layout[3]);
     draw_modal(frame, app);
 
     if app.modal.is_none() && app.pending_approval().is_none() && !app.blocked && !app.reconnecting
     {
-        let input_width = app.input().chars().count().min(u16::MAX as usize) as u16;
-        let cursor_x = layout[2]
-            .x
-            .saturating_add(4)
-            .saturating_add(input_width)
-            .min(layout[2].right().saturating_sub(1));
-        frame.set_cursor_position((cursor_x, layout[2].y.saturating_add(1)));
+        let wrapped = wrap_input(
+            app.input(),
+            app.input_cursor_byte_offset(),
+            layout[2].width as usize,
+        );
+        let visible_lines = layout[2].height.saturating_sub(2).max(1) as usize;
+        let scroll = wrapped
+            .cursor_row
+            .saturating_sub(visible_lines.saturating_sub(1));
+        let cursor_x = layout[2].x.saturating_add(
+            wrapped
+                .cursor_column
+                .min(layout[2].width.saturating_sub(1) as usize) as u16,
+        );
+        let cursor_y = layout[2]
+            .y
+            .saturating_add(1)
+            .saturating_add(
+                wrapped
+                    .cursor_row
+                    .saturating_sub(scroll)
+                    .min(u16::MAX as usize) as u16,
+            )
+            .min(layout[2].bottom().saturating_sub(1));
+        frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
         let _ = disable_raw_mode();
+        let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
         return Err(error);
     }
 
@@ -1108,7 +1205,7 @@ pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+            let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
             return Err(error);
         }
     };
@@ -1216,13 +1313,21 @@ async fn process_terminal_events(
 ) -> io::Result<()> {
     while event::poll(Duration::ZERO)? {
         let event = event::read()?;
-        if let Event::Mouse(mouse) = event {
-            handle_mouse(app, mouse);
-            continue;
-        }
-        let Event::Key(key) = event else { continue };
+        let action = match event {
+            Event::Paste(pasted)
+                if app.modal.is_none()
+                    && app.pending_approval().is_none()
+                    && !app.blocked
+                    && !app.reconnecting =>
+            {
+                app.insert_paste(&pasted);
+                continue;
+            }
+            Event::Key(key) => handle_key(app, key),
+            _ => continue,
+        };
 
-        match handle_key(app, key) {
+        match action {
             UiAction::None => {}
             UiAction::Quit => app.quit(),
             UiAction::Approval(decision) => {
@@ -1549,13 +1654,16 @@ async fn refresh_todos_if_requested(
 }
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(
+    let raw_mode_result = disable_raw_mode();
+    let terminal_result = execute!(
         terminal.backend_mut(),
-        DisableMouseCapture,
+        DisableBracketedPaste,
         LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()
+    );
+    let cursor_result = terminal.show_cursor();
+    raw_mode_result?;
+    terminal_result?;
+    cursor_result
 }
 
 fn status_bar(app: &App) -> Paragraph<'static> {
@@ -1641,7 +1749,145 @@ fn shortcut_bar() -> Paragraph<'static> {
     .style(Style::default().fg(Color::DarkGray))
 }
 
-fn input_box(app: &App) -> Paragraph<'static> {
+const INPUT_PROMPT: &str = "  ❯ ";
+const INPUT_CONTINUATION: &str = "    ";
+const MAX_INPUT_CONTENT_LINES: usize = 8;
+
+struct WrappedInput {
+    lines: Vec<Line<'static>>,
+    cursor_row: usize,
+    cursor_column: usize,
+}
+
+struct WrapState {
+    lines: Vec<Line<'static>>,
+    cursor_position: Option<(usize, usize)>,
+    first_visual_line: bool,
+}
+
+fn input_height(app: &App, area: Rect) -> u16 {
+    if app.blocked || app.reconnecting || app.pending_approval().is_some() {
+        return 3.min(area.height.saturating_sub(3).max(1));
+    }
+
+    let wrapped = wrap_input(
+        app.input(),
+        app.input_cursor_byte_offset(),
+        area.width as usize,
+    );
+    let desired = wrapped.lines.len().clamp(1, MAX_INPUT_CONTENT_LINES) as u16 + 2;
+    desired.min(area.height.saturating_sub(3).max(1))
+}
+
+fn wrap_input(text: &str, cursor: usize, width: usize) -> WrappedInput {
+    let width = width.max(1);
+    let cursor = cursor.min(text.len());
+    let mut state = WrapState {
+        lines: Vec::new(),
+        cursor_position: None,
+        first_visual_line: true,
+    };
+    let mut line_start = 0;
+
+    for (line_end, character) in text.char_indices() {
+        if character == '\n' {
+            wrap_input_line(text, line_start, line_end, cursor, width, &mut state);
+            line_start = line_end + character.len_utf8();
+        }
+    }
+    wrap_input_line(text, line_start, text.len(), cursor, width, &mut state);
+
+    let (cursor_row, cursor_column) = state.cursor_position.unwrap_or_else(|| {
+        let row = state.lines.len().saturating_sub(1);
+        (row, display_width(INPUT_CONTINUATION))
+    });
+    WrappedInput {
+        lines: state.lines,
+        cursor_row,
+        cursor_column,
+    }
+}
+
+fn wrap_input_line(
+    text: &str,
+    line_start: usize,
+    line_end: usize,
+    cursor: usize,
+    width: usize,
+    state: &mut WrapState,
+) {
+    let mut segment_start = line_start;
+    loop {
+        let is_first_line = state.first_visual_line;
+        let prefix = if is_first_line {
+            INPUT_PROMPT
+        } else {
+            INPUT_CONTINUATION
+        };
+        let prefix_width = display_width(prefix);
+        let content_width = width.saturating_sub(prefix_width).max(1);
+        let segment_end =
+            segment_start + wrapped_segment_end(&text[segment_start..line_end], content_width);
+        let segment = &text[segment_start..segment_end];
+        let row = state.lines.len();
+
+        if cursor >= segment_start
+            && (cursor < segment_end || (cursor == segment_end && segment_end == line_end))
+        {
+            state.cursor_position = Some((
+                row,
+                prefix_width + display_width(&text[segment_start..cursor]),
+            ));
+        }
+
+        let prefix_span = if is_first_line {
+            Span::styled(prefix, Style::default().fg(Color::Rgb(240, 177, 94)))
+        } else {
+            Span::raw(prefix)
+        };
+        state.lines.push(Line::from(vec![
+            prefix_span,
+            Span::raw(segment.to_string()),
+        ]));
+        state.first_visual_line = false;
+
+        if segment_end == line_end {
+            break;
+        }
+        segment_start = segment_end;
+    }
+}
+
+fn wrapped_segment_end(text: &str, width: usize) -> usize {
+    let mut display_width: usize = 0;
+    let mut end = 0;
+    for (index, character) in text.char_indices() {
+        let character_width = input_character_width(character);
+        if end != 0 && display_width.saturating_add(character_width) > width {
+            break;
+        }
+        end = index + character.len_utf8();
+        display_width = display_width.saturating_add(character_width);
+        if display_width >= width {
+            break;
+        }
+    }
+    end
+}
+
+fn display_width(text: &str) -> usize {
+    text.chars().map(input_character_width).sum()
+}
+
+fn input_character_width(character: char) -> usize {
+    if character == '\t' {
+        4
+    } else {
+        UnicodeWidthChar::width(character).unwrap_or(1)
+    }
+}
+
+fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
     if app.blocked {
         return Paragraph::new("Session ended. Press Ctrl+X to close.")
             .style(Style::default().fg(Color::Rgb(255, 117, 117)))
@@ -1688,15 +1934,23 @@ fn input_box(app: &App) -> Paragraph<'static> {
             .wrap(Wrap { trim: false });
     }
 
-    Paragraph::new(Line::from(vec![
-        Span::styled("  ❯ ", Style::default().fg(Color::Rgb(240, 177, 94))),
-        Span::raw(app.input().to_string()),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    )
+    let wrapped = wrap_input(
+        app.input(),
+        app.input_cursor_byte_offset(),
+        area.width as usize,
+    );
+    let visible_lines = area.height.saturating_sub(2).max(1) as usize;
+    let scroll = wrapped
+        .cursor_row
+        .saturating_sub(visible_lines.saturating_sub(1));
+
+    Paragraph::new(wrapped.lines)
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .scroll((scroll.min(u16::MAX as usize) as u16, 0))
 }
 
 fn draw_modal(frame: &mut Frame, app: &App) {
@@ -2674,9 +2928,7 @@ fn format_count(value: i64) -> String {
 mod tests {
     use std::path::Path;
 
-    use crossterm::event::{
-        KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-    };
+    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
@@ -2686,10 +2938,9 @@ mod tests {
 
     use super::{
         chat_scroll_position, displayed_reasoning_effort, draw, draw_model_picker,
-        draw_tool_picker, handle_key, handle_mouse, modal_area, model_context_label,
-        model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
-        send_with_fleet_fallback, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
-        ModelSelection, SendPath, UiAction,
+        draw_tool_picker, handle_key, modal_area, model_context_label, model_cost_label_for,
+        model_picker_detail_lines, model_picker_row_for, send_with_fleet_fallback, status_bar,
+        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -2733,34 +2984,94 @@ mod tests {
         handle_key(&mut app, key(KeyCode::PageDown, KeyEventKind::Press));
         assert_eq!(chat_scroll_position(&app, 100, 20), 80);
 
-        handle_key(&mut app, key(KeyCode::Up, KeyEventKind::Press));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 79);
-        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
-
         handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press));
-        handle_key(&mut app, key(KeyCode::End, KeyEventKind::Press));
+        handle_key(
+            &mut app,
+            key_with_modifiers(KeyCode::Home, KeyModifiers::CONTROL),
+        );
+        assert_eq!(chat_scroll_position(&app, 100, 20), 0);
+        handle_key(
+            &mut app,
+            key_with_modifiers(KeyCode::End, KeyModifiers::CONTROL),
+        );
         assert_eq!(chat_scroll_position(&app, 120, 20), 100);
     }
 
     #[test]
-    fn mouse_wheel_scrolls_the_response_area() {
+    fn arrows_edit_the_prompt_and_shift_enter_inserts_a_newline() {
         let mut app = App::new(None);
-        let mouse = |kind| MouseEvent {
-            kind,
-            column: 5,
-            row: 5,
-            modifiers: KeyModifiers::NONE,
-        };
+        for character in "ab\\cd".chars() {
+            app.push_input(character);
+        }
 
-        handle_mouse(&mut app, mouse(MouseEventKind::ScrollUp));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 77);
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+        handle_key(
+            &mut app,
+            key_with_modifiers(KeyCode::Char('X'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.input(), "ab\\Xcd");
 
-        handle_mouse(&mut app, mouse(MouseEventKind::ScrollDown));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+        handle_key(&mut app, key(KeyCode::Backspace, KeyEventKind::Press));
+        handle_key(
+            &mut app,
+            key_with_modifiers(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+        app.push_input('n');
+        assert_eq!(app.input(), "ab\\\nncd");
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Send("ab\\\nncd".to_string())
+        );
+    }
 
-        handle_mouse(&mut app, mouse(MouseEventKind::Down(MouseButton::Left)));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
+    #[test]
+    fn altgr_style_control_alt_characters_are_kept_as_input() {
+        let mut app = App::new(None);
+
+        handle_key(
+            &mut app,
+            key_with_modifiers(
+                KeyCode::Char('\\'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ),
+        );
+
+        assert_eq!(app.input(), "\\");
+    }
+
+    #[test]
+    fn an_unmodified_enter_is_multiline_when_physical_shift_is_held() {
+        assert!(super::is_multiline_enter(
+            key(KeyCode::Enter, KeyEventKind::Press),
+            true,
+        ));
+    }
+
+    #[test]
+    fn pasted_multiline_text_is_one_normalized_prompt() {
+        let mut app = App::new(None);
+
+        app.insert_paste("first\r\nsecond\rthird");
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Send("first\nsecond\nthird".to_string())
+        );
+    }
+
+    #[test]
+    fn input_wraps_by_terminal_cells_and_tracks_wide_cursor_position() {
+        let wrapped = super::wrap_input("123456789", 9, 10);
+
+        assert_eq!(wrapped.lines.len(), 2);
+        assert_eq!(wrapped.lines[0].to_string(), "  ❯ 123456");
+        assert_eq!(wrapped.lines[1].to_string(), "    789");
+        assert_eq!(wrapped.cursor_row, 1);
+        assert_eq!(wrapped.cursor_column, 7);
+
+        let wide = super::wrap_input("ab🙂", "ab🙂".len(), 10);
+        assert_eq!(wide.cursor_column, 8);
     }
 
     #[test]
@@ -3966,6 +4277,15 @@ mod tests {
             code,
             modifiers: KeyModifiers::NONE,
             kind,
+            state: crossterm::event::KeyEventState::NONE,
+        }
+    }
+
+    fn key_with_modifiers(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers,
+            kind: KeyEventKind::Press,
             state: crossterm::event::KeyEventState::NONE,
         }
     }
