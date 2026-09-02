@@ -101,6 +101,19 @@ impl InputEditor {
         self.cursor
     }
 
+    pub(crate) fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
+        if start > end
+            || end > self.text.len()
+            || !self.text.is_char_boundary(start)
+            || !self.text.is_char_boundary(end)
+        {
+            return;
+        }
+        self.text.replace_range(start..end, replacement);
+        self.cursor = start + replacement.len();
+        self.preferred_column = None;
+    }
+
     pub(crate) fn take(&mut self) -> String {
         let text = std::mem::take(&mut self.text);
         self.cursor = 0;
@@ -242,5 +255,16 @@ mod tests {
         editor.clear();
         editor.insert_char('a');
         assert_eq!(editor.text(), "a");
+    }
+
+    #[test]
+    fn replaces_a_utf8_safe_range_and_places_the_cursor_after_it() {
+        let mut editor = InputEditor::default();
+        editor.insert_paste("/re🙂view extra");
+
+        editor.replace_range(0, "/re🙂view".len(), "/review");
+
+        assert_eq!(editor.text(), "/review extra");
+        assert_eq!(editor.cursor_byte_offset(), "/review".len());
     }
 }

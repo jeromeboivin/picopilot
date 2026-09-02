@@ -2,8 +2,7 @@ use crate::events::{
     context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
     ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::path::Path;
@@ -37,6 +36,7 @@ use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
+use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,9 +83,11 @@ pub enum UiAction {
     LoadUsage,
     LoadTodos,
     LoadTools,
+    LoadSkills,
     Resume(SessionId),
     SwitchModel(ModelSelection),
     ApplyToolset(Toolset),
+    ApplySkills(SkillSelection),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +97,7 @@ enum ModalKind {
     Usage,
     Todos,
     Tools,
+    Skills,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +169,22 @@ pub struct StatusState {
     pub busy: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionCandidate {
+    command: String,
+    description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionState {
+    candidates: Vec<CompletionCandidate>,
+    selected_item: usize,
+    token_start: usize,
+    token_end: usize,
+}
+
+const BUILTIN_COMMANDS: &[(&str, &str)] = &[("/fleet", "run work through Fleet")];
+
 #[derive(Debug, Default)]
 pub struct App {
     entries: Vec<ChatEntry>,
@@ -184,6 +203,10 @@ pub struct App {
     picker_context_tier: Option<String>,
     toolset: Toolset,
     picker_toolset: Toolset,
+    skill_catalog: SkillCatalog,
+    skill_selection: SkillSelection,
+    picker_skill_selection: SkillSelection,
+    completion: Option<CompletionState>,
     fleet_active: bool,
     todos: Option<TodoSnapshot>,
     todo_refresh_requested: bool,
@@ -292,7 +315,34 @@ impl App {
         self.show_approval_details = false;
         self.picker_toolset = self.toolset;
         self.selected_item = 0;
+        self.completion = None;
         self.modal = Some(ModalKind::Tools);
+    }
+
+    pub fn set_skill_catalog(&mut self, catalog: SkillCatalog) {
+        self.skill_catalog = catalog;
+        self.picker_skill_selection = self.skill_selection.clone();
+        self.refresh_completion();
+    }
+
+    pub fn set_skill_selection(&mut self, selection: SkillSelection) {
+        self.skill_selection = SkillSelection::from_names(
+            &self.skill_catalog,
+            selection.selected_names().iter().map(String::as_str),
+        );
+        self.picker_skill_selection = self.skill_selection.clone();
+    }
+
+    pub fn skill_selection(&self) -> &SkillSelection {
+        &self.skill_selection
+    }
+
+    pub fn open_skill_picker(&mut self) {
+        self.show_approval_details = false;
+        self.picker_skill_selection = self.skill_selection.clone();
+        self.selected_item = 0;
+        self.completion = None;
+        self.modal = Some(ModalKind::Skills);
     }
 
     fn todo_modal_is_open(&self) -> bool {
@@ -302,6 +352,7 @@ impl App {
     pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
         self.sessions = sessions;
         self.selected_item = 0;
+        self.completion = None;
         self.modal = Some(ModalKind::Sessions);
     }
 
@@ -314,6 +365,7 @@ impl App {
             .and_then(|active| self.models.iter().position(|model| &model.id == active))
             .unwrap_or(0);
         self.reset_picker_options();
+        self.completion = None;
         self.modal = Some(ModalKind::Models);
     }
 
@@ -332,6 +384,7 @@ impl App {
         self.status.usage_metrics = Some(metrics);
         self.status.context_attribution = context_attribution;
         self.selected_item = 0;
+        self.completion = None;
         self.modal = Some(ModalKind::Usage);
     }
 
@@ -357,6 +410,7 @@ impl App {
         self.todos = Some(todos);
         self.todo_refresh_requested = false;
         self.selected_item = 0;
+        self.completion = None;
         self.modal = Some(ModalKind::Todos);
     }
 
@@ -407,6 +461,7 @@ impl App {
             Some(ModalKind::Sessions) => self.sessions.len(),
             Some(ModalKind::Models) => self.models.len(),
             Some(ModalKind::Tools) => TOOL_COUNT,
+            Some(ModalKind::Skills) => self.skill_catalog.skills().len(),
             Some(ModalKind::Usage | ModalKind::Todos) => 0,
             None => 0,
         };
@@ -486,6 +541,9 @@ impl App {
                 })
             }),
             Some(ModalKind::Tools) => Some(UiAction::ApplyToolset(self.picker_toolset)),
+            Some(ModalKind::Skills) => {
+                Some(UiAction::ApplySkills(self.picker_skill_selection.clone()))
+            }
             Some(ModalKind::Usage | ModalKind::Todos) => None,
             None => None,
         };
@@ -511,7 +569,30 @@ impl App {
         }
     }
 
+    fn toggle_selected_skill(&mut self) {
+        if let Some(skill) = self.skill_catalog.skills().get(self.selected_item) {
+            self.picker_skill_selection
+                .toggle(&self.skill_catalog, &skill.name);
+        }
+    }
+
+    fn choose_no_skills(&mut self) {
+        if matches!(self.modal, Some(ModalKind::Skills)) {
+            self.picker_skill_selection.clear();
+        }
+    }
+
+    fn choose_all_skills(&mut self) {
+        if matches!(self.modal, Some(ModalKind::Skills)) {
+            self.picker_skill_selection.select_all(&self.skill_catalog);
+        }
+    }
+
     fn toolset_change_is_blocked(&self) -> bool {
+        self.blocked || self.reconnecting || self.status.busy || self.pending_approval().is_some()
+    }
+
+    fn skill_selection_change_is_blocked(&self) -> bool {
         self.blocked || self.reconnecting || self.status.busy || self.pending_approval().is_some()
     }
 
@@ -566,49 +647,61 @@ impl App {
 
     pub fn push_input(&mut self, character: char) {
         self.input.insert_char(character);
+        self.refresh_completion();
     }
 
     pub fn pop_input(&mut self) {
         self.input.backspace();
+        self.refresh_completion();
     }
 
     fn insert_newline(&mut self) {
         self.input.insert_newline();
+        self.refresh_completion();
     }
 
     fn insert_paste(&mut self, pasted: &str) {
         self.input.insert_paste(pasted);
+        self.refresh_completion();
     }
 
     fn move_input_left(&mut self) {
         self.input.move_left();
+        self.refresh_completion();
     }
 
     fn move_input_right(&mut self) {
         self.input.move_right();
+        self.refresh_completion();
     }
 
     fn move_input_up(&mut self) {
         self.input.move_up();
+        self.refresh_completion();
     }
 
     fn move_input_down(&mut self) {
         self.input.move_down();
+        self.refresh_completion();
     }
 
     fn move_input_home(&mut self, all_lines: bool) {
         self.input.move_home(all_lines);
+        self.refresh_completion();
     }
 
     fn move_input_end(&mut self, all_lines: bool) {
         self.input.move_end(all_lines);
+        self.refresh_completion();
     }
 
     fn delete_input(&mut self) {
         self.input.delete();
+        self.refresh_completion();
     }
 
     pub fn take_input(&mut self) -> String {
+        self.completion = None;
         self.input.take()
     }
 
@@ -625,6 +718,9 @@ impl App {
         self.picker_reasoning_effort = None;
         self.picker_context_tier = None;
         self.picker_toolset = self.toolset;
+        self.skill_selection.clear();
+        self.picker_skill_selection.clear();
+        self.completion = None;
         self.fleet_active = false;
         self.todos = None;
         self.todo_refresh_requested = false;
@@ -656,6 +752,7 @@ impl App {
         self.pending_user_messages.clear();
         self.status.busy = false;
         self.blocked = false;
+        self.completion = None;
         for event in events {
             if let Some(update) = crate::events::event_update(event) {
                 self.apply(update);
@@ -911,6 +1008,155 @@ impl App {
             });
         }
     }
+
+    fn refresh_completion(&mut self) {
+        let Some((token_start, token_end, prefix_end)) =
+            slash_command_context(self.input(), self.input_cursor_byte_offset())
+        else {
+            self.completion = None;
+            return;
+        };
+
+        let prefix = &self.input()[token_start..prefix_end];
+        let prefix = prefix.to_ascii_lowercase();
+        let mut candidates = self
+            .command_candidates()
+            .into_iter()
+            .filter(|candidate| candidate.command.to_ascii_lowercase().starts_with(&prefix))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|candidate| !candidate.command.eq_ignore_ascii_case(&prefix));
+        if candidates.is_empty() {
+            self.completion = None;
+            return;
+        }
+
+        let selected_command = self.completion.as_ref().and_then(|completion| {
+            completion
+                .candidates
+                .get(completion.selected_item)
+                .map(|candidate| candidate.command.as_str())
+        });
+        let selected_item = candidates
+            .iter()
+            .position(|candidate| candidate.command.eq_ignore_ascii_case(&prefix))
+            .or_else(|| {
+                selected_command.and_then(|command| {
+                    candidates
+                        .iter()
+                        .position(|candidate| candidate.command == command)
+                })
+            })
+            .unwrap_or(0)
+            .min(candidates.len().saturating_sub(1));
+        self.completion = Some(CompletionState {
+            candidates,
+            selected_item,
+            token_start,
+            token_end,
+        });
+    }
+
+    fn command_candidates(&self) -> Vec<CompletionCandidate> {
+        let mut candidates = BUILTIN_COMMANDS
+            .iter()
+            .map(|(command, description)| CompletionCandidate {
+                command: (*command).to_string(),
+                description: (*description).to_string(),
+            })
+            .collect::<Vec<_>>();
+        for skill in self.skill_catalog.user_invocable() {
+            let command = format!("/{}", skill.name);
+            if candidates
+                .iter()
+                .all(|candidate| candidate.command != command)
+            {
+                candidates.push(CompletionCandidate {
+                    command,
+                    description: skill.description.clone(),
+                });
+            }
+        }
+        candidates
+    }
+
+    fn move_completion(&mut self, delta: isize) {
+        let Some(completion) = self.completion.as_mut() else {
+            return;
+        };
+        completion.selected_item = (completion.selected_item as isize + delta)
+            .rem_euclid(completion.candidates.len() as isize)
+            as usize;
+    }
+
+    fn dismiss_completion(&mut self) {
+        self.completion = None;
+    }
+
+    fn completion_is_incomplete(&self) -> bool {
+        let Some(completion) = self.completion.as_ref() else {
+            return false;
+        };
+        let token = &self.input()[completion.token_start..completion.token_end];
+        let cursor = self.input_cursor_byte_offset();
+        cursor != completion.token_end
+            || completion
+                .candidates
+                .get(completion.selected_item)
+                .is_some_and(|candidate| candidate.command != token)
+    }
+
+    fn accept_completion(&mut self) {
+        let Some(completion) = self.completion.take() else {
+            return;
+        };
+        let Some(candidate) = completion.candidates.get(completion.selected_item) else {
+            return;
+        };
+        self.input.replace_range(
+            completion.token_start,
+            completion.token_end,
+            &candidate.command,
+        );
+    }
+}
+
+fn slash_command_context(text: &str, cursor: usize) -> Option<(usize, usize, usize)> {
+    if !text.starts_with('/') || cursor < 1 || cursor > text.len() {
+        return None;
+    }
+    let token_end = text
+        .find(|character: char| character.is_whitespace())
+        .unwrap_or(text.len());
+    if cursor > token_end {
+        return None;
+    }
+    Some((0, token_end, cursor))
+}
+
+fn invoked_skill<'a>(catalog: &'a SkillCatalog, prompt: &str) -> Option<&'a Skill> {
+    let token_end = prompt
+        .find(|character: char| character.is_whitespace())
+        .unwrap_or(prompt.len());
+    let token = prompt.get(..token_end)?;
+    let name = token.strip_prefix('/')?;
+    if name.is_empty() {
+        return None;
+    }
+    catalog.find(name).filter(|skill| skill.user_invocable)
+}
+
+fn skill_selection_for_invocation(
+    catalog: &SkillCatalog,
+    active: &SkillSelection,
+    prompt: &str,
+) -> Option<SkillSelection> {
+    let skill = invoked_skill(catalog, prompt)?;
+    if active.contains(&skill.name) {
+        return None;
+    }
+    let mut selection = active.clone();
+    selection.toggle(catalog, &skill.name);
+    Some(selection)
 }
 
 pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
@@ -921,6 +1167,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
         if !app.blocked {
             return UiAction::LoadTools;
+        }
+        return UiAction::None;
+    }
+
+    if key.code == KeyCode::Char('s')
+        && key.modifiers == KeyModifiers::CONTROL
+        && app.modal.is_none()
+    {
+        if !app.blocked {
+            return UiAction::LoadSkills;
         }
         return UiAction::None;
     }
@@ -937,6 +1193,37 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             }
             KeyCode::Char('a') => {
                 app.choose_all_tools();
+                UiAction::None
+            }
+            KeyCode::Esc => {
+                app.close_modal();
+                UiAction::None
+            }
+            KeyCode::Up => {
+                app.move_selection(-1);
+                UiAction::None
+            }
+            KeyCode::Down => {
+                app.move_selection(1);
+                UiAction::None
+            }
+            KeyCode::Enter => app.choose_selected(),
+            _ => UiAction::None,
+        };
+    }
+
+    if matches!(app.modal, Some(ModalKind::Skills)) {
+        return match key.code {
+            KeyCode::Char(' ') => {
+                app.toggle_selected_skill();
+                UiAction::None
+            }
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
+                app.choose_no_skills();
+                UiAction::None
+            }
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
+                app.choose_all_skills();
                 UiAction::None
             }
             KeyCode::Esc => {
@@ -987,6 +1274,35 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             }
             _ => UiAction::None,
         };
+    }
+
+    if app.completion.is_some() {
+        match key.code {
+            KeyCode::Esc => {
+                app.dismiss_completion();
+                return UiAction::None;
+            }
+            KeyCode::Up => {
+                app.move_completion(-1);
+                return UiAction::None;
+            }
+            KeyCode::Down => {
+                app.move_completion(1);
+                return UiAction::None;
+            }
+            KeyCode::Tab => {
+                app.accept_completion();
+                return UiAction::None;
+            }
+            KeyCode::Enter
+                if !is_multiline_enter(key, shift_is_pressed())
+                    && app.completion_is_incomplete() =>
+            {
+                app.accept_completion();
+                return UiAction::None;
+            }
+            _ => {}
+        }
     }
 
     if app.modal.is_some() {
@@ -1158,6 +1474,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(status_bar(app), layout[0]);
     draw_chat(frame, app, layout[1]);
     frame.render_widget(input_box(app, layout[2]), layout[2]);
+    draw_completion(frame, app, layout[2]);
     frame.render_widget(shortcut_bar(), layout[3]);
     draw_modal(frame, app);
 
@@ -1233,6 +1550,15 @@ async fn run_loop(
     let mut app = App::new_with_working_directory(model, &runtime.working_directory);
     app.set_local_model_ids(local_model_ids);
     app.set_toolset(runtime.active_toolset);
+    app.set_skill_catalog(runtime.skill_catalog.clone());
+    app.set_skill_selection(runtime.active_skill_selection.clone());
+    for diagnostic in runtime.skill_catalog.diagnostics() {
+        app.add_diagnostic(format!(
+            "skill discovery: {} ({})",
+            diagnostic.message,
+            diagnostic.path.display()
+        ));
+    }
     app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
     let mut permission_requests_open = true;
@@ -1350,6 +1676,7 @@ async fn process_terminal_events(
                 Ok(()) => {
                     *events = runtime.session.subscribe();
                     app.reset_for_new_conversation();
+                    app.set_skill_selection(runtime.active_skill_selection.clone());
                     app.add_diagnostic("new conversation started");
                 }
                 Err(error) if error.is_transport_failure() => {
@@ -1366,6 +1693,9 @@ async fn process_terminal_events(
             }
             UiAction::LoadTools => {
                 app.open_tool_picker();
+            }
+            UiAction::LoadSkills => {
+                app.open_skill_picker();
             }
             UiAction::LoadUsage => {
                 let metrics = match runtime.session.rpc().usage().get_metrics().await {
@@ -1407,6 +1737,7 @@ async fn process_terminal_events(
                     *events = runtime.session.subscribe();
                     app.replace_history(&history);
                     app.set_toolset(runtime.active_toolset);
+                    app.set_skill_selection(runtime.active_skill_selection.clone());
                     app.set_model(runtime.active_model_options.model.clone());
                     if let Some(model) = runtime.active_model_options.model.clone() {
                         app.apply(crate::events::EventUpdate::ModelChanged {
@@ -1501,7 +1832,72 @@ async fn process_terminal_events(
                     }),
                 }
             }
+            UiAction::ApplySkills(selection) => {
+                if app.skill_selection_change_is_blocked() {
+                    app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: "skill selection can only change while the session is idle"
+                            .to_string(),
+                        url: None,
+                    });
+                    continue;
+                }
+
+                app.set_reconnecting(true);
+                let result = runtime.set_skills(selection).await;
+                app.set_reconnecting(false);
+                match result {
+                    Ok(()) => {
+                        *events = runtime.session.subscribe();
+                        app.set_skill_selection(runtime.active_skill_selection.clone());
+                    }
+                    Err(error) if error.is_transport_failure() => {
+                        recover_connection(app, runtime, events).await?;
+                    }
+                    Err(error) => app.apply(crate::events::EventUpdate::Banner {
+                        severity: crate::events::BannerSeverity::RecoverableError,
+                        message: error.to_string(),
+                        url: None,
+                    }),
+                }
+            }
             UiAction::Send(prompt) => {
+                if let Some(selection) = skill_selection_for_invocation(
+                    &runtime.skill_catalog,
+                    &runtime.active_skill_selection,
+                    &prompt,
+                ) {
+                    if app.skill_selection_change_is_blocked() {
+                        app.apply(crate::events::EventUpdate::Banner {
+                            severity: crate::events::BannerSeverity::RecoverableError,
+                            message: "the requested skill can only be activated while the session is idle"
+                                .to_string(),
+                            url: None,
+                        });
+                        continue;
+                    }
+                    app.set_reconnecting(true);
+                    let result = runtime.set_skills(selection).await;
+                    app.set_reconnecting(false);
+                    match result {
+                        Ok(()) => {
+                            *events = runtime.session.subscribe();
+                            app.set_skill_selection(runtime.active_skill_selection.clone());
+                        }
+                        Err(error) if error.is_transport_failure() => {
+                            recover_connection(app, runtime, events).await?;
+                            continue;
+                        }
+                        Err(error) => {
+                            app.apply(crate::events::EventUpdate::Banner {
+                                severity: crate::events::BannerSeverity::RecoverableError,
+                                message: error.to_string(),
+                                url: None,
+                            });
+                            continue;
+                        }
+                    }
+                }
                 app.add_user_message(prompt.clone());
                 runtime.mark_conversation_started();
                 match runtime.session.send(prompt).await {
@@ -1687,9 +2083,11 @@ fn status_bar(app: &App) -> Paragraph<'static> {
         .map(format_cost)
         .unwrap_or_else(|| "--".to_string());
     let label = format!(
-        " {project}{model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  {context} tokens  ·  {cost} ",
+        " {project}{model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  skills {}/{}  ·  {context} tokens  ·  {cost} ",
         app.toolset.len(),
         TOOL_COUNT,
+        app.skill_selection.len(),
+        app.skill_catalog.skills().len(),
     );
 
     Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
@@ -1728,7 +2126,7 @@ fn shortcut_bar() -> Paragraph<'static> {
     };
 
     Paragraph::new(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" "),
         shortcut("^N"),
         Span::raw(" new "),
         shortcut("^O"),
@@ -1739,8 +2137,10 @@ fn shortcut_bar() -> Paragraph<'static> {
         Span::raw(" usage "),
         shortcut("^K"),
         Span::raw(" tools "),
+        shortcut("^S"),
+        Span::raw(" skills "),
         shortcut("^T"),
-        Span::raw(" todos "),
+        Span::raw(" todo "),
         shortcut("^I"),
         Span::raw(" internals "),
         shortcut("^X"),
@@ -1953,6 +2353,72 @@ fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
         .scroll((scroll.min(u16::MAX as usize) as u16, 0))
 }
 
+fn draw_completion(frame: &mut Frame, app: &App, input_area: Rect) {
+    let Some(completion) = app.completion.as_ref() else {
+        return;
+    };
+    if completion.candidates.is_empty() || input_area.y == 0 {
+        return;
+    }
+
+    let visible_count = completion.candidates.len().min(7);
+    let height = visible_count as u16 + 2;
+    let first_visible = completion
+        .selected_item
+        .saturating_sub(visible_count.saturating_sub(1))
+        .min(completion.candidates.len().saturating_sub(visible_count));
+    let desired_width = completion
+        .candidates
+        .iter()
+        .map(|candidate| candidate.command.len() + candidate.description.len() + 5)
+        .max()
+        .unwrap_or(20)
+        .min(100) as u16;
+    let x = input_area.x.saturating_add(1);
+    let width = desired_width
+        .min(frame.area().right().saturating_sub(x))
+        .max(1);
+    let y = input_area.y.saturating_sub(height);
+    let area = Rect::new(x, y, width, height);
+    frame.render_widget(ratatui::widgets::Clear, area);
+
+    let items = completion
+        .candidates
+        .iter()
+        .skip(first_visible)
+        .take(visible_count)
+        .map(|candidate| {
+            ListItem::new(format!(
+                " {:<width$} {}",
+                candidate.command,
+                candidate.description,
+                width = completion
+                    .candidates
+                    .iter()
+                    .map(|item| item.command.len())
+                    .max()
+                    .unwrap_or(1)
+            ))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+                .title("commands"),
+        )
+        .highlight_symbol("› ")
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(240, 177, 94)),
+        );
+    let mut state = ListState::default()
+        .with_selected(Some(completion.selected_item.saturating_sub(first_visible)));
+    frame.render_stateful_widget(list, area, &mut state);
+}
+
 fn draw_modal(frame: &mut Frame, app: &App) {
     if app.show_approval_details {
         let area = centered_rect(80, 80, frame.area());
@@ -1983,6 +2449,11 @@ fn draw_modal(frame: &mut Frame, app: &App) {
 
     if matches!(modal, ModalKind::Tools) {
         draw_tool_picker(frame, app, area);
+        return;
+    }
+
+    if matches!(modal, ModalKind::Skills) {
+        draw_skill_picker(frame, app, area);
         return;
     }
 
@@ -2027,6 +2498,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         ModalKind::Usage => "usage and context | ^U or Esc to close",
         ModalKind::Todos => "fleet todos | ^T or Esc to close",
         ModalKind::Tools => "tools",
+        ModalKind::Skills => "skills",
     };
     let items: Vec<String> = match modal {
         ModalKind::Sessions => app
@@ -2043,6 +2515,7 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         ModalKind::Models => Vec::new(),
         ModalKind::Usage | ModalKind::Todos => Vec::new(),
         ModalKind::Tools => Vec::new(),
+        ModalKind::Skills => Vec::new(),
     };
     let lines: Vec<Line<'static>> = if items.is_empty() {
         vec![Line::from("No entries available.")]
@@ -2152,6 +2625,81 @@ fn draw_tool_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, inner, &mut state);
 }
 
+fn draw_skill_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
+        .title("choose skills | Space toggle, a all, n none, Enter apply, Esc cancel");
+    let inner = outer.inner(area);
+    frame.render_widget(outer, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(4),
+            Constraint::Length(5),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    let items = app
+        .skill_catalog
+        .skills()
+        .iter()
+        .map(|skill| {
+            let checkbox = if app.picker_skill_selection.contains(&skill.name) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            ListItem::new(format!(" {checkbox} {}", skill.name))
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items).highlight_symbol("› ").highlight_style(
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(240, 177, 94)),
+    );
+    let selected = (!app.skill_catalog.skills().is_empty()).then_some(app.selected_item);
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(list, layout[0], &mut state);
+
+    frame.render_widget(
+        Paragraph::new(skill_picker_detail_lines(app))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
+                    .title("selected skill"),
+            )
+            .wrap(Wrap { trim: false }),
+        layout[1],
+    );
+    frame.render_widget(
+        Paragraph::new("↑/↓ choose   Space toggle   a all   n none   Enter apply   Esc cancel")
+            .style(Style::default().fg(Color::Rgb(165, 174, 187))),
+        layout[2],
+    );
+}
+
+fn skill_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(skill) = app.skill_catalog.skills().get(app.selected_item) else {
+        return vec![Line::from("No skills discovered.")];
+    };
+    vec![
+        Line::from(Span::styled(
+            skill.name.clone(),
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("Description: {}", skill.description)),
+        Line::from(format!(
+            "Source: {} | {}",
+            skill.root.source,
+            skill.root.path.display()
+        )),
+        Line::from(format!("Directory: {}", skill.directory.display())),
+    ]
+}
+
 fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
         "{:<28}  {:<9}  {} tokens",
@@ -2207,7 +2755,9 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
 
 fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
     match modal {
-        ModalKind::Sessions | ModalKind::Models | ModalKind::Tools => terminal_area,
+        ModalKind::Sessions | ModalKind::Models | ModalKind::Tools | ModalKind::Skills => {
+            terminal_area
+        }
         ModalKind::Usage | ModalKind::Todos => centered_rect(70, 70, terminal_area),
     }
 }
@@ -2926,7 +3476,7 @@ fn format_count(value: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
@@ -2938,12 +3488,55 @@ mod tests {
 
     use super::{
         chat_scroll_position, displayed_reasoning_effort, draw, draw_model_picker,
-        draw_tool_picker, handle_key, modal_area, model_context_label, model_cost_label_for,
-        model_picker_detail_lines, model_picker_row_for, send_with_fleet_fallback, status_bar,
-        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
+        draw_skill_picker, draw_tool_picker, handle_key, modal_area, model_context_label,
+        model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
+        send_with_fleet_fallback, skill_selection_for_invocation, status_bar, todo_detail_lines,
+        App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
+    use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
+
+    fn test_skill_catalog() -> SkillCatalog {
+        let root = SkillRoot {
+            path: PathBuf::from("C:\\project\\.agents\\skills"),
+            source: SkillRootSource::Project,
+        };
+        SkillCatalog::from_parts(
+            vec![root.clone()],
+            vec![
+                Skill {
+                    name: "rust-review".to_string(),
+                    description: "Review Rust code".to_string(),
+                    user_invocable: true,
+                    directory: root.path.join("rust-review"),
+                    root: root.clone(),
+                },
+                Skill {
+                    name: "runbook-extended".to_string(),
+                    description: "Follow an extended incident runbook".to_string(),
+                    user_invocable: true,
+                    directory: root.path.join("runbook-extended"),
+                    root: root.clone(),
+                },
+                Skill {
+                    name: "runbook".to_string(),
+                    description: "Follow an incident runbook".to_string(),
+                    user_invocable: true,
+                    directory: root.path.join("runbook"),
+                    root: root.clone(),
+                },
+                Skill {
+                    name: "internal-helper".to_string(),
+                    description: "Internal-only helper".to_string(),
+                    user_invocable: false,
+                    directory: root.path.join("internal-helper"),
+                    root,
+                },
+            ],
+            Vec::new(),
+        )
+    }
 
     #[test]
     fn accumulates_streamed_assistant_deltas_into_one_entry() {
@@ -3358,6 +3951,254 @@ mod tests {
         assert!(rendered
             .iter()
             .any(|line| line.contains("powershell") || line.contains("bash")));
+    }
+
+    #[test]
+    fn skill_picker_supports_toggle_none_all_and_apply() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+
+        assert_eq!(handle_key(&mut app, ctrl_key('s')), UiAction::LoadSkills);
+        app.open_skill_picker();
+        assert!(app.modal_is_open());
+
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press));
+        assert!(app.picker_skill_selection.contains("rust-review"));
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press));
+        assert!(app.picker_skill_selection.contains("runbook-extended"));
+
+        handle_key(&mut app, key(KeyCode::Char('n'), KeyEventKind::Press));
+        assert!(app.picker_skill_selection.is_empty());
+        handle_key(&mut app, key(KeyCode::Char('a'), KeyEventKind::Press));
+        assert_eq!(app.picker_skill_selection.len(), 4);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::ApplySkills(SkillSelection::from_names(
+                &test_skill_catalog(),
+                [
+                    "rust-review",
+                    "runbook-extended",
+                    "runbook",
+                    "internal-helper",
+                ],
+            ))
+        );
+        assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn skill_picker_cancel_and_blocked_state_leave_active_selection_unchanged() {
+        let mut app = App::new(None);
+        let catalog = test_skill_catalog();
+        app.set_skill_catalog(catalog.clone());
+        app.set_skill_selection(SkillSelection::from_names(&catalog, ["rust-review"]));
+        app.open_skill_picker();
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press));
+
+        assert_eq!(
+            app.skill_selection(),
+            &SkillSelection::from_names(&catalog, ["rust-review"])
+        );
+        app.status.busy = true;
+        assert!(app.skill_selection_change_is_blocked());
+    }
+
+    #[test]
+    fn skill_picker_shortcut_ignores_key_release_events() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Char('s'), KeyEventKind::Release)),
+            UiAction::None
+        );
+        assert_eq!(handle_key(&mut app, ctrl_key('s')), UiAction::LoadSkills);
+    }
+
+    #[test]
+    fn skill_picker_renders_description_and_discovery_source() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+        app.open_skill_picker();
+        let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw_skill_picker(frame, &app, frame.area()))
+            .expect("skill picker should render");
+
+        let rendered = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("[ ]")));
+        assert!(rendered.iter().any(|line| line.contains("rust-review")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("Review Rust code")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("project") && line.contains(".agents")));
+    }
+
+    #[test]
+    fn slash_completion_filters_invocable_skills_and_accepts_with_enter() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+        for character in "/r".chars() {
+            app.push_input(character);
+        }
+
+        let candidates = app
+            .completion
+            .as_ref()
+            .expect("slash completion should open")
+            .candidates
+            .iter()
+            .map(|candidate| candidate.command.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            candidates,
+            vec!["/rust-review", "/runbook-extended", "/runbook"]
+        );
+
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.input(), "/runbook");
+        assert!(app.completion.is_none());
+
+        let mut hidden = App::new(None);
+        hidden.set_skill_catalog(test_skill_catalog());
+        for character in "/internal".chars() {
+            hidden.push_input(character);
+        }
+        assert!(hidden.completion.is_none());
+    }
+
+    #[test]
+    fn exact_slash_completion_outranks_longer_prefixes_and_submits() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+        for character in "/runbook".chars() {
+            app.push_input(character);
+        }
+
+        assert_eq!(
+            app.completion.as_ref().unwrap().candidates[0].command,
+            "/runbook"
+        );
+        assert_eq!(app.completion.as_ref().unwrap().candidates.len(), 2);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Send("/runbook".to_string())
+        );
+    }
+
+    #[test]
+    fn slash_completion_tab_preserves_trailing_arguments_and_escape_dismisses() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+        for character in "/rus extra".chars() {
+            app.push_input(character);
+        }
+        for _ in 0..6 {
+            app.move_input_left();
+        }
+        assert!(app.completion.is_some());
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Tab, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(app.input(), "/rust-review extra");
+        assert!(app.completion.is_none());
+
+        let mut dismissed = App::new(None);
+        dismissed.set_skill_catalog(test_skill_catalog());
+        for character in "/r".chars() {
+            dismissed.push_input(character);
+        }
+        assert_eq!(
+            handle_key(&mut dismissed, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(dismissed.input(), "/r");
+        assert!(dismissed.completion.is_none());
+    }
+
+    #[test]
+    fn exact_slash_skill_is_submitted_literally() {
+        let mut app = App::new(None);
+        app.set_skill_catalog(test_skill_catalog());
+        for character in "/rust-review inspect this".chars() {
+            app.push_input(character);
+        }
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Send("/rust-review inspect this".to_string())
+        );
+        assert!(app.input().is_empty());
+    }
+
+    #[test]
+    fn slash_invocation_auto_checks_only_known_invocable_skills() {
+        let catalog = test_skill_catalog();
+        let active = SkillSelection::none();
+
+        let selected =
+            skill_selection_for_invocation(&catalog, &active, "/rust-review inspect this")
+                .expect("known invocable skill should be selected");
+        assert!(selected.contains("rust-review"));
+        assert!(skill_selection_for_invocation(&catalog, &selected, "/rust-review").is_none());
+        assert!(skill_selection_for_invocation(&catalog, &active, "/internal-helper").is_none());
+        assert!(skill_selection_for_invocation(&catalog, &active, "/unknown command").is_none());
+    }
+
+    #[test]
+    fn unknown_and_non_invocable_slash_commands_are_ordinary_messages() {
+        for prompt in ["/unknown context", "/internal-helper context"] {
+            let mut app = App::new(None);
+            app.set_skill_catalog(test_skill_catalog());
+            for character in prompt.chars() {
+                app.push_input(character);
+            }
+
+            assert_eq!(
+                handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+                UiAction::Send(prompt.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn skill_selection_status_and_new_conversation_reset_are_visible() {
+        let mut app = App::new(None);
+        let catalog = test_skill_catalog();
+        app.set_skill_catalog(catalog.clone());
+        app.set_skill_selection(SkillSelection::from_names(&catalog, ["rust-review"]));
+        let mut terminal = Terminal::new(TestBackend::new(140, 1)).expect("test terminal");
+        terminal
+            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
+            .expect("status bar renders");
+        let line = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(line.contains("skills 1/4"));
+
+        app.reset_for_new_conversation();
+        assert!(app.skill_selection().is_empty());
     }
 
     #[test]
@@ -4073,7 +4914,7 @@ mod tests {
     #[test]
     fn main_window_renders_a_borderless_transcript_and_one_line_shortcuts() {
         let app = App::new(None);
-        let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
 
         terminal
             .draw(|frame| draw(frame, &app))
@@ -4087,6 +4928,7 @@ mod tests {
         };
         assert!(row(29).contains("^O sessions ^P models ^U usage"));
         assert!(row(29).contains("^N new ^O sessions"));
+        assert!(row(29).contains("^K tools ^S skills"));
         assert!(row(29).contains("^I internals ^X exit"));
         assert!(!row(1).contains('┌'));
         assert!(!row(1).contains('│'));

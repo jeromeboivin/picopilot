@@ -141,6 +141,45 @@ Known hosted models are expanded to all seven tools; local and unknown models
 remain shell-only. Custom tool selections are not persisted across processes.
 Automatic transport recovery preserves the exact active selection.
 
+### Skills
+
+picopilot discovers Agent Skills from these standard roots, in this order:
+
+```text
+PROJECT/.agents/skills
+PROJECT/.github/skills
+PROJECT/.claude/skills
+~/.agents/skills
+~/.copilot/skills
+~/.claude/skills
+```
+
+It also merges enabled entries from VS Code's `chat.agentSkillsLocations`
+setting in the user settings file and the project's `.vscode/settings.json`.
+Settings are read as JSONC, so comments and trailing commas are accepted.
+Relative entries are resolved from the project; `~` entries are resolved from
+the user home directory. Duplicate roots are scanned once. A skill must be a
+directory containing `SKILL.md` with valid `name` and `description`
+frontmatter, and its name must match the directory name. Invalid or unreadable
+skills are skipped with a diagnostic instead of preventing startup.
+
+Skills are never injected into the system message and are disabled explicitly
+when a session starts. Press `Ctrl+S` to open the skill picker. `Space` toggles
+the highlighted skill, `a` selects all discovered skills, `n` clears the
+selection, `Enter` applies it, and `Esc` cancels. The selection lasts for the
+current conversation only; `Ctrl+N` and historical-session resume clear it.
+The status bar shows the active count as `skills N/M`. Applying a selection is
+available while idle and reconnects the current session when it already has
+history.
+
+Typing `/` opens command completion for built-in commands and
+`user-invocable` skills. `Up` and `Down` navigate, `Tab` accepts the highlighted
+command while preserving trailing arguments, `Enter` accepts an incomplete
+command or submits an exact one, and `Esc` dismisses completion. An exact
+user-invocable skill command automatically activates that skill when needed,
+then sends the original literal slash prompt to the Copilot SDK. Unknown and
+non-user-invocable slash commands remain ordinary prompt text.
+
 ### Input and terminal controls
 
 The prompt is a multiline editor. Press `Enter` to send the current prompt and

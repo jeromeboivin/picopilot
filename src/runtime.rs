@@ -17,6 +17,7 @@ use serde_json::Value;
 use crate::config::{AppConfig, ConfigError};
 use crate::permissions::{permission_handler, ApprovalRequest};
 use crate::provider::{ProviderError, ProviderRegistry};
+use crate::skills::{SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, ToolsetProvenance};
 
 pub const MAX_RECOVERY_ATTEMPTS: usize = 3;
@@ -54,6 +55,8 @@ pub struct AppRuntime {
     pub active_model_options: ActiveModelOptions,
     pub active_toolset: Toolset,
     pub toolset_provenance: ToolsetProvenance,
+    pub skill_catalog: SkillCatalog,
+    pub active_skill_selection: SkillSelection,
     startup_config: AppConfig,
     session_start_time: Option<String>,
     conversation_has_history: bool,
@@ -446,6 +449,51 @@ impl ToolsetChangeError {
 }
 
 #[derive(Debug)]
+pub enum SkillChangeError {
+    Replace(SdkError),
+    Resume(ResumeError),
+    Rollback {
+        apply: ResumeError,
+        rollback: ResumeError,
+    },
+}
+
+impl fmt::Display for SkillChangeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Replace(error) => write!(formatter, "could not apply skill selection: {error}"),
+            Self::Resume(error) => write!(formatter, "could not apply skill selection: {error}"),
+            Self::Rollback { apply, rollback } => write!(
+                formatter,
+                "could not apply skill selection: {apply}; restoring the previous selection also failed: {rollback}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SkillChangeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Replace(error) => Some(error),
+            Self::Resume(error) => Some(error),
+            Self::Rollback { apply, .. } => Some(apply),
+        }
+    }
+}
+
+impl SkillChangeError {
+    pub fn is_transport_failure(&self) -> bool {
+        match self {
+            Self::Replace(error) => error.is_transport_failure(),
+            Self::Resume(error) => error.is_transport_failure(),
+            Self::Rollback { apply, rollback } => {
+                apply.is_transport_failure() || rollback.is_transport_failure()
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum ModelSwitchError {
     Session(SdkError),
     Toolset(ToolsetChangeError),
@@ -543,7 +591,7 @@ impl AppRuntime {
         let provenance = self.toolset_provenance;
         let model_options = self.active_model_options.clone();
 
-        self.replace_empty_session(toolset, provenance, model_options)
+        self.replace_empty_session(toolset, provenance, model_options, SkillSelection::none())
             .await?;
         self.conversation_has_history = false;
         Ok(())
@@ -580,6 +628,10 @@ impl AppRuntime {
             .await
     }
 
+    pub async fn set_skills(&mut self, selection: SkillSelection) -> Result<(), SkillChangeError> {
+        self.reconnect_skills(selection).await
+    }
+
     pub async fn switch_model(
         &mut self,
         model: String,
@@ -607,6 +659,7 @@ impl AppRuntime {
                     default_toolset.expect("checked above"),
                     ToolsetProvenance::Default,
                     next_model_options,
+                    self.active_skill_selection.clone(),
                 )
                 .await
                 .map_err(ModelSwitchError::Session);
@@ -639,7 +692,12 @@ impl AppRuntime {
 
         if toolset_transition(self.conversation_has_history) == ToolsetTransition::ReplaceEmpty {
             return self
-                .replace_empty_session(toolset, provenance, self.active_model_options.clone())
+                .replace_empty_session(
+                    toolset,
+                    provenance,
+                    self.active_model_options.clone(),
+                    self.active_skill_selection.clone(),
+                )
                 .await
                 .map_err(ToolsetChangeError::Replace);
         }
@@ -659,6 +717,7 @@ impl AppRuntime {
                 expected.clone(),
                 toolset,
                 Some(&self.active_model_options),
+                &self.active_skill_selection,
             )
             .await;
         match candidate {
@@ -675,6 +734,7 @@ impl AppRuntime {
                     expected,
                     previous_toolset,
                     Some(&self.active_model_options),
+                    &self.active_skill_selection,
                 )
                 .await
             {
@@ -691,11 +751,81 @@ impl AppRuntime {
         }
     }
 
+    async fn reconnect_skills(
+        &mut self,
+        selection: SkillSelection,
+    ) -> Result<(), SkillChangeError> {
+        let previous_selection = self.active_skill_selection.clone();
+        if previous_selection == selection {
+            return Ok(());
+        }
+
+        if toolset_transition(self.conversation_has_history) == ToolsetTransition::ReplaceEmpty {
+            return self
+                .replace_empty_session(
+                    self.active_toolset,
+                    self.toolset_provenance,
+                    self.active_model_options.clone(),
+                    selection,
+                )
+                .await
+                .map_err(SkillChangeError::Replace);
+        }
+
+        let expected = SessionIdentity {
+            session_id: self.session.id().clone(),
+            start_time: self.session_start_time.clone(),
+        };
+        self.session
+            .disconnect()
+            .await
+            .map_err(|error| SkillChangeError::Resume(ResumeError::Session(error)))?;
+
+        let candidate = self
+            .resume_on_client(
+                &self.client,
+                expected.clone(),
+                self.active_toolset,
+                Some(&self.active_model_options),
+                &selection,
+            )
+            .await;
+        match candidate {
+            Ok((session, start_time)) => {
+                self.session = session;
+                self.session_start_time = start_time;
+                self.active_skill_selection = selection;
+                Ok(())
+            }
+            Err(apply_error) => match self
+                .resume_on_client(
+                    &self.client,
+                    expected,
+                    self.active_toolset,
+                    Some(&self.active_model_options),
+                    &previous_selection,
+                )
+                .await
+            {
+                Ok((session, start_time)) => {
+                    self.session = session;
+                    self.session_start_time = start_time;
+                    Err(SkillChangeError::Resume(apply_error))
+                }
+                Err(rollback_error) => Err(SkillChangeError::Rollback {
+                    apply: apply_error,
+                    rollback: rollback_error,
+                }),
+            },
+        }
+    }
+
     async fn replace_empty_session(
         &mut self,
         toolset: Toolset,
         provenance: ToolsetProvenance,
         model_options: ActiveModelOptions,
+        skill_selection: SkillSelection,
     ) -> Result<(), SdkError> {
         let mut config = self
             .startup_config
@@ -705,6 +835,7 @@ impl AppRuntime {
                 toolset,
             )
             .with_permission_handler(self.permission_handler.clone());
+        skill_selection.apply_session_config(&self.skill_catalog, &mut config);
         config.model = model_options.model.clone();
         config.reasoning_effort = model_options.reasoning_effort.clone();
         config.context_tier = model_options.context_tier.clone();
@@ -727,6 +858,7 @@ impl AppRuntime {
         self.active_model_options = model_options;
         self.active_toolset = toolset;
         self.toolset_provenance = provenance;
+        self.active_skill_selection = skill_selection;
         Ok(())
     }
 
@@ -734,27 +866,39 @@ impl AppRuntime {
         &mut self,
         session_id: SessionId,
     ) -> Result<Vec<SessionEvent>, ResumeError> {
-        let expected_metadata = self
-            .client
-            .get_session_metadata(&session_id)
-            .await
-            .map_err(ResumeError::Session)?
-            .ok_or_else(|| ResumeError::MissingSession {
-                session_id: session_id.clone(),
-            })?;
-        let expected_start_time = Some(expected_metadata.start_time);
+        let expected_start_time = if self.session.id() == session_id {
+            self.session_start_time.clone()
+        } else {
+            Some(
+                self.client
+                    .get_session_metadata(&session_id)
+                    .await
+                    .map_err(ResumeError::Session)?
+                    .ok_or_else(|| ResumeError::MissingSession {
+                        session_id: session_id.clone(),
+                    })?
+                    .start_time,
+            )
+        };
 
         self.session
             .disconnect()
             .await
             .map_err(ResumeError::Session)?;
 
+        let skill_selection = SkillSelection::none();
         let expected = SessionIdentity {
             session_id,
             start_time: expected_start_time,
         };
         let (resumed, actual_start_time) = self
-            .resume_on_client(&self.client, expected, Toolset::shell_only(), None)
+            .resume_on_client(
+                &self.client,
+                expected,
+                Toolset::shell_only(),
+                None,
+                &skill_selection,
+            )
             .await?;
 
         let history = match resumed.get_events().await {
@@ -782,6 +926,7 @@ impl AppRuntime {
             reasoning_effort: None,
             context_tier: None,
         };
+        self.active_skill_selection = skill_selection;
         self.conversation_has_history = true;
 
         if model
@@ -793,7 +938,13 @@ impl AppRuntime {
                 start_time: self.session_start_time.clone(),
             };
             let (expanded, actual_start_time) = self
-                .resume_on_client(&self.client, expected, Toolset::all(), None)
+                .resume_on_client(
+                    &self.client,
+                    expected,
+                    Toolset::all(),
+                    None,
+                    &self.active_skill_selection,
+                )
                 .await?;
             self.session = expanded;
             self.session_start_time = actual_start_time;
@@ -820,6 +971,7 @@ impl AppRuntime {
                 expected,
                 self.active_toolset,
                 Some(&self.active_model_options),
+                &self.active_skill_selection,
             )
             .await
             .map_err(RecoveryError::Resume)?;
@@ -840,9 +992,15 @@ impl AppRuntime {
         expected: SessionIdentity,
         toolset: Toolset,
         model_options: Option<&ActiveModelOptions>,
+        skill_selection: &SkillSelection,
     ) -> Result<(github_copilot_sdk::session::Session, Option<String>), ResumeError> {
         let resumed = client
-            .resume_session(self.resume_config(expected.session_id.clone(), toolset, model_options))
+            .resume_session(self.resume_config(
+                expected.session_id.clone(),
+                toolset,
+                model_options,
+                skill_selection,
+            ))
             .await
             .map_err(ResumeError::Session)?;
         let actual_start_time = match client.get_session_metadata(resumed.id()).await {
@@ -873,13 +1031,19 @@ impl AppRuntime {
         session_id: SessionId,
         toolset: Toolset,
         model_options: Option<&ActiveModelOptions>,
+        skill_selection: &SkillSelection,
     ) -> ResumeSessionConfig {
-        let mut config = self.base_resume_config(session_id, toolset);
+        let mut config = self.base_resume_config(session_id, toolset, skill_selection);
         apply_optional_active_model_options(&mut config, model_options);
         config
     }
 
-    fn base_resume_config(&self, session_id: SessionId, toolset: Toolset) -> ResumeSessionConfig {
+    fn base_resume_config(
+        &self,
+        session_id: SessionId,
+        toolset: Toolset,
+        skill_selection: &SkillSelection,
+    ) -> ResumeSessionConfig {
         let config = ResumeSessionConfig::new(session_id)
             .with_client_name("picopilot")
             .with_streaming(true)
@@ -887,10 +1051,12 @@ impl AppRuntime {
             .with_permission_handler(self.permission_handler.clone())
             .with_system_message(crate::config::system_message_config())
             .with_suppress_resume_event(true);
-        apply_provider_registry(
+        let mut config = apply_provider_registry(
             apply_toolset(config, toolset),
             self.provider_registry.as_ref(),
-        )
+        );
+        skill_selection.apply_resume_config(&self.skill_catalog, &mut config);
+        config
     }
 }
 
@@ -1037,6 +1203,8 @@ async fn connect_inner(
     let working_directory = config
         .working_directory()
         .map_err(StartupError::CurrentDirectory)?;
+    let skill_catalog = SkillCatalog::discover(&working_directory);
+    let active_skill_selection = SkillSelection::none();
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
     let provider_settings = config
         .provider_settings()
@@ -1066,16 +1234,16 @@ async fn connect_inner(
             .map_err(StartupError::Configuration)?,
     }
 
-    let session = client
-        .create_session(
-            config
-                .session_config_in_with_registry_and_toolset(
-                    &working_directory,
-                    provider_registry.as_ref(),
-                    active_toolset,
-                )
-                .with_permission_handler(permission_handler.clone()),
+    let mut session_config = config
+        .session_config_in_with_registry_and_toolset(
+            &working_directory,
+            provider_registry.as_ref(),
+            active_toolset,
         )
+        .with_permission_handler(permission_handler.clone());
+    active_skill_selection.apply_session_config(&skill_catalog, &mut session_config);
+    let session = client
+        .create_session(session_config)
         .await
         .map_err(StartupError::Session)?;
     let models = match provider_registry.as_ref() {
@@ -1122,6 +1290,8 @@ async fn connect_inner(
         },
         active_toolset,
         toolset_provenance: ToolsetProvenance::Default,
+        skill_catalog,
+        active_skill_selection,
         conversation_has_history: false,
     })
 }
