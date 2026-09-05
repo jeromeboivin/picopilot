@@ -594,25 +594,65 @@ fn render_tool_header(
             .fg(palette::INACTIVE)
             .add_modifier(ratatui::style::Modifier::DIM),
     };
-    let mut spans = vec![
+    let mut lines = if name == "Bash" {
+        if let Some((first_command, second_command)) = summary.split_once('\n') {
+            let mut first_spans = tool_header_prefix(dot, dot_style, &name);
+            first_spans.push(Span::raw("("));
+            first_spans.push(Span::raw(single_line_content(first_command)));
+            let first_line = truncate_line_with_ellipsis(Line::from(first_spans), width);
+            let second_line = truncate_line_with_suffix(
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::raw(single_line_content(second_command)),
+                ]),
+                width,
+                ")",
+            );
+            vec![first_line, second_line]
+        } else {
+            vec![render_single_tool_header_line(
+                dot, dot_style, &name, &summary, width,
+            )]
+        }
+    } else {
+        vec![render_single_tool_header_line(
+            dot, dot_style, &name, &summary, width,
+        )]
+    };
+    if tool_is_nested(kind, header.nested()) {
+        lines
+    } else {
+        lines.insert(0, Line::default());
+        lines
+    }
+}
+
+fn tool_header_prefix(dot: &str, dot_style: Style, name: &str) -> Vec<Span<'static>> {
+    vec![
         Span::styled(dot.to_string(), dot_style),
         Span::styled(" ", dot_style),
         Span::styled(
-            name,
+            name.to_string(),
             Style::default()
                 .fg(palette::TEXT)
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
-    ];
+    ]
+}
+
+fn render_single_tool_header_line(
+    dot: &str,
+    dot_style: Style,
+    name: &str,
+    summary: &str,
+    width: usize,
+) -> Line<'static> {
+    let mut spans = tool_header_prefix(dot, dot_style, name);
+    let summary = single_line_content(summary);
     if !summary.is_empty() {
         spans.push(Span::raw(format!("({summary})")));
     }
-    let line = truncate_line(Line::from(spans), width);
-    if tool_is_nested(kind, header.nested()) {
-        vec![line]
-    } else {
-        vec![Line::default(), line]
-    }
+    truncate_line(Line::from(spans), width)
 }
 
 fn render_tool_progress(
@@ -632,15 +672,22 @@ fn render_tool_progress(
     if content.is_empty() {
         return Vec::new();
     }
-    render_tool_body(
-        &[Line::from(Span::styled(
-            content.to_string(),
+    let nested = tool_is_nested(kind, progress.nested());
+    let prefix = if nested { "" } else { TOOL_BODY_GUTTER };
+    let content_width = width.saturating_sub(UnicodeWidthStr::width(prefix));
+    let content_line = truncate_line(
+        Line::from(Span::styled(
+            single_line_content(content),
             Style::default().fg(palette::INACTIVE),
-        ))],
-        width,
-        tool_is_nested(kind, progress.nested()),
-        Style::default().fg(palette::INACTIVE),
-    )
+        )),
+        content_width,
+    );
+    let gutter_style = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    let mut spans = vec![Span::styled(prefix, gutter_style)];
+    spans.extend(content_line.spans);
+    vec![Line::from(spans)]
 }
 
 fn render_tool_result(
@@ -792,13 +839,38 @@ fn trimmed_content_lines(content: &str) -> Vec<String> {
     lines
 }
 
+fn single_line_content(content: &str) -> String {
+    let mut single_line = String::with_capacity(content.len());
+    let mut characters = content.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                single_line.push(' ');
+            }
+            '\n' => single_line.push(' '),
+            character => single_line.push(character),
+        }
+    }
+    single_line
+}
+
+const TOOL_BODY_GUTTER: &str = "  ⎿ \u{00a0}";
+const TOOL_BODY_CONTINUATION_GUTTER: &str = "     ";
+
 fn render_tool_body(
     lines: &[Line<'static>],
     width: usize,
     nested: bool,
     body_style: Style,
 ) -> Vec<Line<'static>> {
-    let content_width = width.saturating_sub(if nested { 0 } else { 5 });
+    let content_width = width.saturating_sub(if nested {
+        0
+    } else {
+        UnicodeWidthStr::width(TOOL_BODY_GUTTER)
+    });
     let wrapped = wrap_lines(
         lines,
         &WrapSpec {
@@ -817,9 +889,9 @@ fn render_tool_body(
         let prefix = if nested {
             ""
         } else if index == 0 {
-            "  ⎿ \u{00a0}"
+            TOOL_BODY_GUTTER
         } else {
-            "     "
+            TOOL_BODY_CONTINUATION_GUTTER
         };
         let gutter_style = Style::default()
             .fg(palette::INACTIVE)
@@ -833,6 +905,30 @@ fn render_tool_body(
         rendered.push(Line::from(spans));
     }
     rendered
+}
+
+fn truncate_line_with_ellipsis(line: Line<'static>, width: usize) -> Line<'static> {
+    if line.width() <= width {
+        return line;
+    }
+    if width == 0 {
+        return Line::default();
+    }
+    let mut truncated = truncate_line(line, width.saturating_sub(1));
+    truncated.spans.push(Span::raw("…"));
+    truncated
+}
+
+fn truncate_line_with_suffix(line: Line<'static>, width: usize, suffix: &str) -> Line<'static> {
+    let suffix_width = UnicodeWidthStr::width(suffix);
+    if line.width().saturating_add(suffix_width) <= width {
+        let mut spans = line.spans;
+        spans.push(Span::raw(suffix.to_string()));
+        return Line::from(spans);
+    }
+    let mut truncated = truncate_line_with_ellipsis(line, width.saturating_sub(suffix_width));
+    truncated.spans.push(Span::raw(suffix.to_string()));
+    truncated
 }
 
 fn truncate_line(line: Line<'static>, width: usize) -> Line<'static> {

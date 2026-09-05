@@ -1071,7 +1071,49 @@ fn tool_headers_omit_empty_parentheses_and_nested_spacing() {
 }
 
 #[test]
-fn model_only_tool_progress_states_have_deterministic_surfaces() {
+fn top_level_tool_progress_follows_its_header_without_a_separator() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-progress".to_string(),
+        tool_name: "read".to_string(),
+        arguments: Some(json!({"file_path": "README.md"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-progress".to_string(),
+        content: "reading".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    let lines = screen
+        .live_lines_at_width(
+            Platform {
+                is_windows: false,
+                wt_session: false,
+            },
+            80,
+        )
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        lines,
+        vec![
+            "".to_string(),
+            "● Read(README.md)".to_string(),
+            "  ⎿ \u{00a0}reading".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn model_only_tool_progress_states_have_deterministic_single_rows() {
     let permission = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "permission-1".to_string(),
         tool_name: "read".to_string(),
@@ -1121,14 +1163,120 @@ fn model_only_tool_progress_states_have_deterministic_surfaces() {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        vec![
-            "".to_string(),
-            "  ⎿ \u{00a0}Waiting for permission…".to_string()
-        ]
+        vec!["  ⎿ \u{00a0}Waiting for permission…".to_string()]
     );
     assert!(classifier_lines.is_empty());
     assert_eq!(nested_classifier_lines.len(), 1);
     assert_eq!(nested_classifier_lines[0].to_string(), "classifying");
+}
+
+#[test]
+fn tool_progress_is_one_clipped_row_even_with_long_multiline_content() {
+    let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-1".to_string(),
+        tool_name: "read".to_string(),
+        content: "0123456789abcdef\nsecond line".to_string(),
+        kind: ToolProgressKind::Tool,
+        agent_id: None,
+    });
+
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        12,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].width() <= 12);
+    assert!(!lines[0].to_string().contains('\n'));
+    assert!(lines[0].to_string().starts_with("  ⎿ \u{00a0}"));
+}
+
+#[test]
+fn nested_tool_progress_is_one_clipped_row_without_a_gutter() {
+    let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-nested".to_string(),
+        tool_name: "read".to_string(),
+        content: "0123456789abcdef\nsecond line".to_string(),
+        kind: ToolProgressKind::Tool,
+        agent_id: Some("agent-1".to_string()),
+    });
+
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::ToolNested,
+        &payload,
+        12,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].width() <= 12);
+    assert!(!lines[0].to_string().contains('\n'));
+    assert!(!lines[0].to_string().contains('⎿'));
+}
+
+#[test]
+fn two_line_bash_summaries_use_two_physical_header_rows() {
+    let payload = TranscriptPayload::ToolHeader(test_tool_header(
+        "bash",
+        json!({"command": "echo first\necho second"}),
+        ToolCallState::Running,
+        None,
+    ));
+
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    assert_eq!(rendered.len(), 3);
+    assert_eq!(rendered[1], "● Bash(echo first");
+    assert_eq!(rendered[2], "  echo second)");
+    assert!(rendered.iter().all(|line| !line.contains('\n')));
+}
+
+#[test]
+fn narrow_two_line_bash_summaries_clip_each_row_without_breaking_parentheses() {
+    let payload = TranscriptPayload::ToolHeader(test_tool_header(
+        "bash",
+        json!({"command": "echo first command\necho second command"}),
+        ToolCallState::Running,
+        None,
+    ));
+
+    for width in [10, 12, 20] {
+        let lines = render_transcript_payload_with_clock(
+            LiveEntryKind::Tool,
+            &payload,
+            width,
+            ToolPlatform::WindowsLinux,
+            0,
+        );
+        let first = lines[1].to_string();
+        let second = lines[2].to_string();
+
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|line| line.width() <= width));
+        assert!(lines.iter().all(|line| !line.to_string().contains('\n')));
+        assert!(first.starts_with("● Bash("));
+        assert!(second.starts_with("  "));
+        assert_eq!(
+            first.chars().filter(|character| *character == '(').count(),
+            1
+        );
+        assert_eq!(
+            second.chars().filter(|character| *character == ')').count(),
+            1
+        );
+        assert!(second.ends_with(')'));
+    }
 }
 
 #[test]
