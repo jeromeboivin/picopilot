@@ -2,6 +2,7 @@ mod input_editor;
 
 pub mod config;
 pub mod events;
+pub mod palette;
 pub mod permissions;
 pub mod provider;
 pub mod runtime;

@@ -19,6 +19,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthChar;
 
 use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
@@ -27,6 +28,7 @@ use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
 use crate::input_editor::InputEditor;
+use crate::palette;
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
@@ -319,8 +321,16 @@ impl App {
         let (kind, completed) = match entry {
             ChatEntry::User(_) => (LiveEntryKind::User, true),
             ChatEntry::Diagnostic(_) | ChatEntry::Banner { .. } => (LiveEntryKind::Other, true),
-            ChatEntry::Assistant { message_id, .. } => (
-                LiveEntryKind::Assistant,
+            ChatEntry::Assistant {
+                message_id,
+                agent_id,
+                ..
+            } => (
+                if agent_id.is_some() {
+                    LiveEntryKind::AssistantNested
+                } else {
+                    LiveEntryKind::Assistant
+                },
                 !self.assistant_live_ids.contains(message_id),
             ),
             ChatEntry::Reasoning { reasoning_id, .. } => (
@@ -3163,7 +3173,13 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
         }
         let kind = match entry {
             ChatEntry::User(_) => LiveEntryKind::User,
-            ChatEntry::Assistant { .. } => LiveEntryKind::Assistant,
+            ChatEntry::Assistant { agent_id, .. } => {
+                if agent_id.is_some() {
+                    LiveEntryKind::AssistantNested
+                } else {
+                    LiveEntryKind::Assistant
+                }
+            }
             _ => LiveEntryKind::Other,
         };
         lines.extend(render_entry_lines(kind, &rendered, width));
@@ -3190,18 +3206,18 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
 
 fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
     match entry {
-        ChatEntry::User(content) => markdown_lines(content, Style::default()),
+        ChatEntry::User(content) => {
+            let content = truncate_user_content(content);
+            markdown_lines(&content, Style::default().fg(palette::TEXT))
+        }
         ChatEntry::Diagnostic(message) if show_internals => labeled_lines(
             "debug",
             message,
             Style::default().fg(Color::Rgb(165, 174, 187)),
         ),
         ChatEntry::Diagnostic(_) => Vec::new(),
-        ChatEntry::Assistant {
-            content, agent_id, ..
-        } => {
-            let _ = agent_id;
-            markdown_lines(content, Style::default())
+        ChatEntry::Assistant { content, .. } => {
+            markdown_lines(content, Style::default().fg(palette::TEXT))
         }
         ChatEntry::Reasoning {
             content, agent_id, ..
@@ -3405,6 +3421,39 @@ fn markdown_lines(content: &str, base_style: Style) -> Vec<Line<'static>> {
         renderer.push(event);
     }
     renderer.finish()
+}
+
+fn truncate_user_content(content: &str) -> String {
+    const MAX_GRAPHEMES: usize = 10_000;
+    const EDGE_GRAPHEMES: usize = 2_500;
+
+    let graphemes = content.graphemes(true).collect::<Vec<_>>();
+    if graphemes.len() <= MAX_GRAPHEMES {
+        return content.to_string();
+    }
+
+    let first_end = graphemes
+        .iter()
+        .take(EDGE_GRAPHEMES)
+        .map(|grapheme| grapheme.len())
+        .sum::<usize>();
+    let last_start = content.len()
+        - graphemes
+            .iter()
+            .rev()
+            .take(EDGE_GRAPHEMES)
+            .map(|grapheme| grapheme.len())
+            .sum::<usize>();
+    let omitted_newlines = content[first_end..last_start]
+        .chars()
+        .filter(|character| *character == '\n')
+        .count();
+
+    format!(
+        "{}\n… +{omitted_newlines} lines …\n{}",
+        &content[..first_end],
+        &content[last_start..]
+    )
 }
 
 struct MarkdownRenderer {
@@ -3929,6 +3978,85 @@ mod tests {
         assert_eq!(lines[5].to_string(), "● Done");
         assert_eq!(lines[3].spans[1].style.fg, Some(Color::DarkGray));
         assert_eq!(lines[7].to_string(), "✻ Copilot is responding…");
+    }
+
+    #[test]
+    fn entry_lines_return_body_content_without_transcript_prefixes() {
+        let user = super::entry_lines(&ChatEntry::User("Inspect this".to_string()), false);
+        let assistant = super::entry_lines(
+            &ChatEntry::Assistant {
+                message_id: "message-1".to_string(),
+                content: "Done".to_string(),
+                agent_id: None,
+            },
+            false,
+        );
+
+        assert_eq!(
+            user.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["Inspect this"]
+        );
+        assert_eq!(
+            assistant
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["Done"]
+        );
+        assert!(user
+            .iter()
+            .chain(&assistant)
+            .all(|line| !line.to_string().starts_with(['❯', '⏺', '●'])));
+        assert!(user
+            .iter()
+            .chain(&assistant)
+            .flat_map(|line| &line.spans)
+            .all(|span| span.style.fg == Some(crate::palette::TEXT)));
+    }
+
+    #[test]
+    fn long_user_messages_keep_grapheme_edges_and_count_omitted_newlines() {
+        let first = "e\u{301}".repeat(2_500);
+        let middle = format!("\n{}\n", "m".repeat(5_001));
+        let last = "👩\u{200d}💻".repeat(2_500);
+        let content = format!("{first}{middle}{last}");
+
+        let truncated = super::truncate_user_content(&content);
+        let lines = truncated.split('\n').collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], first);
+        assert_eq!(lines[1], "… +2 lines …");
+        assert_eq!(lines[2], last);
+    }
+
+    #[test]
+    fn user_truncation_marker_survives_the_visual_buffer() {
+        let mut app = App::new(None);
+        app.add_user_message("x".repeat(10_001));
+
+        let lines = super::chat_lines_at_width(&app, 80);
+        let marker_rows = lines
+            .iter()
+            .filter(|line| line.to_string().contains("… +0 lines …"))
+            .count();
+        let mut terminal = Terminal::new(TestBackend::new(80, lines.len() as u16))
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(ratatui::widgets::Paragraph::new(lines), frame.area())
+            })
+            .expect("truncated user message should render");
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert_eq!(marker_rows, 1);
+        assert!(rendered.contains("… +0 lines …"));
     }
 
     #[test]

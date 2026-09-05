@@ -1,4 +1,5 @@
 use picopilot::events::EventUpdate;
+use picopilot::palette;
 use picopilot::screen_model::{
     enter_main_screen, live_preview_enabled, render_entry_lines, terminal_options, LiveEntryKind,
     Platform, ScreenChange, ScreenEntry, ScreenModel, FIXED_LIVE_REGION_HEIGHT,
@@ -426,11 +427,11 @@ fn committed_long_lines_need_wrapped_height_before_insert() {
         .draw(|frame| screen.draw_live(frame, Platform::default()))
         .expect("live viewport should redraw");
 
-    assert_eq!(screen.committed_entries()[0].height() as usize, 5);
+    assert_eq!(screen.committed_entries()[0].height() as usize, 4);
     assert!(terminal_text(&terminal).contains("012345"));
-    assert!(terminal_text(&terminal).contains("6789AB"));
-    assert!(terminal_text(&terminal).contains("CDEFGH"));
-    assert!(terminal_text(&terminal).contains("IJ"));
+    assert!(terminal_text(&terminal).contains("01234567"));
+    assert!(terminal_text(&terminal).contains("89ABCDEF"));
+    assert!(terminal_text(&terminal).contains("GHIJ"));
 }
 
 #[test]
@@ -472,6 +473,243 @@ fn transcript_visual_buffers_hold_surface_shapes_at_focus_widths() {
                 frame.render_widget(Paragraph::new(assistant_lines.clone()), frame.area());
             })
             .expect("surface should render at the focused width");
+    }
+}
+
+#[test]
+fn assistant_body_uses_the_full_width_after_its_two_cell_gutter() {
+    let lines = render_entry_lines(LiveEntryKind::Assistant, &[Line::from("12345678")], 10);
+    let expected_prefix = if cfg!(target_os = "macos") {
+        "⏺ "
+    } else {
+        "● "
+    };
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1].to_string(), format!("{expected_prefix}12345678"));
+    assert_eq!(lines[1].width(), 10);
+}
+
+#[test]
+fn transcript_width_arithmetic_is_explicit_at_ten_and_eighty_columns() {
+    for width in [10, 80] {
+        let body = vec![Line::from("x".repeat(width * 2))];
+        let user_lines = render_entry_lines(LiveEntryKind::User, &body, width);
+        let assistant_lines = render_entry_lines(LiveEntryKind::Assistant, &body, width);
+
+        assert_eq!(user_lines[0], Line::default());
+        assert_eq!(user_lines[1].width(), width);
+        assert_eq!(
+            user_lines[1]
+                .to_string()
+                .chars()
+                .filter(|character| *character == 'x')
+                .count(),
+            width - 3
+        );
+        assert_eq!(
+            user_lines[2]
+                .to_string()
+                .chars()
+                .filter(|character| *character == 'x')
+                .count(),
+            width - 1
+        );
+        assert!(user_lines[1]
+            .spans
+            .iter()
+            .any(|span| span.style.bg == Some(palette::USER_MESSAGE_BACKGROUND)));
+        assert_eq!(user_lines[0].style, Style::default());
+
+        assert_eq!(assistant_lines[1].width(), width);
+        assert_eq!(assistant_lines[2].width(), width);
+        assert_eq!(
+            assistant_lines[1]
+                .to_string()
+                .chars()
+                .filter(|character| *character == 'x')
+                .count(),
+            width - 2
+        );
+        assert_eq!(
+            assistant_lines[2]
+                .to_string()
+                .chars()
+                .filter(|character| *character == 'x')
+                .count(),
+            width - 2
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(width as u16, 4))
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(user_lines.clone()), frame.area());
+            })
+            .expect("prewrapped user lines should render");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .take(width * user_lines.len())
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains(&user_lines[1].to_string()));
+        assert!(rendered.contains(&user_lines[2].to_string()));
+    }
+}
+
+#[test]
+fn prewrapped_messages_keep_their_surface_shape_across_required_widths() {
+    for width in [1, 2, 10, 40, 80] {
+        let short_user = render_entry_lines(LiveEntryKind::User, &[Line::from("short")], width);
+        let wrapped_user = render_entry_lines(
+            LiveEntryKind::User,
+            &[Line::from("alpha beta gamma")],
+            width,
+        );
+        let hard_newline_user = render_entry_lines(
+            LiveEntryKind::User,
+            &[Line::from("first"), Line::from("second")],
+            width,
+        );
+        let assistant = render_entry_lines(
+            LiveEntryKind::Assistant,
+            &[Line::from("alpha beta gamma")],
+            width,
+        );
+
+        assert!(!short_user.is_empty());
+        assert!(!wrapped_user.is_empty());
+        assert!(!hard_newline_user.is_empty());
+        assert!(!assistant.is_empty());
+        assert_eq!(short_user[0], Line::default());
+        assert_eq!(hard_newline_user[0], Line::default());
+        let hard_newline_text = hard_newline_user
+            .iter()
+            .skip(1)
+            .map(ToString::to_string)
+            .collect::<String>();
+        assert!(hard_newline_text.contains('s'));
+        if width >= 10 {
+            assert!(hard_newline_user
+                .iter()
+                .skip(1)
+                .any(|line| line.to_string().contains("second")));
+        }
+        assert!(assistant
+            .iter()
+            .skip(2)
+            .all(|line| line.to_string().starts_with("  ")));
+
+        let mut terminal = Terminal::new(TestBackend::new(width as u16, 20))
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(short_user.clone()), frame.area());
+                frame.render_widget(Paragraph::new(assistant.clone()), frame.area());
+            })
+            .expect("prewrapped rows should render at every required width");
+    }
+}
+
+#[test]
+fn consecutive_message_surfaces_have_one_separator_each() {
+    let user = render_entry_lines(LiveEntryKind::User, &[Line::from("one")], 10);
+    let second_user = render_entry_lines(LiveEntryKind::User, &[Line::from("two")], 10);
+    let assistant = render_entry_lines(LiveEntryKind::Assistant, &[Line::from("one")], 10);
+    let second_assistant = render_entry_lines(LiveEntryKind::Assistant, &[Line::from("two")], 10);
+
+    let mut users = user.clone();
+    users.extend(second_user);
+    assert_eq!(
+        users
+            .iter()
+            .filter(|line| line.to_string().is_empty())
+            .count(),
+        2
+    );
+
+    let mut assistants = assistant.clone();
+    assistants.extend(second_assistant);
+    assert_eq!(
+        assistants
+            .iter()
+            .filter(|line| line.to_string().is_empty())
+            .count(),
+        2
+    );
+
+    let mut mixed = user;
+    mixed.extend(render_entry_lines(
+        LiveEntryKind::Assistant,
+        &[Line::from("response")],
+        10,
+    ));
+    assert_eq!(
+        mixed
+            .iter()
+            .filter(|line| line.to_string().is_empty())
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn nested_assistant_content_has_no_glyph_or_top_level_separator() {
+    let lines = render_entry_lines(
+        LiveEntryKind::AssistantNested,
+        &[Line::from("nested output")],
+        40,
+    );
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].to_string(), "nested output");
+}
+
+#[test]
+fn wide_graphemes_are_retained_when_the_body_capacity_is_smaller() {
+    for kind in [LiveEntryKind::User, LiveEntryKind::Assistant] {
+        let lines = render_entry_lines(kind, &[Line::from("界")], 2);
+        assert!(lines.iter().any(|line| line.to_string().contains('界')));
+    }
+}
+
+#[test]
+fn committed_and_live_rendering_have_identical_rows_for_one_entry() {
+    let width = 40;
+    let body = vec![Line::from("alpha beta gamma")];
+    let expected = render_entry_lines(LiveEntryKind::Assistant, &body, width);
+    let mut screen = ScreenModel::default();
+    let mut terminal =
+        Terminal::with_options(TestBackend::new(width as u16, 24), terminal_options())
+            .expect("inline terminal should initialize");
+
+    screen
+        .start_live("assistant-1", LiveEntryKind::Assistant, body)
+        .expect("live entry should start");
+    assert_eq!(
+        screen.live_lines_at_width(
+            Platform {
+                is_windows: false,
+                wt_session: false,
+            },
+            width,
+        ),
+        expected
+    );
+
+    screen
+        .commit_live(&mut terminal, "assistant-1")
+        .expect("live entry should commit");
+    assert_eq!(
+        screen.committed_entries()[0].height() as usize,
+        expected.len()
+    );
+    let rendered = terminal_text(&terminal);
+    for line in expected.iter().filter(|line| !line.to_string().is_empty()) {
+        assert!(rendered.contains(line.to_string().trim_end()));
     }
 }
 

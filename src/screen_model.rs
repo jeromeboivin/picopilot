@@ -6,24 +6,22 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use crate::palette;
 use crate::transcript_wrap::{wrap_lines, WrapSpec};
 
 pub const FIXED_LIVE_REGION_HEIGHT: u16 = 1 + 9 + 3 + 1;
-
-const ASSISTANT_TEXT_COLOR: Color = Color::White;
-const SUBTLE_TEXT_COLOR: Color = Color::Rgb(80, 80, 80);
-const USER_MESSAGE_BACKGROUND: Color = Color::Rgb(55, 55, 55);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveEntryKind {
     User,
     Assistant,
+    AssistantNested,
     Bash,
     Other,
 }
@@ -51,7 +49,9 @@ impl Platform {
 
 pub fn live_preview_enabled(kind: LiveEntryKind, platform: Platform) -> bool {
     match kind {
-        LiveEntryKind::Assistant => !platform.is_windows && !platform.wt_session,
+        LiveEntryKind::Assistant | LiveEntryKind::AssistantNested => {
+            !platform.is_windows && !platform.wt_session
+        }
         LiveEntryKind::User | LiveEntryKind::Bash | LiveEntryKind::Other => true,
     }
 }
@@ -374,10 +374,14 @@ pub fn render_entry_lines(
     let lines = match kind {
         LiveEntryKind::User => wrap_lines(lines, &user_wrap_spec(width)),
         LiveEntryKind::Assistant => wrap_lines(lines, &assistant_wrap_spec(width)),
+        LiveEntryKind::AssistantNested => wrap_lines(lines, &assistant_nested_wrap_spec(width)),
         LiveEntryKind::Bash | LiveEntryKind::Other => lines.to_vec(),
     };
-    let mut rendered = Vec::with_capacity(lines.len() + 1);
-    rendered.push(Line::default());
+    let has_top_level_spacing = !matches!(kind, LiveEntryKind::AssistantNested);
+    let mut rendered = Vec::with_capacity(lines.len() + usize::from(has_top_level_spacing));
+    if has_top_level_spacing {
+        rendered.push(Line::default());
+    }
     rendered.extend(lines);
     rendered
 }
@@ -386,21 +390,31 @@ fn user_wrap_spec(columns: usize) -> WrapSpec {
     WrapSpec {
         wrap_width: columns.saturating_sub(1),
         fill_width: columns,
-        first_prefix: vec![Span::styled("❯ ", Style::default().fg(SUBTLE_TEXT_COLOR))],
+        first_prefix: vec![Span::styled("❯ ", Style::default().fg(palette::SUBTLE))],
         continuation_prefix: Vec::new(),
-        fill_style: Some(Style::default().bg(USER_MESSAGE_BACKGROUND)),
+        fill_style: Some(Style::default().bg(palette::USER_MESSAGE_BACKGROUND)),
     }
 }
 
 fn assistant_wrap_spec(columns: usize) -> WrapSpec {
     WrapSpec {
-        wrap_width: columns.saturating_sub(2),
-        fill_width: columns.saturating_sub(2),
+        wrap_width: columns,
+        fill_width: columns,
         first_prefix: vec![Span::styled(
             assistant_dot_with_space(),
-            Style::default().fg(ASSISTANT_TEXT_COLOR),
+            Style::default().fg(palette::TEXT),
         )],
         continuation_prefix: vec![Span::raw("  ")],
+        fill_style: None,
+    }
+}
+
+fn assistant_nested_wrap_spec(columns: usize) -> WrapSpec {
+    WrapSpec {
+        wrap_width: columns,
+        fill_width: columns,
+        first_prefix: Vec::new(),
+        continuation_prefix: Vec::new(),
         fill_style: None,
     }
 }
