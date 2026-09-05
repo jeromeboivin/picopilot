@@ -1,5 +1,5 @@
 use picopilot::ansi::sanitize_ansi;
-use picopilot::events::EventUpdate;
+use picopilot::events::{EventUpdate, ShellCompletion, ShellExitMetadata};
 use picopilot::palette;
 use picopilot::screen_model::{
     enter_main_screen, live_preview_enabled, render_entry_lines, render_transcript_payload,
@@ -169,6 +169,7 @@ fn wrapped_tool_result_keeps_sgr_style_on_every_fragment_without_escape_bytes() 
         tool_name: "bash".to_string(),
         arguments: None,
         content: sanitize_ansi("\u{1b}[31mred red red red red\u{1b}[0m"),
+        shell_completion: None,
         state: ToolResultState::Success,
         agent_id: None,
         cwd: std::path::PathBuf::from("."),
@@ -192,12 +193,398 @@ fn wrapped_tool_result_keeps_sgr_style_on_every_fragment_without_escape_bytes() 
 }
 
 #[test]
+fn structured_shell_output_renders_styled_terminal_text() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "shell-structured".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf red"})),
+        content: "fallback should not render".to_string(),
+        shell_completion: Some(ShellCompletion {
+            exit: Some(ShellExitMetadata {
+                cwd: Some("/workspace".to_string()),
+                exit_code: 0,
+                output_file_path: None,
+                output_preview: None,
+                output_truncated: Some(false),
+                shell_id: "shell-structured".to_string(),
+            }),
+            output: Some(sanitize_ansi("\u{1b}[31mred\u{1b}[0m")),
+            image_detected: false,
+        }),
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 40);
+
+    assert_eq!(lines[1].to_string(), "  ⎿ \u{00a0}red");
+    assert_eq!(
+        lines[1]
+            .spans
+            .iter()
+            .find(|span| span.content == "red")
+            .expect("styled shell output")
+            .style
+            .fg,
+        Some(ratatui::style::Color::Red)
+    );
+    assert!(!lines
+        .iter()
+        .any(|line| line.to_string().contains("fallback")));
+}
+
+#[test]
+fn shell_success_renders_output_empty_states_and_silent_commands() {
+    let output = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("echo output", Some("output"), Some(0), Some(false), false),
+        40,
+    );
+    assert!(output
+        .iter()
+        .any(|line| line.to_string().ends_with("output")));
+
+    let empty = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("echo nothing", None, Some(0), Some(false), false),
+        40,
+    );
+    assert!(empty
+        .iter()
+        .any(|line| line.to_string().ends_with("(No output)")));
+
+    let mut background = shell_result("long-running command", None, Some(0), Some(false), false);
+    if let TranscriptPayload::ToolResult(result) = &mut background {
+        result.arguments = Some(json!({
+            "command": "long-running command",
+            "runInBackground": true
+        }));
+    }
+    let background = render_transcript_payload(LiveEntryKind::Tool, &background, 80);
+    assert!(background.iter().any(|line| line
+        .to_string()
+        .ends_with("Running in the background (↓ to manage)")));
+
+    for command in [
+        "mv a b",
+        "cp a b",
+        "rm a",
+        "mkdir a",
+        "rmdir a",
+        "chmod 600 a",
+        "chown user a",
+        "chgrp group a",
+        "touch a",
+        "ln a b",
+        "cd a",
+        "export NAME=value",
+        "unset NAME",
+        "wait",
+    ] {
+        let rendered = render_transcript_payload(
+            LiveEntryKind::Tool,
+            &shell_result(command, None, Some(0), Some(false), false),
+            40,
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.to_string().ends_with("Done")),
+            "expected Done for {command}"
+        );
+    }
+}
+
+#[test]
+fn shell_nonzero_exit_renders_error_and_empty_command_interpretations() {
+    let rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("false", Some("failed"), Some(2), Some(false), false),
+        40,
+    );
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().ends_with("Error: Exit code 2")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().ends_with("failed")));
+    assert!(rendered
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| {
+            span.content.contains("Error: Exit code 2") && span.style.fg == Some(palette::ERROR)
+        }));
+
+    for (command, message) in [
+        ("grep needle file", "No matches found"),
+        ("rg needle", "No matches found"),
+        ("find missing", "Some directories were inaccessible"),
+        ("diff left right", "Files differ"),
+        ("test -f missing", "Condition is false"),
+        ("[ -f missing ]", "Condition is false"),
+    ] {
+        let rendered = render_transcript_payload(
+            LiveEntryKind::Tool,
+            &shell_result(command, None, Some(1), Some(false), false),
+            40,
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.to_string().ends_with(message)),
+            "expected {message} for {command}"
+        );
+    }
+}
+
+#[test]
+fn shell_output_truncates_after_wrapping_with_nested_and_verbose_variants() {
+    let five_rows = (1..=5)
+        .map(|row| format!("row {row}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("printf rows", Some(&five_rows), Some(0), Some(false), false),
+        40,
+    );
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("… +2 lines (ctrl+o to expand)")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("row 3")));
+    assert!(!rendered
+        .iter()
+        .any(|line| line.to_string().contains("row 4")));
+    assert!(rendered
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| {
+            span.content == "ctrl+o"
+                && span
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+        }));
+
+    let four_rows = (1..=4)
+        .map(|row| format!("row {row}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let four_rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("printf rows", Some(&four_rows), Some(0), Some(false), false),
+        40,
+    );
+    assert!(four_rendered
+        .iter()
+        .any(|line| line.to_string().contains("row 4")));
+    assert!(!four_rendered
+        .iter()
+        .any(|line| line.to_string().contains("ctrl+o")));
+
+    let nested = render_transcript_payload(
+        LiveEntryKind::ToolNested,
+        &shell_result("printf rows", Some(&five_rows), Some(0), Some(false), false),
+        40,
+    );
+    assert!(nested
+        .iter()
+        .any(|line| line.to_string().contains("… +2 lines")));
+    assert!(!nested
+        .iter()
+        .any(|line| line.to_string().contains("ctrl+o")));
+
+    let verbose = render_transcript_payload_with_options(
+        LiveEntryKind::Tool,
+        &shell_result("printf rows", Some(&five_rows), Some(0), Some(false), false),
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+        true,
+    );
+    assert!(verbose
+        .iter()
+        .any(|line| line.to_string().contains("row 5")));
+    assert!(!verbose
+        .iter()
+        .any(|line| line.to_string().contains("ctrl+o")));
+}
+
+#[test]
+fn shell_wraps_at_the_independent_width_before_counting_rows() {
+    let output = "1234567890 a\nb\nc\nd";
+    let rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("printf narrow", Some(output), Some(0), Some(false), false),
+        20,
+    );
+
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("1234567890")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("… +2 lines")));
+    assert!(rendered
+        .iter()
+        .skip(1)
+        .all(|line| line.to_string().trim_start().len() <= 25));
+}
+
+#[test]
+fn shell_output_preserves_styles_and_interior_blank_lines_without_trailing_space() {
+    let output = "\n\u{1b}[31mred red red\u{1b}[0m  \n\nsecond   \n";
+    let rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("printf styled", Some(output), Some(0), Some(false), false),
+        40,
+    );
+    let text = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    assert_eq!(text[1], "  ⎿ \u{00a0}red red red");
+    assert_eq!(text[2], "     ");
+    assert_eq!(text[3], "     second");
+    assert!(rendered
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .filter(|span| span.content.contains("red"))
+        .all(|span| span.style.fg == Some(ratatui::style::Color::Red)));
+    assert!(text
+        .iter()
+        .all(|line| !line.ends_with(' ') || line == "     "));
+}
+
+#[test]
+fn bash_progress_keeps_timing_and_the_last_five_output_lines_live() {
+    let no_output = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-empty".to_string(),
+        tool_name: "bash".to_string(),
+        content: String::new(),
+        kind: ToolProgressKind::Tool,
+        agent_id: None,
+        started_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(12)),
+        timeout: Some("2m".to_string()),
+    });
+    let empty_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &no_output,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    assert!(empty_lines
+        .iter()
+        .any(|line| line.to_string().contains("Running…")));
+    assert!(empty_lines
+        .iter()
+        .any(|line| line.to_string().contains("timeout 2m")));
+    assert!(empty_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| {
+            span.content.contains("Running…")
+                && span
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::DIM)
+        }));
+
+    let output = (1..=6)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let with_output = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-output".to_string(),
+        tool_name: "bash".to_string(),
+        content: sanitize_ansi(&output),
+        kind: ToolProgressKind::Tool,
+        agent_id: None,
+        started_at: None,
+        timeout: Some("2m".to_string()),
+    });
+    let output_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &with_output,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    assert!(!output_lines
+        .iter()
+        .any(|line| line.to_string().contains("line 1")));
+    assert!(output_lines
+        .iter()
+        .any(|line| line.to_string().contains("line 2")));
+    assert!(output_lines
+        .iter()
+        .any(|line| line.to_string().contains("line 6")));
+    assert!(output_lines
+        .iter()
+        .any(|line| line.to_string().contains("+1 lines")));
+    assert!(output_lines
+        .iter()
+        .any(|line| line.to_string().contains("bytes")));
+}
+
+#[test]
+fn shell_json_lines_pretty_print_only_when_the_value_round_trips() {
+    let rendered = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result(
+            "printf json",
+            Some(r#"{"name":"picopilot","items":[1,2]}"#),
+            Some(0),
+            Some(false),
+            false,
+        ),
+        80,
+    );
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("\"name\": \"picopilot\"")));
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("\"items\": [")));
+}
+
+#[test]
+fn shell_image_and_sdk_truncation_metadata_render_truthfully() {
+    let image = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("image command", None, Some(0), Some(false), true),
+        80,
+    );
+    assert!(image.iter().any(|line| line
+        .to_string()
+        .contains("[Image data detected and sent to Claude]")));
+    assert!(!image
+        .iter()
+        .any(|line| line.to_string().contains("base64-secret")));
+
+    let truncated = render_transcript_payload(
+        LiveEntryKind::Tool,
+        &shell_result("large command", Some("preview"), Some(0), Some(true), false),
+        80,
+    );
+    assert!(truncated
+        .iter()
+        .any(|line| line.to_string().contains("output truncated")));
+    assert!(!truncated
+        .iter()
+        .any(|line| line.to_string().contains("+0 lines")));
+}
+
+#[test]
 fn tool_error_normalization_preserves_sgr_styles_without_escape_bytes() {
     let payload = TranscriptPayload::ToolResult(ToolResultPayload {
         tool_call_id: "tool-error-ansi".to_string(),
         tool_name: "bash".to_string(),
         arguments: None,
         content: sanitize_ansi("<error>failure \u{1b}[31mred\u{1b}[0m</error>"),
+        shell_completion: None,
         state: ToolResultState::Error,
         agent_id: None,
         cwd: std::path::PathBuf::from("."),
@@ -365,6 +752,7 @@ fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
         tool_call_id: "tool-display".to_string(),
         success: false,
         message: Some("<error>failure \u{1b}[31mtext</error>".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
 
@@ -388,6 +776,7 @@ fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
                 tool_name,
                 arguments,
                 content,
+                shell_completion,
                 state,
                 agent_id,
                 cwd,
@@ -396,6 +785,7 @@ fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
                 tool_name: tool_name.clone(),
                 arguments: arguments.clone(),
                 content: content.clone(),
+                shell_completion: shell_completion.clone(),
                 state: *state,
                 agent_id: agent_id.clone(),
                 cwd: cwd.clone(),
@@ -438,6 +828,7 @@ fn test_backend_never_receives_untrusted_escape_or_control_characters() {
         tool_call_id: "tool-controls".to_string(),
         success: false,
         message: Some("<error>failure \u{1b}[31mred</error>".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     app.apply(EventUpdate::Banner {
@@ -1071,6 +1462,7 @@ fn later_completed_entries_wait_for_earlier_live_entries() {
         tool_call_id: "tool-1".to_string(),
         success: true,
         message: Some("tool completed".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
@@ -1126,6 +1518,7 @@ fn tool_result_stays_after_messages_received_between_start_and_completion() {
         tool_call_id: "tool-1".to_string(),
         success: true,
         message: Some("updated".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
@@ -1161,6 +1554,7 @@ fn overlapping_tools_keep_reverse_completion_order() {
         tool_call_id: "tool-b".to_string(),
         success: true,
         message: Some("result b".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
@@ -1168,6 +1562,7 @@ fn overlapping_tools_keep_reverse_completion_order() {
         tool_call_id: "tool-a".to_string(),
         success: true,
         message: Some("result a".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
@@ -1240,6 +1635,7 @@ fn tool_progress_is_call_scoped_and_late_completion_is_ignored() {
         tool_call_id: "tool-a".to_string(),
         success: true,
         message: Some("first result".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     app.apply(EventUpdate::ToolOutput {
@@ -1251,6 +1647,7 @@ fn tool_progress_is_call_scoped_and_late_completion_is_ignored() {
         tool_call_id: "tool-a".to_string(),
         success: true,
         message: Some("duplicate result".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
 
@@ -1311,6 +1708,7 @@ fn tool_header_and_progress_ids_stay_stable_until_result_is_created() {
         tool_call_id: "tool-1".to_string(),
         success: true,
         message: Some("read it".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     let completion_changes = app.take_screen_changes();
@@ -1349,6 +1747,7 @@ fn conversation_reset_clears_unresolved_tool_presentation_state() {
         tool_call_id: "tool-1".to_string(),
         success: true,
         message: Some("late result".to_string()),
+        shell_completion: None,
         agent_id: None,
     });
     assert!(app.take_screen_changes().is_empty());
@@ -1382,10 +1781,46 @@ fn test_tool_result(
         tool_name: tool_name.to_string(),
         arguments: None,
         content: content.to_string(),
+        shell_completion: None,
         state,
         agent_id: agent_id.map(ToString::to_string),
         cwd: std::path::PathBuf::from("/workspace"),
     }
+}
+
+fn shell_result(
+    command: &str,
+    output: Option<&str>,
+    exit_code: Option<i64>,
+    output_truncated: Option<bool>,
+    image_detected: bool,
+) -> TranscriptPayload {
+    let output = output.map(sanitize_ansi);
+    TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "shell-test".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": command})),
+        content: output.clone().unwrap_or_default(),
+        shell_completion: Some(ShellCompletion {
+            exit: exit_code.map(|exit_code| ShellExitMetadata {
+                cwd: Some("/workspace".to_string()),
+                exit_code,
+                output_file_path: None,
+                output_preview: None,
+                output_truncated,
+                shell_id: "shell-test".to_string(),
+            }),
+            output,
+            image_detected,
+        }),
+        state: if exit_code.is_some_and(|exit_code| exit_code != 0) {
+            ToolResultState::Error
+        } else {
+            ToolResultState::Success
+        },
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    })
 }
 
 #[test]
@@ -1592,6 +2027,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
         content: String::new(),
         kind: ToolProgressKind::Permission,
         agent_id: None,
+        started_at: None,
+        timeout: None,
     });
     let classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "classifier-1".to_string(),
@@ -1599,6 +2036,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
         content: String::new(),
         kind: ToolProgressKind::Classifier,
         agent_id: None,
+        started_at: None,
+        timeout: None,
     });
     let nested_classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "classifier-2".to_string(),
@@ -1606,6 +2045,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
         content: "classifying".to_string(),
         kind: ToolProgressKind::Classifier,
         agent_id: Some("agent-1".to_string()),
+        started_at: None,
+        timeout: None,
     });
 
     let permission_lines = render_transcript_payload_with_clock(
@@ -1650,6 +2091,8 @@ fn tool_progress_is_one_clipped_row_even_with_long_multiline_content() {
         content: "0123456789abcdef\nsecond line".to_string(),
         kind: ToolProgressKind::Tool,
         agent_id: None,
+        started_at: None,
+        timeout: None,
     });
 
     let lines = render_transcript_payload_with_clock(
@@ -1674,6 +2117,8 @@ fn nested_tool_progress_is_one_clipped_row_without_a_gutter() {
         content: "0123456789abcdef\nsecond line".to_string(),
         kind: ToolProgressKind::Tool,
         agent_id: Some("agent-1".to_string()),
+        started_at: None,
+        timeout: None,
     });
 
     let lines = render_transcript_payload_with_clock(

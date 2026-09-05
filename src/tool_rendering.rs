@@ -3,6 +3,8 @@ use std::time::Instant;
 
 use serde_json::Value;
 
+use crate::events::ShellCompletion;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCallState {
     Queued,
@@ -74,6 +76,8 @@ pub struct ToolProgressPayload {
     pub content: String,
     pub kind: ToolProgressKind,
     pub agent_id: Option<String>,
+    pub started_at: Option<Instant>,
+    pub timeout: Option<String>,
 }
 
 impl ToolProgressPayload {
@@ -88,6 +92,7 @@ pub struct ToolResultPayload {
     pub tool_name: String,
     pub arguments: Option<Value>,
     pub content: String,
+    pub shell_completion: Option<ShellCompletion>,
     pub state: ToolResultState,
     pub agent_id: Option<String>,
     pub cwd: PathBuf,
@@ -161,6 +166,39 @@ pub fn tool_summary(
         KnownTool::Grep | KnownTool::Glob => search_summary(arguments, cwd),
         KnownTool::Unknown => unknown_summary(arguments),
     }
+}
+
+pub(crate) fn is_silent_shell_command(arguments: Option<&Value>) -> bool {
+    let Some(command) = arguments.and_then(|arguments| {
+        first_string(arguments, &["command", "cmd", "script", "fullCommandText"])
+    }) else {
+        return false;
+    };
+    let Some(program) = command
+        .split_whitespace()
+        .next()
+        .map(|program| program.trim_matches(['\'', '"']))
+        .and_then(|program| program.rsplit(['/', '\\']).next())
+    else {
+        return false;
+    };
+
+    matches!(
+        program.to_ascii_lowercase().as_str(),
+        "mv" | "cp"
+            | "rm"
+            | "mkdir"
+            | "rmdir"
+            | "chmod"
+            | "chown"
+            | "chgrp"
+            | "touch"
+            | "ln"
+            | "cd"
+            | "export"
+            | "unset"
+            | "wait"
+    )
 }
 
 fn bash_summary(arguments: &Value, verbose: bool) -> String {

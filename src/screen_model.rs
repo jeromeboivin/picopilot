@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, Write};
+use std::time::Duration;
 
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
@@ -13,9 +14,10 @@ use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::ansi::parse_sanitized_ansi;
+use crate::events::ShellCompletion;
 use crate::markdown::assistant_markdown_lines_for_widths;
 use crate::palette;
-use crate::tool_rendering::{tool_summary, tool_user_facing_name};
+use crate::tool_rendering::{is_silent_shell_command, tool_summary, tool_user_facing_name};
 pub use crate::tool_rendering::{
     ToolCallState, ToolHeaderPayload, ToolPlatform, ToolProgressKind, ToolProgressPayload,
     ToolResultPayload, ToolResultState,
@@ -561,7 +563,9 @@ pub fn render_transcript_payload_with_options(
         TranscriptPayload::ToolHeader(header) => {
             render_tool_header(kind, header, width, platform, animation_elapsed_ms, verbose)
         }
-        TranscriptPayload::ToolProgress(progress) => render_tool_progress(kind, progress, width),
+        TranscriptPayload::ToolProgress(progress) => {
+            render_tool_progress(kind, progress, width, animation_elapsed_ms)
+        }
         TranscriptPayload::ToolResult(result) => render_tool_result(kind, result, width, verbose),
     }
 }
@@ -660,7 +664,13 @@ fn render_tool_progress(
     kind: LiveEntryKind,
     progress: &ToolProgressPayload,
     width: usize,
+    animation_elapsed_ms: u64,
 ) -> Vec<Line<'static>> {
+    if tool_user_facing_name(&progress.tool_name) == "Bash"
+        && progress.kind == ToolProgressKind::Tool
+    {
+        return render_shell_progress(kind, progress, width, animation_elapsed_ms);
+    }
     let content = if progress.content.is_empty() {
         match progress.kind {
             ToolProgressKind::Permission => "Waiting for permission…",
@@ -688,15 +698,158 @@ fn render_tool_progress(
     vec![Line::from(spans)]
 }
 
+fn render_shell_progress(
+    kind: LiveEntryKind,
+    progress: &ToolProgressPayload,
+    width: usize,
+    _animation_elapsed_ms: u64,
+) -> Vec<Line<'static>> {
+    let nested = tool_is_nested(kind, progress.agent_id.is_some());
+    let content_width = shell_wrap_width(width);
+    let gutter_style = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    let mut content_lines = if progress.content.is_empty() {
+        let timing = progress
+            .started_at
+            .map(|started_at| format_elapsed(started_at.elapsed()));
+        let mut timing_parts = Vec::new();
+        if let Some(elapsed) = timing {
+            timing_parts.push(elapsed);
+        }
+        if let Some(timeout) = progress.timeout.as_deref() {
+            timing_parts.push(format!("timeout {timeout}"));
+        };
+        let text = if timing_parts.is_empty() {
+            "Running… ".to_string()
+        } else {
+            format!("Running… ({})", timing_parts.join(" · "))
+        };
+        vec![Line::from(Span::styled(text, gutter_style))]
+    } else {
+        parse_sanitized_ansi(&progress.content, Style::default().fg(palette::TEXT))
+            .into_iter()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|line| truncate_line(line, content_width))
+            .collect::<Vec<_>>()
+    };
+
+    if !progress.content.is_empty() {
+        let total_lines = progress.content.split('\n').count();
+        let extra_lines = total_lines.saturating_sub(5);
+        let mut status = vec![format!("+{extra_lines} lines")];
+        if let Some(started_at) = progress.started_at {
+            status.push(format!("({})", format_elapsed(started_at.elapsed())));
+        }
+        if let Some(timeout) = progress.timeout.as_deref() {
+            if progress.started_at.is_some() {
+                let previous = status.pop().expect("elapsed status exists");
+                status.push(format!("({previous} · timeout {timeout})"));
+            } else {
+                status.push(format!("(timeout {timeout})"));
+            }
+        }
+        status.push(format_byte_count(progress.content.len()));
+        content_lines.push(Line::from(Span::styled(status.join(" "), gutter_style)));
+    }
+
+    let mut rendered = Vec::with_capacity(content_lines.len());
+    for (index, line) in content_lines.into_iter().enumerate() {
+        let prefix = if nested {
+            ""
+        } else if index == 0 {
+            TOOL_BODY_GUTTER
+        } else {
+            TOOL_BODY_CONTINUATION_GUTTER
+        };
+        let mut spans = vec![Span::styled(prefix, gutter_style)];
+        spans.extend(line.spans);
+        rendered.push(Line::from(spans));
+    }
+    rendered
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m {seconds}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn format_byte_count(bytes: usize) -> String {
+    fn compact(value: f64, suffix: &str) -> String {
+        if value.fract() == 0.0 {
+            format!("{value:.0}{suffix}")
+        } else {
+            format!("{value:.1}{suffix}")
+        }
+    }
+
+    if bytes >= 1_000_000_000 {
+        compact(bytes as f64 / 1_000_000_000.0, "GB")
+    } else if bytes >= 1_000_000 {
+        compact(bytes as f64 / 1_000_000.0, "MB")
+    } else if bytes >= 1_000 {
+        compact(bytes as f64 / 1_000.0, "KB")
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 fn render_tool_result(
     kind: LiveEntryKind,
     result: &ToolResultPayload,
     width: usize,
     verbose: bool,
 ) -> Vec<Line<'static>> {
-    let (content, style) = match result.state {
-        ToolResultState::Success => (None, Style::default().fg(palette::TEXT)),
-        ToolResultState::Error => (None, Style::default().fg(palette::ERROR)),
+    let is_shell = tool_user_facing_name(&result.tool_name) == "Bash";
+    let shell_error =
+        shell_exit_code(result.shell_completion.as_ref()).is_some_and(|exit_code| exit_code != 0);
+    let (content_lines, style) = match result.state {
+        ToolResultState::Success if is_shell => (
+            shell_result_lines(
+                result,
+                width,
+                verbose,
+                tool_is_nested(kind, result.nested()),
+            ),
+            if shell_error {
+                Style::default().fg(palette::ERROR)
+            } else {
+                Style::default().fg(palette::TEXT)
+            },
+        ),
+        ToolResultState::Success => (
+            success_result_lines(&result.tool_name, &result.content),
+            Style::default().fg(palette::TEXT),
+        ),
+        ToolResultState::Error if is_shell => (
+            shell_result_lines(
+                result,
+                width,
+                verbose,
+                tool_is_nested(kind, result.nested()),
+            ),
+            Style::default().fg(palette::ERROR),
+        ),
+        ToolResultState::Error => (
+            error_result_lines(&result.content, verbose),
+            Style::default().fg(palette::ERROR),
+        ),
         ToolResultState::Cancelled => (
             Some(vec![Line::from(Span::raw(
                 "Interrupted · What should Claude do instead?",
@@ -705,11 +858,6 @@ fn render_tool_result(
                 .fg(palette::INACTIVE)
                 .add_modifier(ratatui::style::Modifier::DIM),
         ),
-    };
-    let content_lines = match result.state {
-        ToolResultState::Success => success_result_lines(&result.tool_name, &result.content),
-        ToolResultState::Error => error_result_lines(&result.content, verbose),
-        ToolResultState::Cancelled => content,
     };
     let Some(content_lines) = content_lines else {
         return Vec::new();
@@ -723,6 +871,274 @@ fn render_tool_result(
         tool_is_nested(kind, result.nested()),
         style,
     )
+}
+
+fn shell_result_lines(
+    result: &ToolResultPayload,
+    width: usize,
+    verbose: bool,
+    nested: bool,
+) -> Option<Vec<Line<'static>>> {
+    let completion = result.shell_completion.as_ref();
+    let exit_code = shell_exit_code(completion);
+    let output = shell_output(result, completion);
+    let output_is_empty = output.trim().is_empty();
+    let output_truncated = completion
+        .and_then(|completion| completion.exit.as_ref())
+        .and_then(|exit| exit.output_truncated)
+        .unwrap_or(false);
+
+    if exit_code == Some(1) && output_is_empty {
+        if let Some(message) = shell_empty_exit_message(result, completion) {
+            return Some(vec![Line::from(message)]);
+        }
+    }
+
+    let mut lines = if exit_code.is_some_and(|exit_code| exit_code != 0) {
+        let mut error_content =
+            format!("Error: Exit code {}", exit_code.expect("exit code exists"));
+        if !output_is_empty {
+            error_content.push('\n');
+            error_content.push_str(&output);
+        }
+        error_result_lines(&error_content, verbose)?
+    } else if output_is_empty
+        && shell_background_requested(result.arguments.as_ref())
+        && exit_code.is_none_or(|exit_code| exit_code == 0)
+    {
+        vec![Line::from("Running in the background (↓ to manage)")]
+    } else if result.state == ToolResultState::Error {
+        error_result_lines(&result.content, verbose)?
+    } else if output_is_empty {
+        let text =
+            if completion.is_some_and(|completion| completion.image_detected) || output_truncated {
+                None
+            } else if is_silent_shell_command(result.arguments.as_ref()) {
+                Some("Done")
+            } else {
+                Some("(No output)")
+            };
+        text.map(|text| vec![Line::from(text)]).unwrap_or_default()
+    } else {
+        shell_output_lines(&output, width, verbose, nested)
+    };
+
+    if output_truncated {
+        lines.push(shell_output_truncated_marker());
+    }
+    if completion.is_some_and(|completion| completion.image_detected) {
+        lines.push(shell_image_marker());
+    }
+    (!lines.is_empty()).then_some(lines)
+}
+
+fn shell_output(result: &ToolResultPayload, completion: Option<&ShellCompletion>) -> String {
+    if let Some(completion) = completion {
+        completion
+            .output
+            .clone()
+            .filter(|output| !output.trim().is_empty())
+            .or_else(|| {
+                completion
+                    .exit
+                    .as_ref()
+                    .and_then(|exit| exit.output_preview.clone())
+                    .filter(|output| !output.trim().is_empty())
+            })
+            .unwrap_or_default()
+    } else {
+        if result.content.trim().is_empty() {
+            String::new()
+        } else {
+            result.content.clone()
+        }
+    }
+}
+
+fn shell_exit_code(completion: Option<&ShellCompletion>) -> Option<i64> {
+    completion.and_then(|completion| completion.exit.as_ref().map(|exit| exit.exit_code))
+}
+
+fn shell_empty_exit_message(
+    result: &ToolResultPayload,
+    completion: Option<&ShellCompletion>,
+) -> Option<&'static str> {
+    if shell_exit_code(completion) != Some(1) {
+        return None;
+    }
+    let command = shell_command(result.arguments.as_ref())?
+        .split_whitespace()
+        .next()?;
+    match command
+        .trim_matches(['\'', '"'])
+        .rsplit(['/', '\\'])
+        .next()?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "grep" | "rg" => Some("No matches found"),
+        "find" => Some("Some directories were inaccessible"),
+        "diff" => Some("Files differ"),
+        "test" | "[" => Some("Condition is false"),
+        _ => None,
+    }
+}
+
+fn shell_command(arguments: Option<&serde_json::Value>) -> Option<&str> {
+    let arguments = arguments?;
+    arguments.as_str().or_else(|| {
+        ["command", "cmd", "script", "fullCommandText"]
+            .iter()
+            .find_map(|key| arguments.get(*key).and_then(serde_json::Value::as_str))
+    })
+}
+
+fn shell_background_requested(arguments: Option<&serde_json::Value>) -> bool {
+    let Some(arguments) = arguments.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    ["background", "runInBackground", "run_in_background"]
+        .iter()
+        .any(|key| arguments.get(*key).and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+fn shell_output_lines(
+    output: &str,
+    width: usize,
+    verbose: bool,
+    nested: bool,
+) -> Vec<Line<'static>> {
+    let wrap_width = shell_wrap_width(width);
+    let (mut lines, estimated_total) = wrapped_shell_output(output, wrap_width, verbose);
+    if !verbose && (lines.len() > 4 || estimated_total > 4) {
+        lines.truncate(3);
+        lines.push(shell_truncation_marker(
+            estimated_total.saturating_sub(3),
+            nested,
+        ));
+    }
+    lines
+}
+
+fn wrapped_shell_output(
+    output: &str,
+    wrap_width: usize,
+    verbose: bool,
+) -> (Vec<Line<'static>>, usize) {
+    let character_count = output.chars().count();
+    let guard = wrap_width.saturating_mul(3).saturating_mul(4);
+    let bounded = !verbose && character_count > guard;
+    let source = if bounded {
+        output.chars().take(guard).collect::<String>()
+    } else {
+        output.to_string()
+    };
+    let source = format_shell_json(&source);
+    let parsed = trimmed_styled_lines(parse_sanitized_ansi(&source, Style::default()));
+    let lines = wrap_lines(
+        &parsed,
+        &WrapSpec {
+            wrap_width,
+            fill_width: 0,
+            first_prefix: Vec::new(),
+            continuation_prefix: Vec::new(),
+            fill_style: None,
+        },
+    )
+    .into_iter()
+    .map(trim_trailing_whitespace)
+    .collect::<Vec<_>>();
+    if !bounded {
+        return (lines.clone(), lines.len());
+    }
+
+    let physical_lines = output.split('\n').count();
+    let estimated_by_width = character_count.div_ceil(wrap_width);
+    (lines, physical_lines.max(estimated_by_width))
+}
+
+fn format_shell_json(output: &str) -> String {
+    if output.chars().count() > 10_000 || output.contains('\u{1b}') {
+        return output.to_string();
+    }
+
+    output
+        .split('\n')
+        .map(|line| {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                return line.to_string();
+            };
+            let Ok(pretty) = serde_json::to_string_pretty(&value) else {
+                return line.to_string();
+            };
+            if serde_json::from_str::<serde_json::Value>(&pretty).ok() == Some(value) {
+                pretty
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn shell_wrap_width(width: usize) -> usize {
+    width.saturating_sub(10).max(10)
+}
+
+fn trim_trailing_whitespace(line: Line<'static>) -> Line<'static> {
+    let mut chars = line
+        .spans
+        .into_iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content
+                .chars()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(move |character| (character, style))
+        })
+        .collect::<Vec<_>>();
+    while chars
+        .last()
+        .is_some_and(|(character, _)| character.is_whitespace())
+    {
+        chars.pop();
+    }
+    styled_chars_to_line(chars)
+}
+
+fn shell_truncation_marker(remaining: usize, nested: bool) -> Line<'static> {
+    let dim = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    let mut spans = vec![Span::styled(format!("… +{remaining} lines"), dim)];
+    if !nested {
+        spans.push(Span::styled(" (", dim));
+        spans.push(Span::styled(
+            "ctrl+o",
+            dim.add_modifier(ratatui::style::Modifier::BOLD),
+        ));
+        spans.push(Span::styled(" to expand)", dim));
+    }
+    Line::from(spans)
+}
+
+fn shell_output_truncated_marker() -> Line<'static> {
+    Line::from(Span::styled(
+        "… output truncated (full output unavailable)",
+        Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(ratatui::style::Modifier::DIM),
+    ))
+}
+
+fn shell_image_marker() -> Line<'static> {
+    Line::from(Span::styled(
+        "[Image data detected and sent to Claude]",
+        Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(ratatui::style::Modifier::DIM),
+    ))
 }
 
 fn tool_is_nested(kind: LiveEntryKind, payload_is_nested: bool) -> bool {

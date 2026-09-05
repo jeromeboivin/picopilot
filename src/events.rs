@@ -5,8 +5,9 @@ use github_copilot_sdk::session_events::{
     AssistantMessageData, AssistantMessageDeltaData, AssistantReasoningData,
     AssistantReasoningDeltaData, SessionErrorData, SessionModelChangeData, SessionTodosChangedData,
     SessionUsageInfoData, SessionWarningData, SubagentCompletedData, SubagentFailedData,
-    SubagentStartedData, ToolExecutionCompleteData, ToolExecutionPartialResultData,
-    ToolExecutionProgressData, ToolExecutionStartData, UserMessageData,
+    SubagentStartedData, ToolExecutionCompleteContent, ToolExecutionCompleteData,
+    ToolExecutionCompleteResult, ToolExecutionPartialResultData, ToolExecutionProgressData,
+    ToolExecutionStartData, UserMessageData,
 };
 use github_copilot_sdk::types::SessionEvent;
 
@@ -69,6 +70,23 @@ pub struct TodoDependencySnapshot {
 pub struct TodoSnapshot {
     pub rows: Vec<TodoRowSnapshot>,
     pub dependencies: Vec<TodoDependencySnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellExitMetadata {
+    pub cwd: Option<String>,
+    pub exit_code: i64,
+    pub output_file_path: Option<String>,
+    pub output_preview: Option<String>,
+    pub output_truncated: Option<bool>,
+    pub shell_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellCompletion {
+    pub exit: Option<ShellExitMetadata>,
+    pub output: Option<String>,
+    pub image_detected: bool,
 }
 
 pub fn usage_metrics_snapshot(metrics: &UsageGetMetricsResult) -> UsageMetricsSnapshot {
@@ -188,6 +206,7 @@ pub enum EventUpdate {
         tool_call_id: String,
         success: bool,
         message: Option<String>,
+        shell_completion: Option<ShellCompletion>,
         agent_id: Option<String>,
     },
     ToolCancelled {
@@ -224,6 +243,49 @@ pub enum EventUpdate {
     TodosChanged,
     Idle,
     TaskComplete,
+}
+
+#[allow(deprecated)]
+fn map_tool_completion(
+    result: ToolExecutionCompleteResult,
+) -> (Option<String>, Option<ShellCompletion>) {
+    let message = Some(result.detailed_content.unwrap_or(result.content));
+    let Some(contents) = result.contents else {
+        return (message, None);
+    };
+    let mut shell_exit = None;
+    let mut output = Vec::new();
+    let mut image_detected = false;
+
+    for content in contents {
+        match content {
+            ToolExecutionCompleteContent::Text(content) => output.push(content.text),
+            ToolExecutionCompleteContent::Terminal(content) => output.push(content.text),
+            ToolExecutionCompleteContent::ShellExit(content) => {
+                shell_exit = Some(ShellExitMetadata {
+                    cwd: content.cwd,
+                    exit_code: content.exit_code,
+                    output_file_path: content.output_file_path,
+                    output_preview: content.output_preview,
+                    output_truncated: content.output_truncated,
+                    shell_id: content.shell_id,
+                });
+            }
+            ToolExecutionCompleteContent::Image(_) => image_detected = true,
+            ToolExecutionCompleteContent::Audio(_)
+            | ToolExecutionCompleteContent::ResourceLink(_)
+            | ToolExecutionCompleteContent::Resource(_) => {}
+        }
+    }
+
+    (
+        message,
+        Some(ShellCompletion {
+            exit: shell_exit,
+            output: (!output.is_empty()).then(|| output.join("\n")),
+            image_detected,
+        }),
+    )
 }
 
 pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
@@ -299,14 +361,15 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 })
         }
         "tool.execution_complete" => event.typed_data::<ToolExecutionCompleteData>().map(|data| {
-            let message = data
+            let (message, shell_completion) = data
                 .result
-                .map(|result| result.detailed_content.unwrap_or(result.content))
-                .or_else(|| data.error.map(|error| error.message));
+                .map(map_tool_completion)
+                .unwrap_or_else(|| (None, None));
             EventUpdate::ToolCompleted {
                 tool_call_id: data.tool_call_id,
                 success: data.success,
-                message,
+                message: message.or_else(|| data.error.map(|error| error.message)),
+                shell_completion,
                 agent_id,
             }
         }),
@@ -413,7 +476,7 @@ mod tests {
 
     use super::{
         context_attribution_snapshot, event_update, latest_message_preview, todo_snapshot,
-        usage_metrics_snapshot, EventUpdate,
+        usage_metrics_snapshot, EventUpdate, ShellCompletion, ShellExitMetadata,
     };
 
     #[test]
@@ -491,6 +554,69 @@ mod tests {
                 tool_call_id: "tool-1".to_string(),
                 success: true,
                 message: Some("Caption: Microsoft Windows 11 Pro\nVersion: 10.0.26100".to_string()),
+                agent_id: None,
+                shell_completion: None,
+            })
+        );
+    }
+
+    #[test]
+    fn maps_structured_shell_completion_without_retaining_binary_data() {
+        let event = SessionEvent {
+            id: "event-shell-structured".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "tool.execution_complete".to_string(),
+            data: json!({
+                "toolCallId": "tool-structured",
+                "success": true,
+                "result": {
+                    "content": "concise fallback",
+                    "detailedContent": "detailed fallback",
+                    "contents": [
+                        {
+                            "type": "shell_exit",
+                            "cwd": "C:/work",
+                            "exitCode": 0,
+                            "outputFilePath": "C:/work/output.txt",
+                            "outputPreview": "preview",
+                            "outputTruncated": true,
+                            "shellId": "shell-1"
+                        },
+                        {"type": "terminal", "text": "terminal output"},
+                        {"type": "text", "text": "text output"},
+                        {
+                            "type": "image",
+                            "data": "base64-secret",
+                            "mimeType": "image/png"
+                        }
+                    ]
+                }
+            }),
+        };
+
+        assert_eq!(
+            event_update(&event),
+            Some(EventUpdate::ToolCompleted {
+                tool_call_id: "tool-structured".to_string(),
+                success: true,
+                message: Some("detailed fallback".to_string()),
+                shell_completion: Some(ShellCompletion {
+                    exit: Some(ShellExitMetadata {
+                        cwd: Some("C:/work".to_string()),
+                        exit_code: 0,
+                        output_file_path: Some("C:/work/output.txt".to_string()),
+                        output_preview: Some("preview".to_string()),
+                        output_truncated: Some(true),
+                        shell_id: "shell-1".to_string(),
+                    }),
+                    output: Some("terminal output\ntext output".to_string()),
+                    image_detected: true,
+                }),
                 agent_id: None,
             })
         );

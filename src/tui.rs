@@ -1,6 +1,7 @@
 use crate::events::{
     context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
-    ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
+    ContextAttributionSnapshot, EventUpdate, ShellCompletion, ShellExitMetadata, TodoSnapshot,
+    UsageMetricsSnapshot, UsageSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -136,12 +137,15 @@ pub enum ChatEntry {
         content: String,
         kind: ToolProgressKind,
         agent_id: Option<String>,
+        started_at: Option<Instant>,
+        timeout: Option<String>,
     },
     ToolResult {
         tool_call_id: String,
         tool_name: String,
         arguments: Option<serde_json::Value>,
         content: String,
+        shell_completion: Option<ShellCompletion>,
         state: ToolResultState,
         agent_id: Option<String>,
         cwd: PathBuf,
@@ -1032,6 +1036,7 @@ impl App {
                         sanitize_json_value(&mut arguments);
                         arguments
                     });
+                    let timeout = shell_timeout(arguments.as_ref());
                     let started_at = Instant::now();
                     self.push_entry(ChatEntry::Tool {
                         tool_call_id: tool_call_id.clone(),
@@ -1050,6 +1055,8 @@ impl App {
                         content: String::new(),
                         kind: ToolProgressKind::Tool,
                         agent_id,
+                        started_at: Some(started_at),
+                        timeout,
                     });
                 }
             }
@@ -1105,12 +1112,13 @@ impl App {
                 success,
                 message,
                 agent_id: _,
-            } => self.complete_tool(tool_call_id, success, message, false),
+                shell_completion,
+            } => self.complete_tool(tool_call_id, success, message, shell_completion, false),
             EventUpdate::ToolCancelled {
                 tool_call_id,
                 message,
                 agent_id: _,
-            } => self.complete_tool(tool_call_id, false, message, true),
+            } => self.complete_tool(tool_call_id, false, message, None, true),
             EventUpdate::SubagentStarted {
                 name,
                 display_name,
@@ -1231,6 +1239,7 @@ impl App {
         tool_call_id: String,
         success: bool,
         message: Option<String>,
+        shell_completion: Option<ShellCompletion>,
         cancelled: bool,
     ) {
         self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id.clone()));
@@ -1266,6 +1275,13 @@ impl App {
         else {
             return;
         };
+
+        let shell_completion = shell_completion.map(sanitize_shell_completion);
+        let success = success
+            && shell_completion
+                .as_ref()
+                .and_then(|completion| completion.exit.as_ref())
+                .is_none_or(|exit| exit.exit_code == 0);
 
         if let ChatEntry::Tool {
             success: current_success,
@@ -1305,6 +1321,7 @@ impl App {
             content: message
                 .map(|message| sanitize_ansi(&message))
                 .unwrap_or_default(),
+            shell_completion,
             state: if cancelled {
                 ToolResultState::Cancelled
             } else if success {
@@ -3541,6 +3558,33 @@ fn sanitize_json_value(value: &mut serde_json::Value) {
     }
 }
 
+fn sanitize_shell_completion(completion: ShellCompletion) -> ShellCompletion {
+    ShellCompletion {
+        exit: completion.exit.map(|exit| ShellExitMetadata {
+            cwd: exit.cwd.map(|value| sanitize_plain(&value)),
+            exit_code: exit.exit_code,
+            output_file_path: exit.output_file_path.map(|value| sanitize_plain(&value)),
+            output_preview: exit.output_preview.map(|value| sanitize_ansi(&value)),
+            output_truncated: exit.output_truncated,
+            shell_id: sanitize_plain(&exit.shell_id),
+        }),
+        output: completion.output.map(|value| sanitize_ansi(&value)),
+        image_detected: completion.image_detected,
+    }
+}
+
+fn shell_timeout(arguments: Option<&serde_json::Value>) -> Option<String> {
+    let arguments = arguments?.as_object()?;
+    ["timeout", "timeout_ms", "timeoutMs"]
+        .iter()
+        .find_map(|key| arguments.get(*key))
+        .and_then(|value| match value {
+            serde_json::Value::String(value) => Some(value.clone()),
+            serde_json::Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
 fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPayload> {
     match entry {
         ChatEntry::Assistant { content, .. } => {
@@ -3581,18 +3625,23 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
             content,
             kind,
             agent_id,
+            started_at,
+            timeout,
         } => Some(TranscriptPayload::ToolProgress(ToolProgressPayload {
             tool_call_id: tool_call_id.clone(),
             tool_name: tool_name.clone(),
             content: content.clone(),
             kind: *kind,
             agent_id: agent_id.clone(),
+            started_at: *started_at,
+            timeout: timeout.clone(),
         })),
         ChatEntry::ToolResult {
             tool_call_id,
             tool_name,
             arguments,
             content,
+            shell_completion,
             state,
             agent_id,
             cwd,
@@ -3601,6 +3650,7 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
             tool_name: tool_name.clone(),
             arguments: arguments.clone(),
             content: content.clone(),
+            shell_completion: shell_completion.clone(),
             state: *state,
             agent_id: agent_id.clone(),
             cwd: cwd.clone(),
@@ -4640,6 +4690,7 @@ mod tests {
             success: true,
             message: Some("Monday, August 31, 2026".to_string()),
             agent_id: None,
+            shell_completion: None,
         });
 
         let rendered: Vec<String> = super::chat_lines(&app)
@@ -5945,6 +5996,7 @@ mod tests {
             tool_call_id: "tool-1".to_string(),
             success: true,
             message: None,
+            shell_completion: None,
             agent_id: None,
         });
         assert!(matches!(
