@@ -188,14 +188,17 @@ pub enum EventUpdate {
     SubagentStarted {
         name: String,
         display_name: String,
+        tool_call_id: String,
         agent_id: Option<String>,
     },
     SubagentCompleted {
         name: String,
+        tool_call_id: String,
         agent_id: Option<String>,
     },
     SubagentFailed {
         name: String,
+        tool_call_id: String,
         error: String,
         agent_id: Option<String>,
     },
@@ -303,6 +306,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .map(|data| EventUpdate::SubagentStarted {
                     name: data.agent_name,
                     display_name: data.agent_display_name,
+                    tool_call_id: data.tool_call_id,
                     agent_id,
                 })
         }
@@ -311,6 +315,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .typed_data::<SubagentCompletedData>()
                 .map(|data| EventUpdate::SubagentCompleted {
                     name: data.agent_name,
+                    tool_call_id: data.tool_call_id,
                     agent_id,
                 })
         }
@@ -319,6 +324,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .typed_data::<SubagentFailedData>()
                 .map(|data| EventUpdate::SubagentFailed {
                     name: data.agent_name,
+                    tool_call_id: data.tool_call_id,
                     error: data.error,
                     agent_id,
                 })

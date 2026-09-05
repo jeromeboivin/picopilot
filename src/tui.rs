@@ -6,6 +6,7 @@ use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -31,8 +32,8 @@ use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
 use crate::screen_model::{
-    enter_main_screen, restore_main_screen, terminal_options, LiveEntryKind, Platform, ScreenEntry,
-    ScreenModel,
+    enter_main_screen, restore_main_screen, terminal_options, LiveEntryKind, Platform,
+    ScreenChange, ScreenEntry, ScreenModel,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -123,6 +124,7 @@ pub enum ChatEntry {
     },
     Subagent {
         name: String,
+        tool_call_id: String,
         display_name: String,
         status: SubagentStatus,
         error: Option<String>,
@@ -183,9 +185,19 @@ struct CompletionState {
 
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[("/fleet", "run work through Fleet")];
 
+static NEXT_SCREEN_NAMESPACE: AtomicU64 = AtomicU64::new(1);
+
+fn next_screen_namespace() -> u64 {
+    NEXT_SCREEN_NAMESPACE.fetch_add(1, Ordering::Relaxed)
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     entries: Vec<ChatEntry>,
+    entry_ids: Vec<String>,
+    screen_namespace: u64,
+    next_entry_sequence: u64,
+    pending_screen_changes: VecDeque<ScreenChange>,
     pending_user_messages: VecDeque<String>,
     project_name: Option<String>,
     status: StatusState,
@@ -258,13 +270,15 @@ where
 
 impl App {
     pub fn new(model: Option<String>) -> Self {
-        Self {
+        let mut app = Self {
             status: StatusState {
                 model,
                 ..StatusState::default()
             },
             ..Self::default()
-        }
+        };
+        app.screen_namespace = next_screen_namespace();
+        app
     }
 
     pub fn new_with_working_directory(model: Option<String>, working_directory: &Path) -> Self {
@@ -281,56 +295,90 @@ impl App {
         self.entries
             .iter()
             .enumerate()
-            .filter_map(|(index, entry)| {
-                let (id, kind, completed) = match entry {
-                    ChatEntry::User(_) => (format!("user-{index}"), LiveEntryKind::Other, true),
-                    ChatEntry::Diagnostic(_) => {
-                        (format!("diagnostic-{index}"), LiveEntryKind::Other, true)
-                    }
-                    ChatEntry::Assistant { message_id, .. } => (
-                        message_id.clone(),
-                        LiveEntryKind::Assistant,
-                        !self.assistant_live_ids.contains(message_id),
-                    ),
-                    ChatEntry::Reasoning { reasoning_id, .. } => (
-                        reasoning_id.clone(),
-                        LiveEntryKind::Other,
-                        !self.reasoning_live_ids.contains(reasoning_id),
-                    ),
-                    ChatEntry::Tool {
-                        tool_call_id,
-                        tool_name,
-                        success,
-                        unknown,
-                        ..
-                    } => (
-                        tool_call_id.clone(),
-                        if is_shell_tool(tool_name) {
-                            LiveEntryKind::Bash
-                        } else {
-                            LiveEntryKind::Other
-                        },
-                        success.is_some() || *unknown,
-                    ),
-                    ChatEntry::Subagent { name, status, .. } => (
-                        format!("subagent-{name}"),
-                        LiveEntryKind::Other,
-                        !matches!(status, SubagentStatus::Running),
-                    ),
-                    ChatEntry::Banner { .. } => {
-                        (format!("banner-{index}"), LiveEntryKind::Other, true)
-                    }
-                    ChatEntry::Approval { status, .. } => (
-                        format!("approval-{index}"),
-                        LiveEntryKind::Other,
-                        !matches!(status, ApprovalStatus::Pending),
-                    ),
-                    ChatEntry::Completed => return None,
-                };
-                let lines = entry_lines(entry, self.show_internals);
-                (!lines.is_empty()).then(|| ScreenEntry::new(id, kind, lines, completed))
-            })
+            .filter_map(|(index, _)| self.screen_entry_at(index))
             .collect()
+    }
+
+    pub fn take_screen_changes(&mut self) -> Vec<ScreenChange> {
+        self.pending_screen_changes.drain(..).collect()
+    }
+
+    fn allocate_entry_id(&mut self) -> String {
+        if self.screen_namespace == 0 {
+            self.screen_namespace = next_screen_namespace();
+        }
+        let id = format!(
+            "screen-{}-{}",
+            self.screen_namespace, self.next_entry_sequence
+        );
+        self.next_entry_sequence += 1;
+        id
+    }
+
+    fn push_entry(&mut self, entry: ChatEntry) {
+        let id = self.allocate_entry_id();
+        self.entries.push(entry);
+        self.entry_ids.push(id);
+        self.queue_screen_change(self.entries.len() - 1);
+    }
+
+    fn screen_entry_at(&self, index: usize) -> Option<ScreenEntry> {
+        let entry = self.entries.get(index)?;
+        let (kind, completed) = match entry {
+            ChatEntry::User(_) | ChatEntry::Diagnostic(_) | ChatEntry::Banner { .. } => {
+                (LiveEntryKind::Other, true)
+            }
+            ChatEntry::Assistant { message_id, .. } => (
+                LiveEntryKind::Assistant,
+                !self.assistant_live_ids.contains(message_id),
+            ),
+            ChatEntry::Reasoning { reasoning_id, .. } => (
+                LiveEntryKind::Other,
+                !self.reasoning_live_ids.contains(reasoning_id),
+            ),
+            ChatEntry::Tool {
+                tool_name,
+                success,
+                unknown,
+                ..
+            } => (
+                if is_shell_tool(tool_name) {
+                    LiveEntryKind::Bash
+                } else {
+                    LiveEntryKind::Other
+                },
+                success.is_some() || *unknown,
+            ),
+            ChatEntry::Subagent { status, .. } => (
+                LiveEntryKind::Other,
+                !matches!(status, SubagentStatus::Running),
+            ),
+            ChatEntry::Approval { status, .. } => (
+                LiveEntryKind::Other,
+                !matches!(status, ApprovalStatus::Pending),
+            ),
+            ChatEntry::Completed => return None,
+        };
+        let lines = entry_lines(entry, self.show_internals);
+        (!lines.is_empty())
+            .then(|| ScreenEntry::new(self.entry_ids[index].clone(), kind, lines, completed))
+    }
+
+    fn queue_screen_change(&mut self, index: usize) {
+        let id = self.entry_ids[index].clone();
+        if let Some(entry) = self.screen_entry_at(index) {
+            self.pending_screen_changes
+                .push_back(ScreenChange::Upsert(entry));
+        } else {
+            self.pending_screen_changes
+                .push_back(ScreenChange::Remove(id));
+        }
+    }
+
+    fn queue_all_screen_changes(&mut self) {
+        for index in 0..self.entries.len() {
+            self.queue_screen_change(index);
+        }
     }
 
     pub fn status(&self) -> &StatusState {
@@ -636,7 +684,7 @@ impl App {
     }
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
-        self.entries.push(ChatEntry::Approval {
+        self.push_entry(ChatEntry::Approval {
             category: request.category.label().to_string(),
             tool_name: request.tool_name.clone(),
             details: request.details.clone(),
@@ -647,7 +695,7 @@ impl App {
 
     fn resolve_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalRequest> {
         let request = self.pending_approvals.pop_front()?;
-        if let Some(ChatEntry::Approval { status, .. }) = self.entries.iter_mut().find(|entry| {
+        if let Some(index) = self.entries.iter().position(|entry| {
             matches!(
                 entry,
                 ChatEntry::Approval {
@@ -656,11 +704,14 @@ impl App {
                 }
             )
         }) {
-            *status = match decision {
-                ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
-                ApprovalDecision::Deny => ApprovalStatus::Denied,
-                ApprovalDecision::Trust => ApprovalStatus::Trusted,
-            };
+            if let ChatEntry::Approval { status, .. } = &mut self.entries[index] {
+                *status = match decision {
+                    ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
+                    ApprovalDecision::Deny => ApprovalStatus::Denied,
+                    ApprovalDecision::Trust => ApprovalStatus::Trusted,
+                };
+            }
+            self.queue_screen_change(index);
         }
         self.show_approval_details = false;
         Some(request)
@@ -670,15 +721,18 @@ impl App {
         while let Some(request) = self.pending_approvals.pop_front() {
             let _ = request.respond_to.send(ApprovalDecision::Deny);
         }
-        for entry in &mut self.entries {
-            if let ChatEntry::Approval {
-                status: ApprovalStatus::Pending,
-                ..
-            } = entry
-            {
-                if let ChatEntry::Approval { status, .. } = entry {
+        for index in 0..self.entries.len() {
+            if matches!(
+                self.entries[index],
+                ChatEntry::Approval {
+                    status: ApprovalStatus::Pending,
+                    ..
+                }
+            ) {
+                if let ChatEntry::Approval { status, .. } = &mut self.entries[index] {
                     *status = ApprovalStatus::Denied;
                 }
+                self.queue_screen_change(index);
             }
         }
         self.show_approval_details = false;
@@ -746,7 +800,7 @@ impl App {
 
     pub fn reset_for_new_conversation(&mut self) {
         self.reject_pending_approvals();
-        self.entries.clear();
+        self.reset_screen_lifecycle();
         self.pending_user_messages.clear();
         self.input.clear();
         self.status.usage = None;
@@ -779,16 +833,16 @@ impl App {
 
     pub fn add_user_message(&mut self, content: String) {
         self.pending_user_messages.push_back(content.clone());
-        self.entries.push(ChatEntry::User(content));
+        self.push_entry(ChatEntry::User(content));
         self.status.busy = true;
     }
 
     fn add_diagnostic(&mut self, message: impl Into<String>) {
-        self.entries.push(ChatEntry::Diagnostic(message.into()));
+        self.push_entry(ChatEntry::Diagnostic(message.into()));
     }
 
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
-        self.entries.clear();
+        self.reset_screen_lifecycle();
         self.pending_user_messages.clear();
         self.assistant_live_ids.clear();
         self.reasoning_live_ids.clear();
@@ -802,22 +856,35 @@ impl App {
         }
     }
 
+    fn reset_screen_lifecycle(&mut self) {
+        self.entries.clear();
+        self.entry_ids.clear();
+        self.screen_namespace = next_screen_namespace();
+        self.next_entry_sequence = 0;
+        self.pending_screen_changes.clear();
+        self.pending_screen_changes.push_back(ScreenChange::Reset);
+    }
+
     pub fn apply(&mut self, update: EventUpdate) {
         match update {
             EventUpdate::UserMessage { content } => {
                 if let Some(pending) = self.pending_user_messages.pop_front() {
-                    if let Some(ChatEntry::User(current)) = self
+                    if let Some(index) = self
                         .entries
-                        .iter_mut()
+                        .iter()
                         .rev()
-                        .find(|entry| matches!(entry, ChatEntry::User(value) if value == &pending))
+                        .position(|entry| matches!(entry, ChatEntry::User(value) if value == &pending))
+                        .map(|offset| self.entries.len() - 1 - offset)
                     {
-                        *current = content;
+                        if let ChatEntry::User(current) = &mut self.entries[index] {
+                            *current = content;
+                        }
+                        self.queue_screen_change(index);
                     } else {
-                        self.entries.push(ChatEntry::User(content));
+                        self.push_entry(ChatEntry::User(content));
                     }
                 } else {
-                    self.entries.push(ChatEntry::User(content));
+                    self.push_entry(ChatEntry::User(content));
                 }
             }
             EventUpdate::AssistantDelta {
@@ -857,7 +924,7 @@ impl App {
                 tool_name,
                 arguments,
                 agent_id,
-            } => self.entries.push(ChatEntry::Tool {
+            } => self.push_entry(ChatEntry::Tool {
                 tool_call_id,
                 command: arguments.as_ref().and_then(tool_command),
                 tool_name,
@@ -871,12 +938,15 @@ impl App {
                 content,
                 agent_id: _,
             } => {
-                if let Some(ChatEntry::Tool { output, .. }) = self
+                if let Some(index) = self
                     .entries
-                    .iter_mut()
-                    .find(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
+                    .iter()
+                    .position(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
                 {
-                    output.push_str(&content);
+                    if let ChatEntry::Tool { output, .. } = &mut self.entries[index] {
+                        output.push_str(&content);
+                    }
+                    self.queue_screen_change(index);
                 }
             }
             EventUpdate::ToolCompleted {
@@ -885,63 +955,77 @@ impl App {
                 message,
                 agent_id: _,
             } => {
-                if let Some(ChatEntry::Tool {
-                    output,
-                    success: state,
-                    unknown,
-                    ..
-                }) = self
+                if let Some(index) = self
                     .entries
-                    .iter_mut()
-                    .find(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
+                    .iter()
+                    .position(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
                 {
-                    *state = Some(success);
-                    *unknown = false;
-                    if let Some(message) = message {
-                        if success {
-                            *output = message;
-                        } else {
-                            output.push_str(&message);
+                    if let ChatEntry::Tool {
+                        output,
+                        success: state,
+                        unknown,
+                        ..
+                    } = &mut self.entries[index]
+                    {
+                        *state = Some(success);
+                        *unknown = false;
+                        if let Some(message) = message {
+                            if success {
+                                *output = message;
+                            } else {
+                                output.push_str(&message);
+                            }
                         }
                     }
+                    self.queue_screen_change(index);
                 }
             }
             EventUpdate::SubagentStarted {
                 name,
                 display_name,
+                tool_call_id,
                 agent_id,
-            } => self.entries.push(ChatEntry::Subagent {
+            } => self.push_entry(ChatEntry::Subagent {
                 name,
+                tool_call_id,
                 display_name,
                 status: SubagentStatus::Running,
                 error: None,
                 agent_id,
             }),
-            EventUpdate::SubagentCompleted { name, agent_id: _ } => {
-                if let Some(ChatEntry::Subagent { status, .. }) = self
-                    .entries
-                    .iter_mut()
-                    .find(|entry| matches!(entry, ChatEntry::Subagent { name: current, .. } if current == &name))
+            EventUpdate::SubagentCompleted {
+                name,
+                tool_call_id,
+                agent_id,
+            } => {
+                if let Some(index) =
+                    self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
                 {
-                    *status = SubagentStatus::Completed;
+                    if let ChatEntry::Subagent { status, .. } = &mut self.entries[index] {
+                        *status = SubagentStatus::Completed;
+                    }
+                    self.queue_screen_change(index);
                 }
             }
             EventUpdate::SubagentFailed {
                 name,
+                tool_call_id,
                 error,
-                agent_id: _,
+                agent_id,
             } => {
-                if let Some(ChatEntry::Subagent {
-                    status,
-                    error: current_error,
-                    ..
-                }) = self
-                    .entries
-                    .iter_mut()
-                    .find(|entry| matches!(entry, ChatEntry::Subagent { name: current, .. } if current == &name))
+                if let Some(index) =
+                    self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
                 {
-                    *status = SubagentStatus::Failed;
-                    *current_error = Some(error);
+                    if let ChatEntry::Subagent {
+                        status,
+                        error: current_error,
+                        ..
+                    } = &mut self.entries[index]
+                    {
+                        *status = SubagentStatus::Failed;
+                        *current_error = Some(error);
+                    }
+                    self.queue_screen_change(index);
                 }
             }
             EventUpdate::Usage(usage) => self.status.usage = Some(usage),
@@ -955,7 +1039,7 @@ impl App {
                     self.status.busy = false;
                     self.reject_pending_approvals();
                 }
-                self.entries.push(ChatEntry::Banner {
+                self.push_entry(ChatEntry::Banner {
                     severity,
                     message,
                     url,
@@ -968,27 +1052,79 @@ impl App {
                 }
             }
             EventUpdate::Idle | EventUpdate::TaskComplete => {
+                let completed_indices = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| match entry {
+                        ChatEntry::Assistant { message_id, .. }
+                            if self.assistant_live_ids.contains(message_id) => Some(index),
+                        ChatEntry::Reasoning { reasoning_id, .. }
+                            if self.reasoning_live_ids.contains(reasoning_id) => Some(index),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
                 self.assistant_live_ids.clear();
                 self.reasoning_live_ids.clear();
                 self.set_fleet_active(false);
                 self.status.busy = false;
+                for index in completed_indices {
+                    self.queue_screen_change(index);
+                }
                 if !matches!(self.entries.last(), Some(ChatEntry::Completed)) {
-                    self.entries.push(ChatEntry::Completed);
+                    self.push_entry(ChatEntry::Completed);
                 }
             }
         }
     }
 
+    fn subagent_index(
+        &self,
+        name: &str,
+        tool_call_id: &str,
+        agent_id: Option<&str>,
+    ) -> Option<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, entry)| {
+                matches!(
+                    entry,
+                    ChatEntry::Subagent {
+                        name: current,
+                        tool_call_id: current_tool_call_id,
+                        status: SubagentStatus::Running,
+                        agent_id: current_agent,
+                        ..
+                    } if current == name
+                        && current_tool_call_id == tool_call_id
+                        && (agent_id.is_none() || current_agent.as_deref() == agent_id)
+                )
+            })
+            .map(|(index, _)| index)
+    }
+
     fn append_assistant(&mut self, message_id: String, content: String, agent_id: Option<String>) {
-        if let Some(ChatEntry::Assistant {
-            content: current,
-            ..
-        }) = self.entries.iter_mut().rev().find(|entry| {
-            matches!(entry, ChatEntry::Assistant { message_id: id, .. } if id == &message_id)
-        }) {
-            current.push_str(&content);
+        if let Some(index) = self
+            .entries
+            .iter()
+            .rev()
+            .position(|entry| {
+                matches!(entry, ChatEntry::Assistant { message_id: id, .. } if id == &message_id)
+            })
+            .map(|offset| self.entries.len() - 1 - offset)
+        {
+            if let ChatEntry::Assistant {
+                content: current,
+                ..
+            } = &mut self.entries[index]
+            {
+                current.push_str(&content);
+            }
+            self.queue_screen_change(index);
         } else {
-            self.entries.push(ChatEntry::Assistant {
+            self.push_entry(ChatEntry::Assistant {
                 message_id,
                 content,
                 agent_id,
@@ -997,19 +1133,29 @@ impl App {
     }
 
     fn replace_assistant(&mut self, message_id: String, content: String, agent_id: Option<String>) {
-        if let Some(ChatEntry::Assistant {
-            content: current,
-            agent_id: current_agent,
-            ..
-        }) = self.entries.iter_mut().rev().find(|entry| {
-            matches!(entry, ChatEntry::Assistant { message_id: id, .. } if id == &message_id)
-        }) {
-            *current = content;
-            if current_agent.is_none() {
-                *current_agent = agent_id;
+        if let Some(index) = self
+            .entries
+            .iter()
+            .rev()
+            .position(|entry| {
+                matches!(entry, ChatEntry::Assistant { message_id: id, .. } if id == &message_id)
+            })
+            .map(|offset| self.entries.len() - 1 - offset)
+        {
+            if let ChatEntry::Assistant {
+                content: current,
+                agent_id: current_agent,
+                ..
+            } = &mut self.entries[index]
+            {
+                *current = content;
+                if current_agent.is_none() {
+                    *current_agent = agent_id;
+                }
             }
+            self.queue_screen_change(index);
         } else {
-            self.entries.push(ChatEntry::Assistant {
+            self.push_entry(ChatEntry::Assistant {
                 message_id,
                 content,
                 agent_id,
@@ -1023,15 +1169,25 @@ impl App {
         content: String,
         agent_id: Option<String>,
     ) {
-        if let Some(ChatEntry::Reasoning {
-            content: current,
-            ..
-        }) = self.entries.iter_mut().rev().find(|entry| {
-            matches!(entry, ChatEntry::Reasoning { reasoning_id: id, .. } if id == &reasoning_id)
-        }) {
-            current.push_str(&content);
+        if let Some(index) = self
+            .entries
+            .iter()
+            .rev()
+            .position(|entry| {
+                matches!(entry, ChatEntry::Reasoning { reasoning_id: id, .. } if id == &reasoning_id)
+            })
+            .map(|offset| self.entries.len() - 1 - offset)
+        {
+            if let ChatEntry::Reasoning {
+                content: current,
+                ..
+            } = &mut self.entries[index]
+            {
+                current.push_str(&content);
+            }
+            self.queue_screen_change(index);
         } else {
-            self.entries.push(ChatEntry::Reasoning {
+            self.push_entry(ChatEntry::Reasoning {
                 reasoning_id,
                 content,
                 agent_id,
@@ -1045,19 +1201,29 @@ impl App {
         content: String,
         agent_id: Option<String>,
     ) {
-        if let Some(ChatEntry::Reasoning {
-            content: current,
-            agent_id: current_agent,
-            ..
-        }) = self.entries.iter_mut().rev().find(|entry| {
-            matches!(entry, ChatEntry::Reasoning { reasoning_id: id, .. } if id == &reasoning_id)
-        }) {
-            *current = content;
-            if current_agent.is_none() {
-                *current_agent = agent_id;
+        if let Some(index) = self
+            .entries
+            .iter()
+            .rev()
+            .position(|entry| {
+                matches!(entry, ChatEntry::Reasoning { reasoning_id: id, .. } if id == &reasoning_id)
+            })
+            .map(|offset| self.entries.len() - 1 - offset)
+        {
+            if let ChatEntry::Reasoning {
+                content: current,
+                agent_id: current_agent,
+                ..
+            } = &mut self.entries[index]
+            {
+                *current = content;
+                if current_agent.is_none() {
+                    *current_agent = agent_id;
+                }
             }
+            self.queue_screen_change(index);
         } else {
-            self.entries.push(ChatEntry::Reasoning {
+            self.push_entry(ChatEntry::Reasoning {
                 reasoning_id,
                 content,
                 agent_id,
@@ -1416,6 +1582,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         }
         KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => {
             app.show_internals = !app.show_internals;
+            app.queue_all_screen_changes();
             UiAction::None
         }
         KeyCode::Up => {
@@ -1619,7 +1786,9 @@ async fn run_loop(
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !app.should_quit() {
-        screen_model.sync(terminal, &app.screen_entries())?;
+        for change in app.take_screen_changes() {
+            screen_model.apply_change(terminal, change)?;
+        }
         terminal.draw(|frame| draw_with_screen(frame, &app, &screen_model))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);

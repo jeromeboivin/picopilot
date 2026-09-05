@@ -80,8 +80,8 @@ impl std::error::Error for ScreenModelError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedEntry {
-    id: String,
-    lines: Vec<Line<'static>>,
+    id: TranscriptEntryId,
+    height: u16,
 }
 
 impl CommittedEntry {
@@ -89,16 +89,17 @@ impl CommittedEntry {
         &self.id
     }
 
-    pub fn lines(&self) -> &[Line<'static>] {
-        &self.lines
+    pub fn height(&self) -> u16 {
+        self.height
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveEntry {
-    id: String,
+    id: TranscriptEntryId,
     kind: LiveEntryKind,
     lines: Vec<Line<'static>>,
+    completed: bool,
 }
 
 impl LiveEntry {
@@ -113,11 +114,17 @@ impl LiveEntry {
     pub fn lines(&self) -> &[Line<'static>] {
         &self.lines
     }
+
+    pub fn completed(&self) -> bool {
+        self.completed
+    }
 }
+
+pub type TranscriptEntryId = String;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenEntry {
-    id: String,
+    id: TranscriptEntryId,
     kind: LiveEntryKind,
     lines: Vec<Line<'static>>,
     completed: bool,
@@ -137,11 +144,35 @@ impl ScreenEntry {
             completed,
         }
     }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn kind(&self) -> LiveEntryKind {
+        self.kind
+    }
+
+    pub fn lines(&self) -> &[Line<'static>] {
+        &self.lines
+    }
+
+    pub fn completed(&self) -> bool {
+        self.completed
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenChange {
+    Reset,
+    Upsert(ScreenEntry),
+    Remove(TranscriptEntryId),
 }
 
 #[derive(Debug, Default)]
 pub struct ScreenModel {
     committed: Vec<CommittedEntry>,
+    committed_ids: HashSet<TranscriptEntryId>,
     live: Vec<LiveEntry>,
 }
 
@@ -154,6 +185,20 @@ impl ScreenModel {
         &self.live
     }
 
+    pub fn committed_count(&self) -> usize {
+        self.committed.len()
+    }
+
+    pub fn is_committed(&self, id: &str) -> bool {
+        self.committed_ids.contains(id)
+    }
+
+    pub fn reset(&mut self) {
+        self.committed.clear();
+        self.committed_ids.clear();
+        self.live.clear();
+    }
+
     pub fn start_live(
         &mut self,
         id: impl Into<String>,
@@ -161,7 +206,7 @@ impl ScreenModel {
         lines: Vec<Line<'static>>,
     ) -> Result<(), ScreenModelError> {
         let id = id.into();
-        if self.committed.iter().any(|entry| entry.id == id) {
+        if self.committed_ids.contains(&id) {
             return Err(ScreenModelError::AlreadyCommitted(id));
         }
         if self.live.iter().any(|entry| entry.id == id) {
@@ -171,6 +216,7 @@ impl ScreenModel {
             id,
             kind,
             lines: non_empty_lines(lines),
+            completed: false,
         });
         Ok(())
     }
@@ -181,6 +227,41 @@ impl ScreenModel {
         };
         entry.lines = non_empty_lines(lines);
         true
+    }
+
+    pub fn apply_change<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        change: ScreenChange,
+    ) -> io::Result<()> {
+        match change {
+            ScreenChange::Reset => self.reset(),
+            ScreenChange::Remove(id) => {
+                if !self.committed_ids.contains(&id) {
+                    self.live.retain(|entry| entry.id != id);
+                }
+            }
+            ScreenChange::Upsert(entry) => {
+                if self.committed_ids.contains(&entry.id) {
+                    return Ok(());
+                }
+
+                if let Some(current) = self.live.iter_mut().find(|current| current.id == entry.id) {
+                    current.kind = entry.kind;
+                    current.lines = entry.lines;
+                    current.completed = entry.completed;
+                } else {
+                    self.live.push(LiveEntry {
+                        id: entry.id,
+                        kind: entry.kind,
+                        lines: entry.lines,
+                        completed: entry.completed,
+                    });
+                }
+                self.commit_ready(terminal)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn sync<B: Backend>(
@@ -196,21 +277,7 @@ impl ScreenModel {
             .retain(|entry| active_ids.contains(entry.id.as_str()));
 
         for entry in entries {
-            if self
-                .committed
-                .iter()
-                .any(|committed| committed.id == entry.id)
-            {
-                continue;
-            }
-
-            if !self.update_live(&entry.id, entry.lines.clone()) {
-                self.start_live(&entry.id, entry.kind, entry.lines.clone())
-                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-            }
-            if entry.completed {
-                self.commit_live(terminal, &entry.id)?;
-            }
+            self.apply_change(terminal, ScreenChange::Upsert(entry.clone()))?;
         }
         Ok(())
     }
@@ -223,20 +290,37 @@ impl ScreenModel {
         let Some(index) = self.live.iter().position(|entry| entry.id == id) else {
             return Ok(false);
         };
-        let entry = self.live[index].clone();
-        let height = u16::try_from(entry.lines.len()).map_err(|_| {
+        self.commit_index(terminal, index)?;
+        Ok(true)
+    }
+
+    fn commit_ready<B: Backend>(&mut self, terminal: &mut Terminal<B>) -> io::Result<()> {
+        while self.live.first().is_some_and(|entry| entry.completed) {
+            self.commit_index(terminal, 0)?;
+        }
+        Ok(())
+    }
+
+    fn commit_index<B: Backend>(
+        &mut self,
+        terminal: &mut Terminal<B>,
+        index: usize,
+    ) -> io::Result<()> {
+        let height = u16::try_from(self.live[index].lines.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a transcript entry is too tall for the terminal viewport",
             )
         })?;
-        terminal.insert_before(height, |buffer| render_lines(&entry.lines, buffer))?;
-        self.live.remove(index);
+        let lines = self.live[index].lines.clone();
+        terminal.insert_before(height, |buffer| render_lines(&lines, buffer))?;
+        let entry = self.live.remove(index);
+        self.committed_ids.insert(entry.id.clone());
         self.committed.push(CommittedEntry {
             id: entry.id,
-            lines: entry.lines,
+            height,
         });
-        Ok(true)
+        Ok(())
     }
 
     pub fn draw_live(&self, frame: &mut Frame, platform: Platform) {

@@ -1,10 +1,43 @@
+use picopilot::events::EventUpdate;
 use picopilot::screen_model::{
     enter_main_screen, live_preview_enabled, terminal_options, LiveEntryKind, Platform,
-    ScreenModel, FIXED_LIVE_REGION_HEIGHT,
+    ScreenChange, ScreenModel, FIXED_LIVE_REGION_HEIGHT,
 };
+use picopilot::tui::App;
 use ratatui::backend::TestBackend;
 use ratatui::text::Line;
+use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, Viewport};
+use serde_json::json;
+
+fn apply_pending_changes(
+    app: &mut App,
+    screen: &mut ScreenModel,
+    terminal: &mut Terminal<TestBackend>,
+) {
+    for change in app.take_screen_changes() {
+        screen
+            .apply_change(terminal, change)
+            .expect("screen change should apply");
+    }
+}
+
+fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn updated_entry_id(change: &ScreenChange) -> Option<picopilot::screen_model::TranscriptEntryId> {
+    match change {
+        ScreenChange::Upsert(entry) => Some(entry.id().to_string()),
+        ScreenChange::Reset | ScreenChange::Remove(_) => None,
+    }
+}
 
 #[test]
 fn main_screen_setup_does_not_enter_the_alternate_screen() {
@@ -59,7 +92,8 @@ fn completing_a_live_entry_inserts_its_exact_lines_before_the_viewport() {
         .collect::<Vec<_>>();
     assert!(rows.iter().any(|row| row.starts_with("first line")));
     assert!(rows.iter().any(|row| row.starts_with("second line")));
-    assert_eq!(screen.committed_entries()[0].lines().len(), 2);
+    assert_eq!(screen.committed_count(), 1);
+    assert!(screen.is_committed("message-1"));
 }
 
 #[test]
@@ -79,10 +113,8 @@ fn committed_entries_cannot_be_mutated_by_late_updates() {
         .expect("live entry should commit");
 
     assert!(!screen.update_live("message-1", vec![Line::from("late correction")]));
-    assert_eq!(
-        screen.committed_entries()[0].lines(),
-        &[Line::from("original")]
-    );
+    assert_eq!(screen.committed_count(), 1);
+    assert!(screen.is_committed("message-1"));
     assert!(screen
         .start_live(
             "message-1",
@@ -132,6 +164,216 @@ fn live_lines_are_limited_to_the_available_viewport_rows() {
         screen.visible_live_lines(Platform::default(), 2),
         vec![Line::from("header"), Line::from("progress")]
     );
+}
+
+#[test]
+fn new_conversation_resets_screen_identity_and_commits_reused_entries() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.add_user_message("conversation A".to_string());
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "reused-message-id".to_string(),
+        content: "response A".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    assert_eq!(screen.committed_count(), 2);
+
+    app.reset_for_new_conversation();
+    app.add_user_message("conversation B".to_string());
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "reused-message-id".to_string(),
+        content: "response B".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    assert_eq!(screen.committed_count(), 2);
+    assert!(terminal_text(&terminal).contains("conversation B"));
+    assert!(terminal_text(&terminal).contains("response B"));
+}
+
+#[test]
+fn resuming_a_session_resets_screen_metadata_and_renders_history() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.add_user_message("before resume".to_string());
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    app.replace_history(&[github_copilot_sdk::types::SessionEvent {
+        id: "event-user".to_string(),
+        timestamp: "2026-09-05T12:00:00Z".to_string(),
+        parent_id: None,
+        ephemeral: None,
+        agent_id: None,
+        debug_cli_received_at_ms: None,
+        debug_ws_forwarded_at_ms: None,
+        event_type: "user.message".to_string(),
+        data: json!({ "content": "resumed history", "source": "user" }),
+    }]);
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    assert_eq!(screen.committed_count(), 1);
+    assert!(terminal_text(&terminal).contains("resumed history"));
+}
+
+#[test]
+fn same_display_name_subagents_keep_separate_screen_entries() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    for agent_id in ["agent-1", "agent-2"] {
+        app.apply(EventUpdate::SubagentStarted {
+            name: "worker".to_string(),
+            tool_call_id: format!("tool-{agent_id}"),
+            display_name: "Worker".to_string(),
+            agent_id: Some(agent_id.to_string()),
+        });
+    }
+    for agent_id in ["agent-1", "agent-2"] {
+        app.apply(EventUpdate::SubagentCompleted {
+            name: "worker".to_string(),
+            tool_call_id: format!("tool-{agent_id}"),
+            agent_id: Some(agent_id.to_string()),
+        });
+    }
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    assert_eq!(screen.committed_count(), 2);
+    assert!(terminal_text(&terminal).matches("Worker").count() >= 2);
+}
+
+#[test]
+fn entry_ids_are_stable_for_updates_and_fresh_after_transition() {
+    let mut app = App::new(None);
+    app.add_user_message("first".to_string());
+    let first_id = app
+        .take_screen_changes()
+        .iter()
+        .find_map(updated_entry_id)
+        .expect("user entry should have an ID");
+
+    app.apply(EventUpdate::UserMessage {
+        content: "first canonical".to_string(),
+    });
+    let updated_id = app
+        .take_screen_changes()
+        .iter()
+        .find_map(updated_entry_id)
+        .expect("updated user entry should have an ID");
+    assert_eq!(first_id, updated_id);
+
+    app.reset_for_new_conversation();
+    app.add_user_message("second conversation".to_string());
+    let second_id = app
+        .take_screen_changes()
+        .iter()
+        .find_map(updated_entry_id)
+        .expect("new user entry should have an ID");
+    assert_ne!(first_id, second_id);
+}
+
+#[test]
+fn updating_one_entry_emits_one_incremental_screen_change() {
+    let mut app = App::new(None);
+    app.add_user_message("first".to_string());
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-1".to_string(),
+        content: "response".to_string(),
+        agent_id: None,
+    });
+    let _ = app.take_screen_changes();
+
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-1".to_string(),
+        content: "corrected response".to_string(),
+        agent_id: None,
+    });
+    let changes = app.take_screen_changes();
+
+    assert_eq!(changes.len(), 1);
+    assert!(matches!(changes[0], ScreenChange::Upsert(_)));
+}
+
+#[test]
+fn later_completed_entries_wait_for_earlier_live_entries() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-1".to_string(),
+        content: "assistant live".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({ "command": "echo done" })),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-1".to_string(),
+        success: true,
+        message: Some("tool completed".to_string()),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    assert_eq!(screen.committed_count(), 0);
+
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-1".to_string(),
+        content: "assistant final".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    let rendered = terminal_text(&terminal);
+    assert_eq!(screen.committed_count(), 2);
+    assert!(rendered.find("assistant final") < rendered.find("tool completed"));
+}
+
+#[test]
+#[ignore = "known until the shared in-tree wrapper replaces Paragraph wrapping"]
+fn committed_long_lines_need_wrapped_height_before_insert() {
+    let logical_height = 1;
+    let wrapped_height = Paragraph::new(vec![Line::from("0123456789ABCDEFGHIJ")]).line_count(10);
+    assert_ne!(logical_height, wrapped_height);
+
+    let mut terminal = Terminal::with_options(TestBackend::new(10, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let mut screen = ScreenModel::default();
+    screen
+        .start_live(
+            "long-line",
+            LiveEntryKind::Assistant,
+            vec![Line::from("0123456789ABCDEFGHIJ")],
+        )
+        .expect("live entry should start");
+
+    screen
+        .commit_live(&mut terminal, "long-line")
+        .expect("live entry should commit");
+    terminal
+        .draw(|frame| screen.draw_live(frame, Platform::default()))
+        .expect("live viewport should redraw");
+
+    assert_eq!(
+        screen.committed_entries()[0].height() as usize,
+        logical_height
+    );
+    assert!(terminal_text(&terminal).contains("ABCDEFGHIJ"));
 }
 
 #[test]
