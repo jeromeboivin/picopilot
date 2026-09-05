@@ -6,6 +6,7 @@ publish = false
 description = "A minimalist Rust coding agent built on the GitHub Copilot SDK"
 
 [dependencies]
+ansi-to-tui = "=7.0.0"
 async-trait = "0.1"
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"

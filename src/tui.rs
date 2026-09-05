@@ -2,7 +2,7 @@ use crate::events::{
     context_attribution_snapshot, todo_snapshot, usage_metrics_snapshot, BannerSeverity,
     ContextAttributionSnapshot, EventUpdate, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
 };
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
+use crate::ansi::{plain_from_sanitized, sanitize_ansi, sanitize_plain, AnsiSanitizer};
 use crate::input_editor::InputEditor;
 use crate::markdown::assistant_markdown_lines;
 use crate::palette;
@@ -214,6 +215,13 @@ fn next_screen_namespace() -> u64 {
     NEXT_SCREEN_NAMESPACE.fetch_add(1, Ordering::Relaxed)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum AnsiStreamId {
+    Assistant(String),
+    Reasoning(String),
+    Tool(String),
+}
+
 #[derive(Debug, Default)]
 pub struct App {
     entries: Vec<ChatEntry>,
@@ -249,6 +257,7 @@ pub struct App {
     show_internals: bool,
     assistant_live_ids: HashSet<String>,
     reasoning_live_ids: HashSet<String>,
+    ansi_streams: HashMap<AnsiStreamId, AnsiSanitizer>,
     should_quit: bool,
 }
 
@@ -568,6 +577,31 @@ impl App {
 
     pub fn set_reconnecting(&mut self, reconnecting: bool) {
         self.reconnecting = reconnecting;
+        if reconnecting {
+            self.ansi_streams.clear();
+        }
+    }
+
+    fn sanitize_streamed_ansi(&mut self, stream_id: AnsiStreamId, content: &str) -> String {
+        self.ansi_streams
+            .entry(stream_id)
+            .or_default()
+            .push(content)
+    }
+
+    fn sanitize_streamed_plain(&mut self, stream_id: AnsiStreamId, content: &str) -> String {
+        let sanitized = self.sanitize_streamed_ansi(stream_id, content);
+        plain_from_sanitized(&sanitized)
+    }
+
+    fn finish_ansi_stream(&mut self, stream_id: AnsiStreamId) {
+        if let Some(mut sanitizer) = self.ansi_streams.remove(&stream_id) {
+            let _ = sanitizer.finish();
+        }
+    }
+
+    fn reset_ansi_streams(&mut self) {
+        self.ansi_streams.clear();
     }
 
     pub fn mark_in_flight_tools_unknown(&mut self) {
@@ -735,9 +769,9 @@ impl App {
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
         self.push_entry(ChatEntry::Approval {
-            category: request.category.label().to_string(),
-            tool_name: request.tool_name.clone(),
-            details: request.details.clone(),
+            category: sanitize_plain(request.category.label()),
+            tool_name: sanitize_plain(&request.tool_name),
+            details: sanitize_plain(&request.details),
             status: ApprovalStatus::Pending,
         });
         self.pending_approvals.push_back(request);
@@ -882,13 +916,14 @@ impl App {
     }
 
     pub fn add_user_message(&mut self, content: String) {
+        let content = sanitize_plain(&content);
         self.pending_user_messages.push_back(content.clone());
         self.push_entry(ChatEntry::User(content));
         self.status.busy = true;
     }
 
     fn add_diagnostic(&mut self, message: impl Into<String>) {
-        self.push_entry(ChatEntry::Diagnostic(message.into()));
+        self.push_entry(ChatEntry::Diagnostic(sanitize_plain(&message.into())));
     }
 
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
@@ -909,6 +944,7 @@ impl App {
     fn reset_screen_lifecycle(&mut self) {
         self.entries.clear();
         self.entry_ids.clear();
+        self.reset_ansi_streams();
         self.screen_namespace = next_screen_namespace();
         self.next_entry_sequence = 0;
         self.pending_screen_changes.clear();
@@ -918,12 +954,15 @@ impl App {
     pub fn apply(&mut self, update: EventUpdate) {
         match update {
             EventUpdate::UserMessage { content } => {
+                let content = sanitize_plain(&content);
                 if let Some(pending) = self.pending_user_messages.pop_front() {
                     if let Some(index) = self
                         .entries
                         .iter()
                         .rev()
-                        .position(|entry| matches!(entry, ChatEntry::User(value) if value == &pending))
+                        .position(
+                            |entry| matches!(entry, ChatEntry::User(value) if value == &pending),
+                        )
                         .map(|offset| self.entries.len() - 1 - offset)
                     {
                         if let ChatEntry::User(current) = &mut self.entries[index] {
@@ -942,6 +981,8 @@ impl App {
                 content,
                 agent_id,
             } => {
+                let content = self
+                    .sanitize_streamed_plain(AnsiStreamId::Assistant(message_id.clone()), &content);
                 self.assistant_live_ids.insert(message_id.clone());
                 self.append_assistant(message_id, content, agent_id);
             }
@@ -950,14 +991,19 @@ impl App {
                 content,
                 agent_id,
             } => {
+                self.finish_ansi_stream(AnsiStreamId::Assistant(message_id.clone()));
                 self.assistant_live_ids.remove(&message_id);
-                self.replace_assistant(message_id, content, agent_id);
+                self.replace_assistant(message_id, sanitize_plain(&content), agent_id);
             }
             EventUpdate::ReasoningDelta {
                 reasoning_id,
                 content,
                 agent_id,
             } => {
+                let content = self.sanitize_streamed_plain(
+                    AnsiStreamId::Reasoning(reasoning_id.clone()),
+                    &content,
+                );
                 self.reasoning_live_ids.insert(reasoning_id.clone());
                 self.append_reasoning(reasoning_id, content, agent_id);
             }
@@ -966,8 +1012,9 @@ impl App {
                 content,
                 agent_id,
             } => {
+                self.finish_ansi_stream(AnsiStreamId::Reasoning(reasoning_id.clone()));
                 self.reasoning_live_ids.remove(&reasoning_id);
-                self.replace_reasoning(reasoning_id, content, agent_id);
+                self.replace_reasoning(reasoning_id, sanitize_plain(&content), agent_id);
             }
             EventUpdate::ToolStarted {
                 tool_call_id,
@@ -976,6 +1023,12 @@ impl App {
                 agent_id,
             } => {
                 if self.tool_header_index(&tool_call_id).is_none() {
+                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id.clone()));
+                    let tool_name = sanitize_plain(&tool_name);
+                    let arguments = arguments.map(|mut arguments| {
+                        sanitize_json_value(&mut arguments);
+                        arguments
+                    });
                     let started_at = Instant::now();
                     self.push_entry(ChatEntry::Tool {
                         tool_call_id: tool_call_id.clone(),
@@ -1002,36 +1055,46 @@ impl App {
                 content,
                 agent_id: _,
             } => {
-                if let Some(index) = self
+                let Some(index) = self
                     .entries
                     .iter()
                     .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
+                else {
+                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id));
+                    return;
+                };
+                let content =
+                    self.sanitize_streamed_ansi(AnsiStreamId::Tool(tool_call_id.clone()), &content);
+                if let ChatEntry::ToolProgress {
+                    content: current, ..
+                } = &mut self.entries[index]
                 {
-                    if let ChatEntry::ToolProgress { content: current, .. } =
-                        &mut self.entries[index]
-                    {
-                        current.push_str(&content);
-                    }
-                    self.queue_screen_change(index);
+                    current.push_str(&content);
                 }
+                self.queue_screen_change(index);
             }
             EventUpdate::ToolProgress {
                 tool_call_id,
                 content,
                 agent_id: _,
             } => {
-                if let Some(index) = self
+                let Some(index) = self
                     .entries
                     .iter()
                     .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
+                else {
+                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id));
+                    return;
+                };
+                let content =
+                    self.sanitize_streamed_ansi(AnsiStreamId::Tool(tool_call_id.clone()), &content);
+                if let ChatEntry::ToolProgress {
+                    content: current, ..
+                } = &mut self.entries[index]
                 {
-                    if let ChatEntry::ToolProgress { content: current, .. } =
-                        &mut self.entries[index]
-                    {
-                        *current = content;
-                    }
-                    self.queue_screen_change(index);
+                    *current = content;
                 }
+                self.queue_screen_change(index);
             }
             EventUpdate::ToolCompleted {
                 tool_call_id,
@@ -1052,7 +1115,7 @@ impl App {
             } => self.push_entry(ChatEntry::Subagent {
                 name,
                 tool_call_id,
-                display_name,
+                display_name: sanitize_plain(&display_name),
                 status: SubagentStatus::Running,
                 error: None,
                 agent_id,
@@ -1062,8 +1125,7 @@ impl App {
                 tool_call_id,
                 agent_id,
             } => {
-                if let Some(index) =
-                    self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
+                if let Some(index) = self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
                 {
                     if let ChatEntry::Subagent { status, .. } = &mut self.entries[index] {
                         *status = SubagentStatus::Completed;
@@ -1077,8 +1139,7 @@ impl App {
                 error,
                 agent_id,
             } => {
-                if let Some(index) =
-                    self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
+                if let Some(index) = self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
                 {
                     if let ChatEntry::Subagent {
                         status,
@@ -1087,7 +1148,7 @@ impl App {
                     } = &mut self.entries[index]
                     {
                         *status = SubagentStatus::Failed;
-                        *current_error = Some(error);
+                        *current_error = Some(sanitize_plain(&error));
                     }
                     self.queue_screen_change(index);
                 }
@@ -1105,8 +1166,8 @@ impl App {
                 }
                 self.push_entry(ChatEntry::Banner {
                     severity,
-                    message,
-                    url,
+                    message: sanitize_plain(&message),
+                    url: url.map(|url| sanitize_plain(&url)),
                 });
             }
             EventUpdate::ModelChanged { model } => self.status.model = Some(model),
@@ -1116,15 +1177,22 @@ impl App {
                 }
             }
             EventUpdate::Idle | EventUpdate::TaskComplete => {
+                self.reset_ansi_streams();
                 let completed_indices = self
                     .entries
                     .iter()
                     .enumerate()
                     .filter_map(|(index, entry)| match entry {
                         ChatEntry::Assistant { message_id, .. }
-                            if self.assistant_live_ids.contains(message_id) => Some(index),
+                            if self.assistant_live_ids.contains(message_id) =>
+                        {
+                            Some(index)
+                        }
                         ChatEntry::Reasoning { reasoning_id, .. }
-                            if self.reasoning_live_ids.contains(reasoning_id) => Some(index),
+                            if self.reasoning_live_ids.contains(reasoning_id) =>
+                        {
+                            Some(index)
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>();
@@ -1161,6 +1229,7 @@ impl App {
         message: Option<String>,
         cancelled: bool,
     ) {
+        self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id.clone()));
         let Some(index) = self.tool_header_index(&tool_call_id) else {
             return;
         };
@@ -1229,7 +1298,9 @@ impl App {
             tool_call_id,
             tool_name,
             arguments,
-            content: message.unwrap_or_default(),
+            content: message
+                .map(|message| sanitize_ansi(&message))
+                .unwrap_or_default(),
             state: if cancelled {
                 ToolResultState::Cancelled
             } else if success {
@@ -3400,6 +3471,28 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+fn sanitize_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(content) => *content = sanitize_plain(content),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                sanitize_json_value(value);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            let sanitized = std::mem::take(values)
+                .into_iter()
+                .map(|(key, mut value)| {
+                    sanitize_json_value(&mut value);
+                    (sanitize_plain(&key), value)
+                })
+                .collect();
+            *values = sanitized;
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
 fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPayload> {
     match entry {
         ChatEntry::Assistant { content, .. } => {
@@ -3937,13 +4030,15 @@ impl MarkdownRenderer {
 
 fn speaker_prefix(symbol: &str, agent_id: Option<&str>) -> String {
     match agent_id {
-        Some(agent_id) => format!("{symbol} {agent_id} "),
+        Some(agent_id) => format!("{symbol} {} ", sanitize_plain(agent_id)),
         None => format!("{symbol} "),
     }
 }
 
 fn agent_suffix(agent_id: Option<&str>) -> String {
-    agent_id.map(|id| format!(" ({id})")).unwrap_or_default()
+    agent_id
+        .map(|id| format!(" ({})", sanitize_plain(id)))
+        .unwrap_or_default()
 }
 
 fn format_tokens(current: i64, limit: i64) -> String {

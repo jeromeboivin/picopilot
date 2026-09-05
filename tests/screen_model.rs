@@ -1,3 +1,4 @@
+use picopilot::ansi::sanitize_ansi;
 use picopilot::events::EventUpdate;
 use picopilot::palette;
 use picopilot::screen_model::{
@@ -134,6 +135,345 @@ fn app_queues_raw_assistant_markdown_for_width_aware_rendering() {
         entry.payload(),
         &TranscriptPayload::AssistantMarkdown(markdown.to_string())
     );
+}
+
+#[test]
+fn app_sanitizes_assistant_ansi_before_screen_storage() {
+    let mut app = App::new(None);
+
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-ansi".to_string(),
+        content: "\u{1b}[31mred\u{1b}[0m".to_string(),
+        agent_id: None,
+    });
+
+    let entry = app
+        .take_screen_changes()
+        .into_iter()
+        .find_map(|change| match change {
+            ScreenChange::Upsert(entry) => Some(entry),
+            ScreenChange::Reset | ScreenChange::Remove(_) => None,
+        })
+        .expect("assistant screen entry");
+
+    assert_eq!(
+        entry.payload(),
+        &TranscriptPayload::AssistantMarkdown("red".to_string())
+    );
+}
+
+#[test]
+fn wrapped_tool_result_keeps_sgr_style_on_every_fragment_without_escape_bytes() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "tool-ansi".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        content: sanitize_ansi("\u{1b}[31mred red red red red\u{1b}[0m"),
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("."),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 16);
+    let fragments = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .filter(|span| span.content.contains("red"))
+        .collect::<Vec<_>>();
+
+    assert!(fragments.len() > 1);
+    assert!(fragments
+        .iter()
+        .all(|span| span.style.fg == Some(ratatui::style::Color::Red)));
+    assert!(lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .all(|span| !span.content.contains('\u{1b}')));
+}
+
+#[test]
+fn tool_error_normalization_preserves_sgr_styles_without_escape_bytes() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "tool-error-ansi".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        content: sanitize_ansi("<error>failure \u{1b}[31mred\u{1b}[0m</error>"),
+        state: ToolResultState::Error,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("."),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let red = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content.contains("red"))
+        .expect("styled error content");
+
+    assert_eq!(red.style.fg, Some(ratatui::style::Color::Red));
+    assert!(lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .all(|span| !span.content.contains('\u{1b}')));
+    assert!(lines
+        .iter()
+        .any(|line| line.to_string().contains("Error: failure red")));
+}
+
+#[test]
+fn app_keeps_incremental_ansi_state_per_logical_stream() {
+    let mut app = App::new(None);
+
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-red".to_string(),
+        content: "\u{1b}[31".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-green".to_string(),
+        content: "\u{1b}[32".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-red".to_string(),
+        content: "mred".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-green".to_string(),
+        content: "mgreen".to_string(),
+        agent_id: None,
+    });
+
+    let assistants = app
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::Assistant {
+                message_id,
+                content,
+                ..
+            } => Some((message_id.as_str(), content.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        assistants,
+        vec![("assistant-red", "red"), ("assistant-green", "green"),]
+    );
+}
+
+#[test]
+fn reset_drops_unfinished_tool_ansi_state_before_a_reused_id() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-reused".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "echo test"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-reused".to_string(),
+        content: "before \u{1b}[31".to_string(),
+        agent_id: None,
+    });
+
+    app.reset_for_new_conversation();
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-reused".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "echo test"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-reused".to_string(),
+        content: "mcontinued".to_string(),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::ToolProgress { content, .. } if content == "mcontinued"
+    )));
+}
+
+#[test]
+fn idle_and_reconnect_drop_unfinished_ansi_state() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-lifecycle".to_string(),
+        content: "\u{1b}[31".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::Idle);
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-lifecycle".to_string(),
+        content: "mcontinued".to_string(),
+        agent_id: None,
+    });
+
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-lifecycle".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-lifecycle".to_string(),
+        content: "tool \u{1b}[31".to_string(),
+        agent_id: None,
+    });
+    app.set_reconnecting(true);
+    app.set_reconnecting(false);
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-lifecycle".to_string(),
+        content: "mcontinued".to_string(),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::Assistant { content, .. } if content == "mcontinued"
+    )));
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::ToolProgress { content, .. } if content == "tool mcontinued"
+    )));
+}
+
+#[test]
+fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
+    let mut app = App::new(None);
+    app.add_user_message("user \u{1b}[31mtext".to_string());
+    app.apply(EventUpdate::Reasoning {
+        reasoning_id: "reasoning-1".to_string(),
+        content: "reasoning \u{1b}[2Jtext".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::Banner {
+        severity: picopilot::events::BannerSeverity::Warning,
+        message: "banner \u{1b}]0;title\u{07}text".to_string(),
+        url: Some("https://example.test/\u{1b}[31murl".to_string()),
+    });
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-display".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf '\u{1b}[31marg"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-display".to_string(),
+        success: false,
+        message: Some("<error>failure \u{1b}[31mtext</error>".to_string()),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().all(|entry| match entry {
+        ChatEntry::User(content)
+        | ChatEntry::Diagnostic(content)
+        | ChatEntry::Reasoning { content, .. } => !content.contains('\u{1b}'),
+        ChatEntry::Banner { message, url, .. } => {
+            !message.contains('\u{1b}') && url.as_deref().is_none_or(|url| !url.contains('\u{1b}'))
+        }
+        ChatEntry::ToolResult { .. } => true,
+        _ => true,
+    }));
+
+    let result = app
+        .entries()
+        .iter()
+        .find_map(|entry| match entry {
+            ChatEntry::ToolResult {
+                tool_call_id,
+                tool_name,
+                arguments,
+                content,
+                state,
+                agent_id,
+                cwd,
+            } => Some(TranscriptPayload::ToolResult(ToolResultPayload {
+                tool_call_id: tool_call_id.clone(),
+                tool_name: tool_name.clone(),
+                arguments: arguments.clone(),
+                content: content.clone(),
+                state: *state,
+                agent_id: agent_id.clone(),
+                cwd: cwd.clone(),
+            })),
+            _ => None,
+        })
+        .expect("tool result should be stored");
+    let rendered = render_transcript_payload(LiveEntryKind::Tool, &result, 80);
+    assert!(rendered
+        .iter()
+        .any(|line| line.to_string().contains("Error: failure text")));
+}
+
+#[test]
+fn test_backend_never_receives_untrusted_escape_or_control_characters() {
+    let mut app = App::new(None);
+    app.add_user_message("user \u{1b}[2J\u{0007}text".to_string());
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-controls".to_string(),
+        content: "assistant \u{1b}]0;title\u{0007}text".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::Reasoning {
+        reasoning_id: "reasoning-controls".to_string(),
+        content: "reasoning \u{009b}2Jtext".to_string(),
+        agent_id: Some("agent \u{1b}[31m".to_string()),
+    });
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-controls".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf '\u{1b}[31marg"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-controls".to_string(),
+        content: "output \u{1b}[31mred\u{1b}[0m\u{0008}".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-controls".to_string(),
+        success: false,
+        message: Some("<error>failure \u{1b}[31mred</error>".to_string()),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::Banner {
+        severity: picopilot::events::BannerSeverity::Warning,
+        message: "banner \u{1b}7text".to_string(),
+        url: None,
+    });
+    app.apply(EventUpdate::SubagentStarted {
+        name: "worker".to_string(),
+        display_name: "worker".to_string(),
+        tool_call_id: "subagent-controls".to_string(),
+        agent_id: Some("agent \u{1b}[31m".to_string()),
+    });
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-argument-controls".to_string(),
+        tool_name: "custom \u{1b}[31m".to_string(),
+        arguments: Some(json!({"key \u{1b}[31m": "value \u{1b}[2J"})),
+        agent_id: None,
+    });
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 80)).expect("test terminal");
+    let mut screen = ScreenModel::default();
+    for change in app.take_screen_changes() {
+        screen
+            .apply_change(&mut terminal, change)
+            .expect("screen change should apply");
+    }
+    terminal
+        .draw(|frame| screen.draw_live(frame, Platform::default()))
+        .expect("live screen should render");
+
+    assert!(terminal.backend().buffer().content().iter().all(|cell| {
+        cell.symbol().chars().all(|character| {
+            !character.is_control() && !(('\u{0080}'..='\u{009f}').contains(&character))
+        })
+    }));
 }
 
 #[test]

@@ -12,6 +12,7 @@ use ratatui::text::Span;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use crate::ansi::parse_sanitized_ansi;
 use crate::markdown::assistant_markdown_lines_for_widths;
 use crate::palette;
 use crate::tool_rendering::{tool_summary, tool_user_facing_name};
@@ -676,10 +677,7 @@ fn render_tool_progress(
     let prefix = if nested { "" } else { TOOL_BODY_GUTTER };
     let content_width = width.saturating_sub(UnicodeWidthStr::width(prefix));
     let content_line = truncate_line(
-        Line::from(Span::styled(
-            single_line_content(content),
-            Style::default().fg(palette::INACTIVE),
-        )),
+        single_line_ansi_content(content, Style::default().fg(palette::INACTIVE)),
         content_width,
     );
     let gutter_style = Style::default()
@@ -732,10 +730,7 @@ fn tool_is_nested(kind: LiveEntryKind, payload_is_nested: bool) -> bool {
 }
 
 fn success_result_lines(tool_name: &str, content: &str) -> Option<Vec<Line<'static>>> {
-    let mut lines = trimmed_content_lines(content)
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+    let mut lines = trimmed_styled_lines(parse_sanitized_ansi(content, Style::default()));
     if lines.is_empty() {
         return None;
     }
@@ -769,19 +764,43 @@ fn success_result_lines(tool_name: &str, content: &str) -> Option<Vec<Line<'stat
 }
 
 fn error_result_lines(content: &str, verbose: bool) -> Option<Vec<Line<'static>>> {
-    let mut normalized = strip_error_wrappers(content).trim().to_string();
-    if normalized.is_empty() {
+    let mut lines = parse_sanitized_ansi(content, Style::default())
+        .into_iter()
+        .map(|line| {
+            line.spans
+                .into_iter()
+                .flat_map(|span| {
+                    let style = span.style;
+                    span.content
+                        .chars()
+                        .map(move |character| (character, style))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    strip_error_wrappers_from_styled(&mut lines);
+    trim_styled_lines(&mut lines);
+    let visible = styled_lines_to_string(&lines);
+    if visible.is_empty() {
         return None;
     }
-    if !verbose && normalized.contains("InputValidationError") {
-        normalized = "Invalid tool parameters".to_string();
-    } else if !normalized.starts_with("Error: ") && !normalized.starts_with("Cancelled: ") {
-        normalized = format!("Error: {normalized}");
+    if !verbose && visible.contains("InputValidationError") {
+        return Some(vec![Line::from("Invalid tool parameters")]);
+    }
+    if !visible.starts_with("Error: ") && !visible.starts_with("Cancelled: ") {
+        let first_line = lines.first_mut().expect("visible text has a first line");
+        let mut prefix = "Error: "
+            .chars()
+            .map(|character| (character, Style::default()))
+            .collect::<Vec<_>>();
+        prefix.append(first_line);
+        *first_line = prefix;
     }
 
-    let mut lines = trimmed_content_lines(&normalized)
+    let mut lines = lines
         .into_iter()
-        .map(|line| Line::from(Span::raw(line)))
+        .map(styled_chars_to_line)
         .collect::<Vec<_>>();
     if !verbose && lines.len() > 10 {
         let remaining = lines.len() - 10;
@@ -812,28 +831,96 @@ fn error_result_lines(content: &str, verbose: bool) -> Option<Vec<Line<'static>>
     Some(lines)
 }
 
-fn strip_error_wrappers(content: &str) -> String {
-    [
-        "<tool_use_error>",
-        "</tool_use_error>",
-        "<error>",
-        "</error>",
-        "<sandbox_violation>",
-        "</sandbox_violation>",
-    ]
-    .into_iter()
-    .fold(content.to_string(), |content, tag| content.replace(tag, ""))
+fn strip_error_wrappers_from_styled(lines: &mut [Vec<(char, Style)>]) {
+    for line in lines {
+        for tag in [
+            "<tool_use_error>",
+            "</tool_use_error>",
+            "<error>",
+            "</error>",
+            "<sandbox_violation>",
+            "</sandbox_violation>",
+        ] {
+            loop {
+                let text = line
+                    .iter()
+                    .map(|(character, _)| *character)
+                    .collect::<String>();
+                let Some(start_byte) = text.find(tag) else {
+                    break;
+                };
+                let start = text[..start_byte].chars().count();
+                let end = start + tag.chars().count();
+                line.drain(start..end);
+            }
+        }
+    }
 }
 
-fn trimmed_content_lines(content: &str) -> Vec<String> {
-    let mut lines = content
-        .split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
-        .collect::<Vec<_>>();
-    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+fn trim_styled_lines(lines: &mut Vec<Vec<(char, Style)>>) {
+    while let Some(line) = lines.first_mut() {
+        while line
+            .first()
+            .is_some_and(|(character, _)| character.is_whitespace())
+        {
+            line.remove(0);
+        }
+        if line.is_empty() {
+            lines.remove(0);
+        } else {
+            break;
+        }
+    }
+    while let Some(line) = lines.last_mut() {
+        while line
+            .last()
+            .is_some_and(|(character, _)| character.is_whitespace())
+        {
+            line.pop();
+        }
+        if line.is_empty() {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+}
+
+fn styled_lines_to_string(lines: &[Vec<(char, Style)>]) -> String {
+    lines
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|(character, _)| *character)
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn styled_chars_to_line(chars: Vec<(char, Style)>) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (character, style) in chars {
+        if let Some(span) = spans.last_mut().filter(|span| span.style == style) {
+            span.content.to_mut().push(character);
+        } else {
+            spans.push(Span::styled(character.to_string(), style));
+        }
+    }
+    Line::from(spans)
+}
+
+fn trimmed_styled_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    while lines
+        .first()
+        .is_some_and(|line| line.to_string().trim().is_empty())
+    {
         lines.remove(0);
     }
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+    while lines
+        .last()
+        .is_some_and(|line| line.to_string().trim().is_empty())
+    {
         lines.pop();
     }
     lines
@@ -855,6 +942,13 @@ fn single_line_content(content: &str) -> String {
         }
     }
     single_line
+}
+
+fn single_line_ansi_content(content: &str, base_style: Style) -> Line<'static> {
+    parse_sanitized_ansi(&single_line_content(content), base_style)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 const TOOL_BODY_GUTTER: &str = "  ⎿ \u{00a0}";
