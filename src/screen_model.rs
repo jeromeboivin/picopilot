@@ -6,14 +6,23 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use ratatui::backend::Backend;
 use ratatui::buffer::Buffer;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use crate::transcript_wrap::{wrap_lines, WrapSpec};
+
 pub const FIXED_LIVE_REGION_HEIGHT: u16 = 1 + 9 + 3 + 1;
+
+const ASSISTANT_TEXT_COLOR: Color = Color::White;
+const SUBTLE_TEXT_COLOR: Color = Color::Rgb(80, 80, 80);
+const USER_MESSAGE_BACKGROUND: Color = Color::Rgb(55, 55, 55);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveEntryKind {
+    User,
     Assistant,
     Bash,
     Other,
@@ -43,7 +52,7 @@ impl Platform {
 pub fn live_preview_enabled(kind: LiveEntryKind, platform: Platform) -> bool {
     match kind {
         LiveEntryKind::Assistant => !platform.is_windows && !platform.wt_session,
-        LiveEntryKind::Bash | LiveEntryKind::Other => true,
+        LiveEntryKind::User | LiveEntryKind::Bash | LiveEntryKind::Other => true,
     }
 }
 
@@ -240,6 +249,7 @@ impl ScreenModel {
                 if !self.committed_ids.contains(&id) {
                     self.live.retain(|entry| entry.id != id);
                 }
+                self.commit_ready(terminal)?;
             }
             ScreenChange::Upsert(entry) => {
                 if self.committed_ids.contains(&entry.id) {
@@ -264,33 +274,18 @@ impl ScreenModel {
         Ok(())
     }
 
-    pub fn sync<B: Backend>(
-        &mut self,
-        terminal: &mut Terminal<B>,
-        entries: &[ScreenEntry],
-    ) -> io::Result<()> {
-        let active_ids = entries
-            .iter()
-            .map(|entry| entry.id.as_str())
-            .collect::<HashSet<_>>();
-        self.live
-            .retain(|entry| active_ids.contains(entry.id.as_str()));
-
-        for entry in entries {
-            self.apply_change(terminal, ScreenChange::Upsert(entry.clone()))?;
-        }
-        Ok(())
-    }
-
     pub fn commit_live<B: Backend>(
         &mut self,
         terminal: &mut Terminal<B>,
         id: &str,
     ) -> io::Result<bool> {
-        let Some(index) = self.live.iter().position(|entry| entry.id == id) else {
+        let Some(entry) = self.live.first() else {
             return Ok(false);
         };
-        self.commit_index(terminal, index)?;
+        if entry.id != id {
+            return Ok(false);
+        }
+        self.commit_index(terminal, 0)?;
         Ok(true)
     }
 
@@ -306,13 +301,14 @@ impl ScreenModel {
         terminal: &mut Terminal<B>,
         index: usize,
     ) -> io::Result<()> {
-        let height = u16::try_from(self.live[index].lines.len()).map_err(|_| {
+        let width = terminal.size()?.width as usize;
+        let lines = render_entry_lines(self.live[index].kind, &self.live[index].lines, width);
+        let height = u16::try_from(lines.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a transcript entry is too tall for the terminal viewport",
             )
         })?;
-        let lines = self.live[index].lines.clone();
         terminal.insert_before(height, |buffer| render_lines(&lines, buffer))?;
         let entry = self.live.remove(index);
         self.committed_ids.insert(entry.id.clone());
@@ -325,7 +321,11 @@ impl ScreenModel {
 
     pub fn draw_live(&self, frame: &mut Frame, platform: Platform) {
         frame.render_widget(
-            Paragraph::new(self.visible_live_lines(platform, frame.area().height as usize)),
+            Paragraph::new(self.visible_live_lines_at_width(
+                platform,
+                frame.area().width as usize,
+                frame.area().height as usize,
+            )),
             frame.area(),
         );
     }
@@ -343,6 +343,73 @@ impl ScreenModel {
             .into_iter()
             .take(max_rows)
             .collect()
+    }
+
+    pub fn live_lines_at_width(&self, platform: Platform, width: usize) -> Vec<Line<'static>> {
+        self.live
+            .iter()
+            .filter(|entry| live_preview_enabled(entry.kind, platform))
+            .flat_map(|entry| render_entry_lines(entry.kind, &entry.lines, width))
+            .collect()
+    }
+
+    pub fn visible_live_lines_at_width(
+        &self,
+        platform: Platform,
+        width: usize,
+        max_rows: usize,
+    ) -> Vec<Line<'static>> {
+        self.live_lines_at_width(platform, width)
+            .into_iter()
+            .take(max_rows)
+            .collect()
+    }
+}
+
+pub fn render_entry_lines(
+    kind: LiveEntryKind,
+    lines: &[Line<'static>],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let lines = match kind {
+        LiveEntryKind::User => wrap_lines(lines, &user_wrap_spec(width)),
+        LiveEntryKind::Assistant => wrap_lines(lines, &assistant_wrap_spec(width)),
+        LiveEntryKind::Bash | LiveEntryKind::Other => lines.to_vec(),
+    };
+    let mut rendered = Vec::with_capacity(lines.len() + 1);
+    rendered.push(Line::default());
+    rendered.extend(lines);
+    rendered
+}
+
+fn user_wrap_spec(columns: usize) -> WrapSpec {
+    WrapSpec {
+        wrap_width: columns.saturating_sub(1),
+        fill_width: columns,
+        first_prefix: vec![Span::styled("❯ ", Style::default().fg(SUBTLE_TEXT_COLOR))],
+        continuation_prefix: Vec::new(),
+        fill_style: Some(Style::default().bg(USER_MESSAGE_BACKGROUND)),
+    }
+}
+
+fn assistant_wrap_spec(columns: usize) -> WrapSpec {
+    WrapSpec {
+        wrap_width: columns.saturating_sub(2),
+        fill_width: columns.saturating_sub(2),
+        first_prefix: vec![Span::styled(
+            assistant_dot_with_space(),
+            Style::default().fg(ASSISTANT_TEXT_COLOR),
+        )],
+        continuation_prefix: vec![Span::raw("  ")],
+        fill_style: None,
+    }
+}
+
+fn assistant_dot_with_space() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⏺ "
+    } else {
+        "● "
     }
 }
 

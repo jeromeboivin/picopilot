@@ -16,7 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthChar;
@@ -32,8 +32,8 @@ use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
 use crate::screen_model::{
-    enter_main_screen, restore_main_screen, terminal_options, LiveEntryKind, Platform,
-    ScreenChange, ScreenEntry, ScreenModel,
+    enter_main_screen, render_entry_lines, restore_main_screen, terminal_options, LiveEntryKind,
+    Platform, ScreenChange, ScreenEntry, ScreenModel,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -291,14 +291,6 @@ impl App {
         &self.entries
     }
 
-    pub fn screen_entries(&self) -> Vec<ScreenEntry> {
-        self.entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, _)| self.screen_entry_at(index))
-            .collect()
-    }
-
     pub fn take_screen_changes(&mut self) -> Vec<ScreenChange> {
         self.pending_screen_changes.drain(..).collect()
     }
@@ -325,9 +317,8 @@ impl App {
     fn screen_entry_at(&self, index: usize) -> Option<ScreenEntry> {
         let entry = self.entries.get(index)?;
         let (kind, completed) = match entry {
-            ChatEntry::User(_) | ChatEntry::Diagnostic(_) | ChatEntry::Banner { .. } => {
-                (LiveEntryKind::Other, true)
-            }
+            ChatEntry::User(_) => (LiveEntryKind::User, true),
+            ChatEntry::Diagnostic(_) | ChatEntry::Banner { .. } => (LiveEntryKind::Other, true),
             ChatEntry::Assistant { message_id, .. } => (
                 LiveEntryKind::Assistant,
                 !self.assistant_live_ids.contains(message_id),
@@ -3121,7 +3112,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 fn draw_live_chat(frame: &mut Frame, app: &App, screen: &ScreenModel, area: Rect) {
-    let mut lines = screen.visible_live_lines(Platform::current(), area.height as usize);
+    let mut lines = screen.visible_live_lines_at_width(
+        Platform::current(),
+        area.width as usize,
+        area.height as usize,
+    );
     if app.status.busy {
         if !lines.is_empty() {
             lines.push(Line::default());
@@ -3145,34 +3140,36 @@ fn draw_live_chat(frame: &mut Frame, app: &App, screen: &ScreenModel, area: Rect
 }
 
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default().padding(Padding::horizontal(2));
-    let inner_width = area.width.saturating_sub(4);
-    let lines = chat_lines(app);
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    let scroll = paragraph
-        .line_count(inner_width)
+    let lines = chat_lines_at_width(app, area.width as usize);
+    let scroll = lines
+        .len()
         .saturating_sub(area.height as usize)
         .min(u16::MAX as usize) as u16;
-    frame.render_widget(paragraph.scroll((scroll, 0)), area);
+    let paragraph = Paragraph::new(lines).scroll((scroll, 0));
+    frame.render_widget(paragraph, area);
 }
 
+#[cfg(test)]
 fn chat_lines(app: &App) -> Vec<Line<'static>> {
+    chat_lines_at_width(app, 80)
+}
+
+fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for entry in app.entries() {
         let rendered = entry_lines(entry, app.show_internals);
         if rendered.is_empty() {
             continue;
         }
-        lines.extend(rendered);
-        lines.push(Line::default());
+        let kind = match entry {
+            ChatEntry::User(_) => LiveEntryKind::User,
+            ChatEntry::Assistant { .. } => LiveEntryKind::Assistant,
+            _ => LiveEntryKind::Other,
+        };
+        lines.extend(render_entry_lines(kind, &rendered, width));
     }
-    lines.pop();
     if app.status.busy {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
+        lines.push(Line::default());
         lines.push(Line::from(vec![
             Span::styled(
                 "✻ ",
@@ -3193,14 +3190,7 @@ fn chat_lines(app: &App) -> Vec<Line<'static>> {
 
 fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
     match entry {
-        ChatEntry::User(content) => markdown_prefixed_lines(
-            "❯ ",
-            content,
-            Style::default()
-                .fg(Color::Rgb(240, 177, 94))
-                .add_modifier(Modifier::BOLD),
-            Style::default(),
-        ),
+        ChatEntry::User(content) => markdown_lines(content, Style::default()),
         ChatEntry::Diagnostic(message) if show_internals => labeled_lines(
             "debug",
             message,
@@ -3209,12 +3199,10 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         ChatEntry::Diagnostic(_) => Vec::new(),
         ChatEntry::Assistant {
             content, agent_id, ..
-        } => markdown_prefixed_lines(
-            &speaker_prefix("●", agent_id.as_deref()),
-            content,
-            Style::default().fg(Color::Rgb(154, 230, 180)),
-            Style::default(),
-        ),
+        } => {
+            let _ = agent_id;
+            markdown_lines(content, Style::default())
+        }
         ChatEntry::Reasoning {
             content, agent_id, ..
         } => markdown_prefixed_lines(
@@ -3893,8 +3881,8 @@ mod tests {
         app.add_diagnostic("session resumed");
 
         let rendered = super::chat_lines(&app);
-        assert_eq!(rendered.len(), 1);
-        assert!(rendered[0].to_string().contains("internal chain"));
+        assert_eq!(rendered.len(), 2);
+        assert!(rendered[1].to_string().contains("internal chain"));
         assert_eq!(
             handle_key(
                 &mut app,
@@ -3936,11 +3924,11 @@ mod tests {
         });
 
         let lines = super::chat_lines(&app);
-        assert_eq!(lines[0].to_string(), "❯ Inspect this");
-        assert_eq!(lines[2].to_string(), "   Checking the files");
-        assert_eq!(lines[4].to_string(), "● Done");
-        assert_eq!(lines[2].spans[1].style.fg, Some(Color::DarkGray));
-        assert_eq!(lines[6].to_string(), "✻ Copilot is responding…");
+        assert!(lines[1].to_string().starts_with("❯ Inspect this"));
+        assert_eq!(lines[3].to_string(), "   Checking the files");
+        assert_eq!(lines[5].to_string(), "● Done");
+        assert_eq!(lines[3].spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[7].to_string(), "✻ Copilot is responding…");
     }
 
     #[test]

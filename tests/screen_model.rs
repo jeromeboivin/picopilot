@@ -1,10 +1,11 @@
 use picopilot::events::EventUpdate;
 use picopilot::screen_model::{
-    enter_main_screen, live_preview_enabled, terminal_options, LiveEntryKind, Platform,
-    ScreenChange, ScreenModel, FIXED_LIVE_REGION_HEIGHT,
+    enter_main_screen, live_preview_enabled, render_entry_lines, terminal_options, LiveEntryKind,
+    Platform, ScreenChange, ScreenEntry, ScreenModel, FIXED_LIVE_REGION_HEIGHT,
 };
 use picopilot::tui::App;
 use ratatui::backend::TestBackend;
+use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, Viewport};
@@ -90,8 +91,8 @@ fn completing_a_live_entry_inserts_its_exact_lines_before_the_viewport() {
                 .collect::<String>()
         })
         .collect::<Vec<_>>();
-    assert!(rows.iter().any(|row| row.starts_with("first line")));
-    assert!(rows.iter().any(|row| row.starts_with("second line")));
+    assert!(rows.iter().any(|row| row.contains("first line")));
+    assert!(rows.iter().any(|row| row.contains("second line")));
     assert_eq!(screen.committed_count(), 1);
     assert!(screen.is_committed("message-1"));
 }
@@ -143,6 +144,24 @@ fn live_entries_can_update_until_completion() {
         .commit_live(&mut terminal, "bash-1")
         .expect("live entry should commit");
     assert!(!screen.update_live("bash-1", vec![Line::from("progress 2")]));
+}
+
+#[test]
+fn explicit_commit_cannot_bypass_the_front_of_the_queue() {
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let mut screen = ScreenModel::default();
+    screen
+        .start_live("front", LiveEntryKind::Assistant, vec![Line::from("front")])
+        .expect("front entry should start");
+    screen
+        .start_live("behind", LiveEntryKind::Other, vec![Line::from("behind")])
+        .expect("behind entry should start");
+
+    assert!(!screen
+        .commit_live(&mut terminal, "behind")
+        .expect("out-of-order commit should be rejected"));
+    assert_eq!(screen.live_entries().len(), 2);
 }
 
 #[test]
@@ -345,12 +364,50 @@ fn later_completed_entries_wait_for_earlier_live_entries() {
 }
 
 #[test]
-#[ignore = "known until the shared in-tree wrapper replaces Paragraph wrapping"]
-fn committed_long_lines_need_wrapped_height_before_insert() {
-    let logical_height = 1;
-    let wrapped_height = Paragraph::new(vec![Line::from("0123456789ABCDEFGHIJ")]).line_count(10);
-    assert_ne!(logical_height, wrapped_height);
+fn removing_front_live_entry_commits_completed_entries_behind_it() {
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let mut screen = ScreenModel::default();
 
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::new(
+                "live-front",
+                LiveEntryKind::Assistant,
+                vec![Line::from("still running")],
+                false,
+            )),
+        )
+        .expect("live entry should apply");
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::new(
+                "completed-behind",
+                LiveEntryKind::Other,
+                vec![Line::from("completed")],
+                true,
+            )),
+        )
+        .expect("completed entry should apply");
+
+    assert_eq!(screen.committed_count(), 0);
+
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Remove("live-front".to_string()),
+        )
+        .expect("front entry should be removed");
+
+    assert_eq!(screen.committed_count(), 1);
+    assert!(screen.is_committed("completed-behind"));
+    assert!(terminal_text(&terminal).contains("completed"));
+}
+
+#[test]
+fn committed_long_lines_need_wrapped_height_before_insert() {
     let mut terminal = Terminal::with_options(TestBackend::new(10, 24), terminal_options())
         .expect("inline terminal should initialize");
     let mut screen = ScreenModel::default();
@@ -369,11 +426,53 @@ fn committed_long_lines_need_wrapped_height_before_insert() {
         .draw(|frame| screen.draw_live(frame, Platform::default()))
         .expect("live viewport should redraw");
 
-    assert_eq!(
-        screen.committed_entries()[0].height() as usize,
-        logical_height
-    );
-    assert!(terminal_text(&terminal).contains("ABCDEFGHIJ"));
+    assert_eq!(screen.committed_entries()[0].height() as usize, 5);
+    assert!(terminal_text(&terminal).contains("012345"));
+    assert!(terminal_text(&terminal).contains("6789AB"));
+    assert!(terminal_text(&terminal).contains("CDEFGH"));
+    assert!(terminal_text(&terminal).contains("IJ"));
+}
+
+#[test]
+fn transcript_visual_buffers_hold_surface_shapes_at_focus_widths() {
+    let body = vec![Line::from("alpha beta gamma")];
+    let user_fill = Style::default().bg(Color::Rgb(55, 55, 55));
+    let assistant_dot = if cfg!(target_os = "macos") {
+        "⏺ "
+    } else {
+        "● "
+    };
+
+    for width in [1, 2, 10, 40, 80] {
+        let user_lines = render_entry_lines(LiveEntryKind::User, &body, width);
+        let assistant_lines = render_entry_lines(LiveEntryKind::Assistant, &body, width);
+
+        assert!(!user_lines.is_empty());
+        assert!(!assistant_lines.is_empty());
+        assert_eq!(user_lines[0], Line::default());
+        assert_eq!(assistant_lines[0], Line::default());
+        if width >= 3 {
+            assert_eq!(user_lines[1].width(), width);
+            assert!(user_lines[1].to_string().starts_with("❯ "));
+            assert!(assistant_lines[1].to_string().starts_with(assistant_dot));
+            assert!(user_lines[1]
+                .spans
+                .iter()
+                .any(|span| span.style == user_fill));
+        } else {
+            assert!(user_lines[1].width() >= width);
+            assert!(assistant_lines[1].width() >= width);
+        }
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width as u16, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(user_lines.clone()), frame.area());
+                frame.render_widget(Paragraph::new(assistant_lines.clone()), frame.area());
+            })
+            .expect("surface should render at the focused width");
+    }
 }
 
 #[test]
