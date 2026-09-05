@@ -477,6 +477,138 @@ fn test_backend_never_receives_untrusted_escape_or_control_characters() {
 }
 
 #[test]
+fn tool_progress_starts_fresh_after_partial_tool_output() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-progress-isolation".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-progress-isolation".to_string(),
+        content: "prefix \u{1b}[3".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-progress-isolation".to_string(),
+        content: "complete".to_string(),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::ToolProgress { content, .. } if content == "complete"
+    )));
+}
+
+#[test]
+fn tool_progress_tab_uses_its_own_columns() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-progress-tab".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-progress-tab".to_string(),
+        content: "1234567".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-progress-tab".to_string(),
+        content: "\tcomplete".to_string(),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::ToolProgress { content, .. } if content == "        complete"
+    )));
+}
+
+#[test]
+fn concurrent_tool_output_streams_remain_independent() {
+    let mut app = App::new(None);
+    for tool_call_id in ["tool-output-red", "tool-output-green"] {
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: "bash".to_string(),
+            arguments: None,
+            agent_id: None,
+        });
+    }
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-red".to_string(),
+        content: "red \u{1b}[31".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-green".to_string(),
+        content: "green \u{1b}[32".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-red".to_string(),
+        content: "mR".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-green".to_string(),
+        content: "mG".to_string(),
+        agent_id: None,
+    });
+
+    let progress = app
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::ToolProgress {
+                tool_call_id,
+                content,
+                ..
+            } => Some((tool_call_id.as_str(), content.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(progress.contains(&("tool-output-red", "red \u{1b}[31mR")));
+    assert!(progress.contains(&("tool-output-green", "green \u{1b}[32mG")));
+}
+
+#[test]
+fn progress_does_not_corrupt_a_later_output_continuation() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-output-continuation".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-continuation".to_string(),
+        content: "prefix \u{1b}[31".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-output-continuation".to_string(),
+        content: "complete".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-continuation".to_string(),
+        content: "mred".to_string(),
+        agent_id: None,
+    });
+
+    assert!(app.entries().iter().any(|entry| matches!(
+        entry,
+        ChatEntry::ToolProgress { content, .. }
+            if content == "complete\u{1b}[31mred"
+    )));
+}
+
+#[test]
 fn non_assistant_entries_keep_the_pre_rendered_payload_path() {
     let mut app = App::new(None);
     app.add_user_message("pre-rendered user".to_string());

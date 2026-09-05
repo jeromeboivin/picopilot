@@ -12,7 +12,7 @@ fn sanitizer_enforces_the_input_allowlist() {
         (
             "preserves_printable_unicode_and_width_inputs",
             "e\u{301} 👩\u{200d}💻 界\tX",
-            "e\u{301} 👩\u{200d}💻 界       X",
+            "e\u{301} 👩\u{200d}💻 界 X",
         ),
         (
             "keeps_supported_sgr",
@@ -175,4 +175,35 @@ fn underline_color_payloads_are_removed_without_dropping_other_sgr() {
         sanitize_ansi("\u{1b}[58;5;42;31mred\u{1b}[59m\u{1b}[58;2;1;2;3;32mgreen"),
         "\u{1b}[31mred\u{1b}[32mgreen"
     );
+}
+
+#[test]
+fn grapheme_width_stays_correct_when_combining_and_zwj_sequences_split() {
+    let input = "e\u{301} 👩\u{200d}💻 界\tX";
+    let expected = "e\u{301} 👩\u{200d}💻 界 X";
+
+    assert_eq!(sanitize_ansi(input), expected);
+
+    for split in input
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(input.len()))
+    {
+        let (first, second) = input.split_at(split);
+        let mut sanitizer = AnsiSanitizer::default();
+        let mut actual = sanitizer.push(first);
+        actual.push_str(&sanitizer.push(second));
+        actual.push_str(&sanitizer.finish());
+        assert_eq!(actual, expected, "split at byte {split}");
+    }
+}
+
+#[test]
+fn reset_discards_pending_grapheme_width() {
+    let mut sanitizer = AnsiSanitizer::default();
+    assert_eq!(sanitizer.push("e\u{301}"), "e\u{301}");
+
+    sanitizer.reset();
+
+    assert_eq!(sanitizer.push("\tX"), "        X");
 }

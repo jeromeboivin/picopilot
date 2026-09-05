@@ -219,7 +219,7 @@ fn next_screen_namespace() -> u64 {
 enum AnsiStreamId {
     Assistant(String),
     Reasoning(String),
-    Tool(String),
+    ToolOutput(String),
 }
 
 #[derive(Debug, Default)]
@@ -606,14 +606,17 @@ impl App {
 
     pub fn mark_in_flight_tools_unknown(&mut self) {
         for index in 0..self.entries.len() {
-            if let ChatEntry::Tool {
-                success,
-                state,
-                unknown,
-                ..
-            } = &mut self.entries[index]
-            {
-                if success.is_none() {
+            let tool_call_id = match self.entries.get(index) {
+                Some(ChatEntry::Tool {
+                    tool_call_id,
+                    success: None,
+                    ..
+                }) => Some(tool_call_id.clone()),
+                _ => None,
+            };
+            if let Some(tool_call_id) = tool_call_id {
+                self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id));
+                if let ChatEntry::Tool { state, unknown, .. } = &mut self.entries[index] {
                     *state = ToolCallState::Unknown;
                     *unknown = true;
                     self.queue_screen_change(index);
@@ -1023,7 +1026,7 @@ impl App {
                 agent_id,
             } => {
                 if self.tool_header_index(&tool_call_id).is_none() {
-                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id.clone()));
+                    self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id.clone()));
                     let tool_name = sanitize_plain(&tool_name);
                     let arguments = arguments.map(|mut arguments| {
                         sanitize_json_value(&mut arguments);
@@ -1060,11 +1063,13 @@ impl App {
                     .iter()
                     .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
                 else {
-                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id));
+                    self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id));
                     return;
                 };
-                let content =
-                    self.sanitize_streamed_ansi(AnsiStreamId::Tool(tool_call_id.clone()), &content);
+                let content = self.sanitize_streamed_ansi(
+                    AnsiStreamId::ToolOutput(tool_call_id.clone()),
+                    &content,
+                );
                 if let ChatEntry::ToolProgress {
                     content: current, ..
                 } = &mut self.entries[index]
@@ -1083,11 +1088,10 @@ impl App {
                     .iter()
                     .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
                 else {
-                    self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id));
+                    self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id));
                     return;
                 };
-                let content =
-                    self.sanitize_streamed_ansi(AnsiStreamId::Tool(tool_call_id.clone()), &content);
+                let content = sanitize_ansi(&content);
                 if let ChatEntry::ToolProgress {
                     content: current, ..
                 } = &mut self.entries[index]
@@ -1229,7 +1233,7 @@ impl App {
         message: Option<String>,
         cancelled: bool,
     ) {
-        self.finish_ansi_stream(AnsiStreamId::Tool(tool_call_id.clone()));
+        self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id.clone()));
         let Some(index) = self.tool_header_index(&tool_call_id) else {
             return;
         };
@@ -2548,10 +2552,18 @@ fn status_bar(app: &App) -> Paragraph<'static> {
     let project = app
         .project_name
         .as_deref()
-        .map(|project| format!("{project}  ·  "))
+        .map(|project| format!("{}  ·  ", sanitize_plain(project)))
         .unwrap_or_default();
-    let model = status.model.as_deref().unwrap_or("auto");
-    let reasoning = status.reasoning_effort.as_deref().unwrap_or("default");
+    let model = status
+        .model
+        .as_deref()
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "auto".to_string());
+    let reasoning = status
+        .reasoning_effort
+        .as_deref()
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "default".to_string());
     let mode = if status.busy { "working" } else { "ready" };
     let context = status
         .usage
@@ -2800,9 +2812,9 @@ fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
         };
         let prompt = format!(
             "{} ({}): {} | {choices}",
-            request.category.label(),
-            request.tool_name,
-            request.details
+            sanitize_plain(request.category.label()),
+            sanitize_plain(&request.tool_name),
+            sanitize_plain(&request.details)
         );
         return Paragraph::new(prompt)
             .style(Style::default().fg(Color::Rgb(255, 219, 129)))
@@ -2848,10 +2860,24 @@ fn draw_completion(frame: &mut Frame, app: &App, input_area: Rect) {
         .selected_item
         .saturating_sub(visible_count.saturating_sub(1))
         .min(completion.candidates.len().saturating_sub(visible_count));
-    let desired_width = completion
+    let displayed_candidates = completion
         .candidates
         .iter()
-        .map(|candidate| candidate.command.len() + candidate.description.len() + 5)
+        .map(|candidate| {
+            (
+                sanitize_plain(&candidate.command),
+                sanitize_plain(&candidate.description),
+            )
+        })
+        .collect::<Vec<_>>();
+    let command_width = displayed_candidates
+        .iter()
+        .map(|(command, _)| command.len())
+        .max()
+        .unwrap_or(1);
+    let desired_width = displayed_candidates
+        .iter()
+        .map(|(command, description)| command.len() + description.len() + 5)
         .max()
         .unwrap_or(20)
         .min(100) as u16;
@@ -2863,22 +2889,16 @@ fn draw_completion(frame: &mut Frame, app: &App, input_area: Rect) {
     let area = Rect::new(x, y, width, height);
     frame.render_widget(ratatui::widgets::Clear, area);
 
-    let items = completion
-        .candidates
+    let items = displayed_candidates
         .iter()
         .skip(first_visible)
         .take(visible_count)
-        .map(|candidate| {
+        .map(|(command, description)| {
             ListItem::new(format!(
                 " {:<width$} {}",
-                candidate.command,
-                candidate.description,
-                width = completion
-                    .candidates
-                    .iter()
-                    .map(|item| item.command.len())
-                    .max()
-                    .unwrap_or(1)
+                command,
+                description,
+                width = command_width
             ))
         })
         .collect::<Vec<_>>();
@@ -2906,10 +2926,10 @@ fn draw_modal(frame: &mut Frame, app: &App) {
         frame.render_widget(ratatui::widgets::Clear, area);
         let details = app
             .pending_approval()
-            .map(|request| request.details.as_str())
-            .unwrap_or("No approval details available.");
+            .map(|request| sanitize_plain(&request.details))
+            .unwrap_or_else(|| "No approval details available.".to_string());
         frame.render_widget(
-            Paragraph::new(details.to_string())
+            Paragraph::new(details)
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
@@ -2988,8 +3008,12 @@ fn draw_modal(frame: &mut Frame, app: &App) {
             .map(|session| {
                 format!(
                     "{} | {}",
-                    session.modified_time,
-                    session.summary.as_deref().unwrap_or("untitled session")
+                    sanitize_plain(&session.modified_time),
+                    session
+                        .summary
+                        .as_deref()
+                        .map(sanitize_plain)
+                        .unwrap_or_else(|| "untitled session".to_string())
                 )
             })
             .collect(),
@@ -3132,7 +3156,7 @@ fn draw_skill_picker(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 "[ ]"
             };
-            ListItem::new(format!(" {checkbox} {}", skill.name))
+            ListItem::new(format!(" {checkbox} {}", sanitize_plain(&skill.name)))
         })
         .collect::<Vec<_>>();
     let list = List::new(items).highlight_symbol("› ").highlight_style(
@@ -3168,23 +3192,29 @@ fn skill_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
     };
     vec![
         Line::from(Span::styled(
-            skill.name.clone(),
+            sanitize_plain(&skill.name),
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(format!("Description: {}", skill.description)),
+        Line::from(format!(
+            "Description: {}",
+            sanitize_plain(&skill.description)
+        )),
         Line::from(format!(
             "Source: {} | {}",
-            skill.root.source,
-            skill.root.path.display()
+            sanitize_plain(&skill.root.source.to_string()),
+            sanitize_plain(&skill.root.path.display().to_string())
         )),
-        Line::from(format!("Directory: {}", skill.directory.display())),
+        Line::from(format!(
+            "Directory: {}",
+            sanitize_plain(&skill.directory.display().to_string())
+        )),
     ]
 }
 
 fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
         "{:<28}  {:<9}  {} tokens",
-        model.name,
+        sanitize_plain(&model.name),
         model_cost_label_for(model, is_local),
         model_context_label(model)
     )
@@ -3198,27 +3228,43 @@ fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
     let reasoning = app
         .picker_reasoning_effort
         .as_deref()
-        .unwrap_or("model default");
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "model default".to_string());
     let reasoning_values = model
         .supported_reasoning_efforts
         .as_ref()
         .filter(|values| !values.is_empty())
-        .map(|values| values.join(" · "))
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| sanitize_plain(value))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
         .unwrap_or_else(|| "unavailable".to_string());
     let context = app
         .picker_context_tier
         .as_deref()
-        .unwrap_or("model default");
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "model default".to_string());
     let context_values = crate::config::supported_context_tiers(model);
     let context_values = if context_values.is_empty() {
         "unavailable".to_string()
     } else {
-        context_values.join(" · ")
+        context_values
+            .iter()
+            .map(|value| sanitize_plain(value))
+            .collect::<Vec<_>>()
+            .join(" · ")
     };
 
     let mut lines = vec![
         Line::from(Span::styled(
-            format!("{}  ({})", model.name, model.id),
+            format!(
+                "{}  ({})",
+                sanitize_plain(&model.name),
+                sanitize_plain(&model.id)
+            ),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(format!(
@@ -3297,8 +3343,8 @@ fn todo_detail_lines(app: &App) -> Vec<Line<'static>> {
                         .rows
                         .iter()
                         .find(|candidate| candidate.id == dependency.depends_on)
-                        .map(|candidate| candidate.title.clone())
-                        .unwrap_or_else(|| dependency.depends_on.clone())
+                        .map(|candidate| sanitize_plain(&candidate.title))
+                        .unwrap_or_else(|| sanitize_plain(&dependency.depends_on))
                 })
                 .collect();
             let dependency_label = if blocked_by.is_empty() {
@@ -3308,7 +3354,9 @@ fn todo_detail_lines(app: &App) -> Vec<Line<'static>> {
             };
             Line::from(format!(
                 "[{}] {}{}",
-                row.status, row.title, dependency_label
+                sanitize_plain(&row.status),
+                sanitize_plain(&row.title),
+                dependency_label
             ))
         })
         .collect()
@@ -3342,7 +3390,7 @@ fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
             "Attribution: {} / {} tokens ({})",
             format_count(context.total_tokens),
             format_count(context.prompt_token_limit),
-            context.model_id
+            sanitize_plain(&context.model_id)
         )));
         for category in &context.categories {
             let percentage = if context.total_tokens > 0 {
@@ -3352,7 +3400,7 @@ fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
             };
             lines.push(Line::from(format!(
                 "  {}: {} ({percentage:.1}%)",
-                category.label,
+                sanitize_plain(&category.label),
                 format_count(category.tokens)
             )));
         }
@@ -4076,7 +4124,11 @@ mod tests {
         skill_selection_for_invocation, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
         ModelSelection, SendPath, UiAction,
     };
-    use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
+    use crate::events::{
+        ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
+        TodoRowSnapshot, TodoSnapshot, UsageMetricsSnapshot,
+    };
+    use crate::permissions::{ApprovalCategory, ApprovalRequest};
     use crate::screen_model::{render_entry_lines, render_transcript_payload, ScreenChange};
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -4627,6 +4679,127 @@ mod tests {
         assert!(rendered
             .contains("picopilot  ·  gpt-5  ·  high reasoning  ·  autopilot ready  ·  tools 7/7"));
         assert!(!rendered.contains("C:\\dev\\picopilot"));
+    }
+
+    #[test]
+    fn hostile_display_surfaces_never_write_controls_to_the_backend() {
+        const HOSTILE: &str = "hostile \u{1b}[31mred\u{1b}]0;title\u{07} bell\u{009b}2J";
+
+        let assert_safe = |surface: &str, app: &App| {
+            let mut terminal = Terminal::new(TestBackend::new(160, 30)).expect("test terminal");
+            terminal
+                .draw(|frame| draw(frame, app))
+                .expect("surface should render");
+            assert!(
+                terminal.backend().buffer().content().iter().all(|cell| {
+                    cell.symbol().chars().all(|character| {
+                        !character.is_control() && !(('\u{0080}'..='\u{009f}').contains(&character))
+                    })
+                }),
+                "surface {surface} wrote a prohibited control"
+            );
+        };
+
+        let mut status = App::new_with_working_directory(
+            Some(HOSTILE.to_string()),
+            &PathBuf::from(format!("C:\\project\\{HOSTILE}")),
+        );
+        status.set_reasoning_effort(Some(HOSTILE.to_string()));
+        assert_safe("status", &status);
+
+        let mut sessions = App::new(None);
+        sessions.set_sessions(vec![SessionMetadata {
+            session_id: SessionId::from(HOSTILE),
+            start_time: HOSTILE.to_string(),
+            modified_time: HOSTILE.to_string(),
+            summary: Some(HOSTILE.to_string()),
+            is_remote: false,
+        }]);
+        assert_safe("sessions", &sessions);
+
+        let mut models = App::new(None);
+        models.set_models(vec![Model {
+            id: HOSTILE.to_string(),
+            name: HOSTILE.to_string(),
+            default_reasoning_effort: Some(HOSTILE.to_string()),
+            supported_reasoning_efforts: Some(vec![HOSTILE.to_string()]),
+            supported_context_tiers: Some(vec![HOSTILE.to_string()]),
+            ..Model::default()
+        }]);
+        assert_safe("models", &models);
+
+        let mut usage = App::new(None);
+        usage.set_usage(
+            UsageMetricsSnapshot {
+                total_nano_aiu: Some(1.0),
+                total_premium_request_cost: 2.0,
+                total_user_requests: 3,
+                total_api_duration_ms: 4,
+                current_model: Some(HOSTILE.to_string()),
+            },
+            Some(ContextAttributionSnapshot {
+                model_id: HOSTILE.to_string(),
+                total_tokens: 10,
+                prompt_token_limit: 20,
+                categories: vec![ContextCategorySnapshot {
+                    label: HOSTILE.to_string(),
+                    tokens: 10,
+                }],
+                compactions: 1,
+            }),
+        );
+        assert_safe("usage", &usage);
+
+        let mut todos = App::new(None);
+        todos.set_fleet_active(true);
+        todos.set_todos(TodoSnapshot {
+            rows: vec![TodoRowSnapshot {
+                id: "todo-1".to_string(),
+                title: HOSTILE.to_string(),
+                description: HOSTILE.to_string(),
+                status: HOSTILE.to_string(),
+            }],
+            dependencies: vec![TodoDependencySnapshot {
+                todo_id: "todo-1".to_string(),
+                depends_on: HOSTILE.to_string(),
+            }],
+        });
+        assert_safe("todos", &todos);
+
+        let skill_root = SkillRoot {
+            path: PathBuf::from(HOSTILE),
+            source: SkillRootSource::Project,
+        };
+        let catalog = SkillCatalog::from_parts(
+            vec![skill_root.clone()],
+            vec![Skill {
+                name: HOSTILE.to_string(),
+                description: HOSTILE.to_string(),
+                user_invocable: true,
+                directory: PathBuf::from(format!("{HOSTILE}\\skill")),
+                root: skill_root,
+            }],
+            Vec::new(),
+        );
+        let mut skills = App::new(None);
+        skills.set_skill_catalog(catalog.clone());
+        skills.open_skill_picker();
+        assert_safe("skills", &skills);
+
+        let mut completion = App::new(None);
+        completion.set_skill_catalog(catalog);
+        completion.push_input('/');
+        assert_safe("completion", &completion);
+
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        let mut approval = App::new(None);
+        approval.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: HOSTILE.to_string(),
+            details: HOSTILE.to_string(),
+            respond_to,
+        });
+        assert_safe("approval", &approval);
     }
 
     #[test]

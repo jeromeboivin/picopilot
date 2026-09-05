@@ -3,14 +3,17 @@ use std::mem;
 use ansi_to_tui::IntoText;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 const MAX_CSI_PARAMETER_BYTES: usize = 256;
+const MAX_PENDING_GRAPHEME_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Default)]
 pub struct AnsiSanitizer {
     state: State,
     column: usize,
+    pending_grapheme: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,6 +51,7 @@ impl AnsiSanitizer {
     pub fn reset(&mut self) {
         self.state = State::Ground;
         self.column = 0;
+        self.pending_grapheme.clear();
     }
 
     fn push_character(&mut self, character: char, output: &mut String) {
@@ -76,22 +80,55 @@ impl AnsiSanitizer {
             '\u{009c}' => {}
             '\n' => {
                 output.push('\n');
+                self.pending_grapheme.clear();
                 self.column = 0;
             }
             '\t' => {
+                self.flush_pending_grapheme();
                 let spaces = 8 - (self.column % 8);
                 output.push_str(&" ".repeat(spaces));
                 self.column += spaces;
             }
             '\r' => {}
             character if is_c1_control(character) || character.is_control() => {}
-            character => {
-                output.push(character);
-                self.column = self
-                    .column
-                    .saturating_add(UnicodeWidthChar::width(character).unwrap_or(0));
-            }
+            character => self.push_printable(character, output),
         }
+    }
+
+    fn push_printable(&mut self, character: char, output: &mut String) {
+        output.push(character);
+        if self.pending_grapheme.is_empty() {
+            self.pending_grapheme.push(character);
+            return;
+        }
+
+        let previous_len = self.pending_grapheme.len();
+        if previous_len >= MAX_PENDING_GRAPHEME_BYTES {
+            self.flush_pending_grapheme();
+            self.pending_grapheme.push(character);
+            return;
+        }
+
+        let mut candidate = self.pending_grapheme.clone();
+        candidate.push(character);
+        let starts_new_grapheme = candidate
+            .graphemes(true)
+            .next()
+            .is_some_and(|grapheme| grapheme.len() == previous_len);
+        if starts_new_grapheme {
+            self.flush_pending_grapheme();
+        }
+        self.pending_grapheme.push(character);
+    }
+
+    fn flush_pending_grapheme(&mut self) {
+        if self.pending_grapheme.is_empty() {
+            return;
+        }
+        self.column = self
+            .column
+            .saturating_add(UnicodeWidthStr::width(self.pending_grapheme.as_str()));
+        self.pending_grapheme.clear();
     }
 
     fn push_escape(&mut self, character: char) {
