@@ -34,6 +34,58 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
         .collect()
 }
 
+#[test]
+fn assistant_markdown_visual_buffer_fixtures_at_required_widths() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-markdown-fixture".to_string(),
+        content: "# Ready\n\nText **bold**.\n\n```rust\nlet value = 42;\n```".to_string(),
+        agent_id: None,
+    });
+    let changes = app.take_screen_changes();
+    let entry = changes
+        .iter()
+        .find_map(|change| match change {
+            ScreenChange::Upsert(entry) => Some(entry),
+            ScreenChange::Reset | ScreenChange::Remove(_) => None,
+        })
+        .expect("assistant fixture screen entry");
+
+    let expected = [
+        (
+            10,
+            vec![
+                "",
+                "● Ready",
+                "  ",
+                "  Text ",
+                "  bold.",
+                "  let ",
+                "  value = ",
+                "  42;",
+            ],
+        ),
+        (
+            40,
+            vec!["", "● Ready", "  ", "  Text bold.", "  let value = 42;"],
+        ),
+        (
+            80,
+            vec!["", "● Ready", "  ", "  Text bold.", "  let value = 42;"],
+        ),
+    ];
+    for (width, expected) in expected {
+        let actual = render_entry_lines(entry.kind(), entry.lines(), width)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            expected.into_iter().map(str::to_string).collect::<Vec<_>>()
+        );
+    }
+}
+
 fn updated_entry_id(change: &ScreenChange) -> Option<picopilot::screen_model::TranscriptEntryId> {
     match change {
         ScreenChange::Upsert(entry) => Some(entry.id().to_string()),

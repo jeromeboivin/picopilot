@@ -28,6 +28,7 @@ use github_copilot_sdk::subscription::RecvErrorKind;
 use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata, SetModelOptions};
 
 use crate::input_editor::InputEditor;
+use crate::markdown::assistant_markdown_lines;
 use crate::palette;
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
@@ -3217,7 +3218,7 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         ),
         ChatEntry::Diagnostic(_) => Vec::new(),
         ChatEntry::Assistant { content, .. } => {
-            markdown_lines(content, Style::default().fg(palette::TEXT))
+            assistant_markdown_lines(content, Style::default().fg(palette::TEXT))
         }
         ChatEntry::Reasoning {
             content, agent_id, ..
@@ -3767,6 +3768,7 @@ mod tests {
         ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
+    use crate::screen_model::{render_entry_lines, ScreenChange};
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
@@ -4129,6 +4131,107 @@ mod tests {
             .contains(Modifier::BOLD));
         assert_eq!(lines[1].spans[1].style.fg, None);
         assert_eq!(lines[2].spans[1].style.fg, Some(Color::Rgb(242, 204, 96)));
+    }
+
+    #[test]
+    fn assistant_h1_uses_inherited_heading_modifiers_and_two_trailing_newlines() {
+        let lines = super::entry_lines(
+            &ChatEntry::Assistant {
+                message_id: "message-heading".to_string(),
+                content: "# Result".to_string(),
+                agent_id: None,
+            },
+            false,
+        );
+
+        assert_eq!(
+            lines.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["Result", ""]
+        );
+        let style = lines[0].spans[0].style;
+        assert_eq!(style.fg, Some(crate::palette::TEXT));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn assistant_markdown_changes_do_not_change_user_markdown() {
+        let lines = super::entry_lines(
+            &ChatEntry::User("~~literal~~ and `code`".to_string()),
+            false,
+        );
+
+        assert_eq!(lines[0].to_string(), "literal and code");
+        assert!(lines[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT));
+        let code = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content.as_ref() == "code")
+            .expect("user inline code span");
+        assert_eq!(code.style.fg, Some(Color::Rgb(242, 204, 96)));
+    }
+
+    #[test]
+    fn nested_assistant_markdown_keeps_semantics_without_transcript_prefixes() {
+        let lines = super::entry_lines(
+            &ChatEntry::Assistant {
+                message_id: "nested-heading".to_string(),
+                content: "# Nested".to_string(),
+                agent_id: Some("agent-1".to_string()),
+            },
+            false,
+        );
+        let rendered = render_entry_lines(
+            crate::screen_model::LiveEntryKind::AssistantNested,
+            &lines,
+            40,
+        );
+
+        assert_eq!(
+            rendered.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec!["Nested", ""]
+        );
+        assert!(rendered
+            .iter()
+            .flat_map(|line| &line.spans)
+            .all(|span| !span.content.contains('●')));
+    }
+
+    #[test]
+    fn live_and_committed_assistant_code_blocks_have_identical_rows() {
+        let content = "```rust\nfn main() { let value = 42; }\n```";
+        let mut app = App::new(None);
+        app.apply(EventUpdate::AssistantDelta {
+            message_id: "message-code".to_string(),
+            content: content.to_string(),
+            agent_id: None,
+        });
+        let live_changes = app.take_screen_changes();
+
+        app.apply(EventUpdate::AssistantMessage {
+            message_id: "message-code".to_string(),
+            content: content.to_string(),
+            agent_id: None,
+        });
+        let committed_changes = app.take_screen_changes();
+
+        let rows = |changes: &[ScreenChange]| {
+            let entry = changes.iter().find_map(|change| match change {
+                ScreenChange::Upsert(entry) => Some(entry),
+                ScreenChange::Reset | ScreenChange::Remove(_) => None,
+            });
+            let entry = entry.expect("assistant screen change");
+            render_entry_lines(entry.kind(), entry.lines(), 40)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(rows(&live_changes), rows(&committed_changes));
     }
 
     #[test]
