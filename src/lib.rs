@@ -9,6 +9,7 @@ pub mod provider;
 pub mod runtime;
 pub mod screen_model;
 pub mod skills;
+pub mod tool_rendering;
 pub mod toolset;
 pub mod transcript_wrap;
 pub mod tui;

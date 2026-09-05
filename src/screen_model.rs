@@ -14,6 +14,11 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::markdown::assistant_markdown_lines_for_widths;
 use crate::palette;
+use crate::tool_rendering::{tool_summary, tool_user_facing_name};
+pub use crate::tool_rendering::{
+    ToolCallState, ToolHeaderPayload, ToolPlatform, ToolProgressKind, ToolProgressPayload,
+    ToolResultPayload, ToolResultState,
+};
 use crate::transcript_wrap::{wrap_lines, WrapSpec};
 use unicode_width::UnicodeWidthStr;
 
@@ -25,6 +30,8 @@ pub enum LiveEntryKind {
     Assistant,
     AssistantNested,
     Bash,
+    Tool,
+    ToolNested,
     Other,
 }
 
@@ -54,7 +61,11 @@ pub fn live_preview_enabled(kind: LiveEntryKind, platform: Platform) -> bool {
         LiveEntryKind::Assistant | LiveEntryKind::AssistantNested => {
             !platform.is_windows && !platform.wt_session
         }
-        LiveEntryKind::User | LiveEntryKind::Bash | LiveEntryKind::Other => true,
+        LiveEntryKind::User
+        | LiveEntryKind::Bash
+        | LiveEntryKind::Tool
+        | LiveEntryKind::ToolNested
+        | LiveEntryKind::Other => true,
     }
 }
 
@@ -127,7 +138,10 @@ impl LiveEntry {
     pub fn lines(&self) -> &[Line<'static>] {
         match &self.payload {
             TranscriptPayload::PreRendered(lines) => lines,
-            TranscriptPayload::AssistantMarkdown(_) => &[],
+            TranscriptPayload::AssistantMarkdown(_)
+            | TranscriptPayload::ToolHeader(_)
+            | TranscriptPayload::ToolProgress(_)
+            | TranscriptPayload::ToolResult(_) => &[],
         }
     }
 
@@ -146,12 +160,16 @@ pub type TranscriptEntryId = String;
 pub enum TranscriptPayload {
     PreRendered(Vec<Line<'static>>),
     AssistantMarkdown(String),
+    ToolHeader(ToolHeaderPayload),
+    ToolProgress(ToolProgressPayload),
+    ToolResult(ToolResultPayload),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedRender {
     revision: u64,
     width: usize,
+    animation_phase: u64,
     lines: Vec<Line<'static>>,
 }
 
@@ -203,7 +221,10 @@ impl ScreenEntry {
     pub fn lines(&self) -> &[Line<'static>] {
         match &self.payload {
             TranscriptPayload::PreRendered(lines) => lines,
-            TranscriptPayload::AssistantMarkdown(_) => &[],
+            TranscriptPayload::AssistantMarkdown(_)
+            | TranscriptPayload::ToolHeader(_)
+            | TranscriptPayload::ToolProgress(_)
+            | TranscriptPayload::ToolResult(_) => &[],
         }
     }
 
@@ -217,6 +238,7 @@ impl ScreenEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ScreenChange {
     Reset,
     Upsert(ScreenEntry),
@@ -355,7 +377,9 @@ impl ScreenModel {
         index: usize,
     ) -> io::Result<()> {
         let width = terminal.size()?.width as usize;
-        let lines = self.live[index].rendered_at_width(width).to_vec();
+        let lines = self.live[index]
+            .rendered_at_width(width, ToolPlatform::current(), 0)
+            .to_vec();
         let height = u16::try_from(lines.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -373,11 +397,21 @@ impl ScreenModel {
     }
 
     pub fn draw_live(&mut self, frame: &mut Frame, platform: Platform) {
+        self.draw_live_at(frame, platform, 0);
+    }
+
+    pub fn draw_live_at(
+        &mut self,
+        frame: &mut Frame,
+        platform: Platform,
+        animation_elapsed_ms: u64,
+    ) {
         frame.render_widget(
-            Paragraph::new(self.visible_live_lines_at_width(
+            Paragraph::new(self.visible_live_lines_at_width_with_clock(
                 platform,
                 frame.area().width as usize,
                 frame.area().height as usize,
+                animation_elapsed_ms,
             )),
             frame.area(),
         );
@@ -399,10 +433,23 @@ impl ScreenModel {
     }
 
     pub fn live_lines_at_width(&mut self, platform: Platform, width: usize) -> Vec<Line<'static>> {
+        self.live_lines_at_width_with_clock(platform, width, 0)
+    }
+
+    pub fn live_lines_at_width_with_clock(
+        &mut self,
+        platform: Platform,
+        width: usize,
+        animation_elapsed_ms: u64,
+    ) -> Vec<Line<'static>> {
         self.live
             .iter_mut()
             .filter(|entry| live_preview_enabled(entry.kind, platform))
-            .flat_map(|entry| entry.rendered_at_width(width).to_vec())
+            .flat_map(|entry| {
+                entry
+                    .rendered_at_width(width, ToolPlatform::current(), animation_elapsed_ms)
+                    .to_vec()
+            })
             .collect()
     }
 
@@ -412,7 +459,17 @@ impl ScreenModel {
         width: usize,
         max_rows: usize,
     ) -> Vec<Line<'static>> {
-        self.live_lines_at_width(platform, width)
+        self.visible_live_lines_at_width_with_clock(platform, width, max_rows, 0)
+    }
+
+    pub fn visible_live_lines_at_width_with_clock(
+        &mut self,
+        platform: Platform,
+        width: usize,
+        max_rows: usize,
+        animation_elapsed_ms: u64,
+    ) -> Vec<Line<'static>> {
+        self.live_lines_at_width_with_clock(platform, width, animation_elapsed_ms)
             .into_iter()
             .take(max_rows)
             .collect()
@@ -420,16 +477,30 @@ impl ScreenModel {
 }
 
 impl LiveEntry {
-    fn rendered_at_width(&mut self, width: usize) -> &[Line<'static>] {
-        let cache_is_current = self
-            .cached_render
-            .as_ref()
-            .is_some_and(|cache| cache.revision == self.revision && cache.width == width);
+    fn rendered_at_width(
+        &mut self,
+        width: usize,
+        platform: ToolPlatform,
+        animation_elapsed_ms: u64,
+    ) -> &[Line<'static>] {
+        let animation_phase = animation_elapsed_ms / 600;
+        let cache_is_current = self.cached_render.as_ref().is_some_and(|cache| {
+            cache.revision == self.revision
+                && cache.width == width
+                && cache.animation_phase == animation_phase
+        });
         if !cache_is_current {
-            let lines = render_transcript_payload(self.kind, &self.payload, width);
+            let lines = render_transcript_payload_with_clock(
+                self.kind,
+                &self.payload,
+                width,
+                platform,
+                animation_elapsed_ms,
+            );
             self.cached_render = Some(CachedRender {
                 revision: self.revision,
                 width,
+                animation_phase,
                 lines,
             });
         }
@@ -446,6 +517,34 @@ pub fn render_transcript_payload(
     payload: &TranscriptPayload,
     width: usize,
 ) -> Vec<Line<'static>> {
+    render_transcript_payload_with_options(kind, payload, width, ToolPlatform::current(), 0, false)
+}
+
+pub fn render_transcript_payload_with_clock(
+    kind: LiveEntryKind,
+    payload: &TranscriptPayload,
+    width: usize,
+    platform: ToolPlatform,
+    animation_elapsed_ms: u64,
+) -> Vec<Line<'static>> {
+    render_transcript_payload_with_options(
+        kind,
+        payload,
+        width,
+        platform,
+        animation_elapsed_ms,
+        false,
+    )
+}
+
+pub fn render_transcript_payload_with_options(
+    kind: LiveEntryKind,
+    payload: &TranscriptPayload,
+    width: usize,
+    platform: ToolPlatform,
+    animation_elapsed_ms: u64,
+    verbose: bool,
+) -> Vec<Line<'static>> {
     match payload {
         TranscriptPayload::PreRendered(lines) => render_entry_lines(kind, lines, width),
         TranscriptPayload::AssistantMarkdown(content) => {
@@ -458,14 +557,322 @@ pub fn render_transcript_payload(
             );
             render_entry_lines(kind, &lines, width)
         }
+        TranscriptPayload::ToolHeader(header) => {
+            render_tool_header(kind, header, width, platform, animation_elapsed_ms, verbose)
+        }
+        TranscriptPayload::ToolProgress(progress) => render_tool_progress(kind, progress, width),
+        TranscriptPayload::ToolResult(result) => render_tool_result(kind, result, width, verbose),
     }
+}
+
+fn render_tool_header(
+    kind: LiveEntryKind,
+    header: &ToolHeaderPayload,
+    width: usize,
+    platform: ToolPlatform,
+    animation_elapsed_ms: u64,
+    verbose: bool,
+) -> Vec<Line<'static>> {
+    let name = tool_user_facing_name(&header.tool_name);
+    if name.is_empty() {
+        return Vec::new();
+    }
+    let summary = tool_summary(
+        &header.tool_name,
+        header.arguments.as_ref(),
+        &header.cwd,
+        verbose,
+    );
+    let dot = match header.state {
+        ToolCallState::Running if !tool_dot_visible(animation_elapsed_ms) => " ",
+        _ => platform.dot(),
+    };
+    let dot_style = match header.state {
+        ToolCallState::Success => Style::default().fg(palette::SUCCESS),
+        ToolCallState::Error | ToolCallState::Cancelled => Style::default().fg(palette::ERROR),
+        ToolCallState::Running | ToolCallState::Queued | ToolCallState::Unknown => Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(ratatui::style::Modifier::DIM),
+    };
+    let mut spans = vec![
+        Span::styled(dot.to_string(), dot_style),
+        Span::styled(" ", dot_style),
+        Span::styled(
+            name,
+            Style::default()
+                .fg(palette::TEXT)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    ];
+    if !summary.is_empty() {
+        spans.push(Span::raw(format!("({summary})")));
+    }
+    let line = truncate_line(Line::from(spans), width);
+    if tool_is_nested(kind, header.nested()) {
+        vec![line]
+    } else {
+        vec![Line::default(), line]
+    }
+}
+
+fn render_tool_progress(
+    kind: LiveEntryKind,
+    progress: &ToolProgressPayload,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let content = if progress.content.is_empty() {
+        match progress.kind {
+            ToolProgressKind::Permission => "Waiting for permission…",
+            ToolProgressKind::Tool => "",
+            ToolProgressKind::Classifier => "",
+        }
+    } else {
+        progress.content.as_str()
+    };
+    if content.is_empty() {
+        return Vec::new();
+    }
+    render_tool_body(
+        &[Line::from(Span::styled(
+            content.to_string(),
+            Style::default().fg(palette::INACTIVE),
+        ))],
+        width,
+        tool_is_nested(kind, progress.nested()),
+        Style::default().fg(palette::INACTIVE),
+    )
+}
+
+fn render_tool_result(
+    kind: LiveEntryKind,
+    result: &ToolResultPayload,
+    width: usize,
+    verbose: bool,
+) -> Vec<Line<'static>> {
+    let (content, style) = match result.state {
+        ToolResultState::Success => (None, Style::default().fg(palette::TEXT)),
+        ToolResultState::Error => (None, Style::default().fg(palette::ERROR)),
+        ToolResultState::Cancelled => (
+            Some(vec![Line::from(Span::raw(
+                "Interrupted · What should Claude do instead?",
+            ))]),
+            Style::default()
+                .fg(palette::INACTIVE)
+                .add_modifier(ratatui::style::Modifier::DIM),
+        ),
+    };
+    let content_lines = match result.state {
+        ToolResultState::Success => success_result_lines(&result.tool_name, &result.content),
+        ToolResultState::Error => error_result_lines(&result.content, verbose),
+        ToolResultState::Cancelled => content,
+    };
+    let Some(content_lines) = content_lines else {
+        return Vec::new();
+    };
+    if content_lines.is_empty() {
+        return Vec::new();
+    }
+    render_tool_body(
+        &content_lines,
+        width,
+        tool_is_nested(kind, result.nested()),
+        style,
+    )
+}
+
+fn tool_is_nested(kind: LiveEntryKind, payload_is_nested: bool) -> bool {
+    matches!(kind, LiveEntryKind::ToolNested) || payload_is_nested
+}
+
+fn success_result_lines(tool_name: &str, content: &str) -> Option<Vec<Line<'static>>> {
+    let mut lines = trimmed_content_lines(content)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+    if tool_user_facing_name(tool_name) == "Write" && lines.len() > 10 {
+        let remaining = lines.len() - 10;
+        lines.truncate(10);
+        lines.push(Line::from(vec![
+            Span::styled("… +", Style::default().fg(palette::INACTIVE)),
+            Span::styled(
+                remaining.to_string(),
+                Style::default().fg(palette::INACTIVE),
+            ),
+            Span::styled(
+                if remaining == 1 {
+                    " line ("
+                } else {
+                    " lines ("
+                },
+                Style::default().fg(palette::INACTIVE),
+            ),
+            Span::styled(
+                "ctrl+o",
+                Style::default()
+                    .fg(palette::INACTIVE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled(" to expand)", Style::default().fg(palette::INACTIVE)),
+        ]));
+    }
+    Some(lines)
+}
+
+fn error_result_lines(content: &str, verbose: bool) -> Option<Vec<Line<'static>>> {
+    let mut normalized = strip_error_wrappers(content).trim().to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+    if !verbose && normalized.contains("InputValidationError") {
+        normalized = "Invalid tool parameters".to_string();
+    } else if !normalized.starts_with("Error: ") && !normalized.starts_with("Cancelled: ") {
+        normalized = format!("Error: {normalized}");
+    }
+
+    let mut lines = trimmed_content_lines(&normalized)
+        .into_iter()
+        .map(|line| Line::from(Span::raw(line)))
+        .collect::<Vec<_>>();
+    if !verbose && lines.len() > 10 {
+        let remaining = lines.len() - 10;
+        lines.truncate(10);
+        lines.push(Line::from(vec![
+            Span::styled("… +", Style::default().fg(palette::INACTIVE)),
+            Span::styled(
+                remaining.to_string(),
+                Style::default().fg(palette::INACTIVE),
+            ),
+            Span::styled(
+                if remaining == 1 {
+                    " line ("
+                } else {
+                    " lines ("
+                },
+                Style::default().fg(palette::INACTIVE),
+            ),
+            Span::styled(
+                "ctrl+o",
+                Style::default()
+                    .fg(palette::INACTIVE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            Span::styled(" to see all)", Style::default().fg(palette::INACTIVE)),
+        ]));
+    }
+    Some(lines)
+}
+
+fn strip_error_wrappers(content: &str) -> String {
+    [
+        "<tool_use_error>",
+        "</tool_use_error>",
+        "<error>",
+        "</error>",
+        "<sandbox_violation>",
+        "</sandbox_violation>",
+    ]
+    .into_iter()
+    .fold(content.to_string(), |content, tag| content.replace(tag, ""))
+}
+
+fn trimmed_content_lines(content: &str) -> Vec<String> {
+    let mut lines = content
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+        .collect::<Vec<_>>();
+    while lines.first().is_some_and(|line| line.trim().is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.trim().is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+fn render_tool_body(
+    lines: &[Line<'static>],
+    width: usize,
+    nested: bool,
+    body_style: Style,
+) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(if nested { 0 } else { 5 });
+    let wrapped = wrap_lines(
+        lines,
+        &WrapSpec {
+            wrap_width: content_width,
+            fill_width: 0,
+            first_prefix: Vec::new(),
+            continuation_prefix: Vec::new(),
+            fill_style: None,
+        },
+    );
+    let mut rendered = Vec::with_capacity(wrapped.len() + usize::from(!nested));
+    if !nested {
+        rendered.push(Line::default());
+    }
+    for (index, line) in wrapped.into_iter().enumerate() {
+        let prefix = if nested {
+            ""
+        } else if index == 0 {
+            "  ⎿ \u{00a0}"
+        } else {
+            "     "
+        };
+        let gutter_style = Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(ratatui::style::Modifier::DIM);
+        let mut spans = vec![Span::styled(prefix, gutter_style)];
+        spans.extend(
+            line.spans
+                .into_iter()
+                .map(|span| Span::styled(span.content, body_style.patch(span.style))),
+        );
+        rendered.push(Line::from(spans));
+    }
+    rendered
+}
+
+fn truncate_line(line: Line<'static>, width: usize) -> Line<'static> {
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let mut content = String::new();
+        for grapheme in
+            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
+        {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if grapheme_width > remaining {
+                break;
+            }
+            content.push_str(grapheme);
+            remaining = remaining.saturating_sub(grapheme_width);
+        }
+        if !content.is_empty() {
+            spans.push(Span::styled(content, span.style));
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    Line::from(spans)
+}
+
+fn tool_dot_visible(animation_elapsed_ms: u64) -> bool {
+    (animation_elapsed_ms / 600).is_multiple_of(2)
 }
 
 fn assistant_prefix_width(kind: LiveEntryKind) -> usize {
     match kind {
         LiveEntryKind::Assistant => UnicodeWidthStr::width(assistant_dot_with_space()),
         LiveEntryKind::AssistantNested => 0,
-        LiveEntryKind::User | LiveEntryKind::Bash | LiveEntryKind::Other => 0,
+        LiveEntryKind::User
+        | LiveEntryKind::Bash
+        | LiveEntryKind::Tool
+        | LiveEntryKind::ToolNested
+        | LiveEntryKind::Other => 0,
     }
 }
 
@@ -478,7 +885,10 @@ pub fn render_entry_lines(
         LiveEntryKind::User => wrap_lines(lines, &user_wrap_spec(width)),
         LiveEntryKind::Assistant => wrap_lines(lines, &assistant_wrap_spec(width)),
         LiveEntryKind::AssistantNested => wrap_lines(lines, &assistant_nested_wrap_spec(width)),
-        LiveEntryKind::Bash | LiveEntryKind::Other => lines.to_vec(),
+        LiveEntryKind::Bash
+        | LiveEntryKind::Tool
+        | LiveEntryKind::ToolNested
+        | LiveEntryKind::Other => lines.to_vec(),
     };
     let has_top_level_spacing = !matches!(kind, LiveEntryKind::AssistantNested);
     let mut rendered = Vec::with_capacity(lines.len() + usize::from(has_top_level_spacing));

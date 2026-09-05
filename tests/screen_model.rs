@@ -2,10 +2,12 @@ use picopilot::events::EventUpdate;
 use picopilot::palette;
 use picopilot::screen_model::{
     enter_main_screen, live_preview_enabled, render_entry_lines, render_transcript_payload,
-    terminal_options, LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel,
-    TranscriptPayload, FIXED_LIVE_REGION_HEIGHT,
+    render_transcript_payload_with_clock, render_transcript_payload_with_options, terminal_options,
+    LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel, ToolCallState,
+    ToolHeaderPayload, ToolPlatform, ToolProgressKind, ToolProgressPayload, ToolResultPayload,
+    ToolResultState, TranscriptPayload, FIXED_LIVE_REGION_HEIGHT,
 };
-use picopilot::tui::App;
+use picopilot::tui::{App, ChatEntry};
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
@@ -610,8 +612,738 @@ fn later_completed_entries_wait_for_earlier_live_entries() {
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
 
     let rendered = terminal_text(&terminal);
-    assert_eq!(screen.committed_count(), 2);
+    assert_eq!(screen.committed_count(), 3);
     assert!(rendered.find("assistant final") < rendered.find("tool completed"));
+}
+
+#[test]
+fn tool_result_stays_after_messages_received_between_start_and_completion() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "edit".to_string(),
+        arguments: Some(json!({"file_path": "src/main.rs", "old_string": "a"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-1".to_string(),
+        content: "I will inspect the result next.".to_string(),
+        agent_id: None,
+    });
+
+    let header = app
+        .entries()
+        .iter()
+        .find(|entry| matches!(entry, ChatEntry::Tool { .. }))
+        .expect("tool header should be retained");
+    assert!(matches!(
+        header,
+        ChatEntry::Tool {
+            tool_call_id,
+            arguments: Some(arguments),
+            ..
+        } if tool_call_id == "tool-1" && arguments["file_path"] == "src/main.rs"
+    ));
+
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-1".to_string(),
+        success: true,
+        message: Some("updated".to_string()),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    let rendered = terminal_text(&terminal);
+    let header_position = rendered.find("Edit(src/main.rs)").expect("tool header");
+    let assistant_position = rendered
+        .find("I will inspect the result next.")
+        .expect("interleaved assistant message");
+    let result_position = rendered.find("updated").expect("tool result");
+    assert!(header_position < assistant_position);
+    assert!(assistant_position < result_position);
+}
+
+#[test]
+fn overlapping_tools_keep_reverse_completion_order() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    for tool_call_id in ["tool-a", "tool-b"] {
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: "bash".to_string(),
+            arguments: Some(json!({"command": format!("echo {tool_call_id}")})),
+            agent_id: None,
+        });
+    }
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-b".to_string(),
+        success: true,
+        message: Some("result b".to_string()),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-a".to_string(),
+        success: true,
+        message: Some("result a".to_string()),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+
+    let rendered = terminal_text(&terminal);
+    let header_a = rendered.find("Bash(echo tool-a)").expect("tool a header");
+    let header_b = rendered.find("Bash(echo tool-b)").expect("tool b header");
+    let result_b = rendered.find("result b").expect("tool b result");
+    let result_a = rendered.find("result a").expect("tool a result");
+    assert!(header_a < header_b);
+    assert!(header_b < result_b);
+    assert!(result_b < result_a);
+}
+
+#[test]
+fn tool_progress_is_call_scoped_and_late_completion_is_ignored() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-a".to_string(),
+        tool_name: "grep".to_string(),
+        arguments: Some(json!({"pattern": "alpha"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-b".to_string(),
+        tool_name: "glob".to_string(),
+        arguments: Some(json!({"pattern": "*.rs"})),
+        agent_id: None,
+    });
+
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-a".to_string(),
+        content: "a output".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-b".to_string(),
+        content: "b progress".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-a".to_string(),
+        content: "a status".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-a".to_string(),
+        content: " tail".to_string(),
+        agent_id: None,
+    });
+
+    let progress = app
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::ToolProgress {
+                tool_call_id,
+                content,
+                ..
+            } => Some((tool_call_id.as_str(), content.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        progress,
+        vec![("tool-a", "a status tail"), ("tool-b", "b progress")]
+    );
+
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-a".to_string(),
+        success: true,
+        message: Some("first result".to_string()),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-a".to_string(),
+        content: "late output".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-a".to_string(),
+        success: true,
+        message: Some("duplicate result".to_string()),
+        agent_id: None,
+    });
+
+    let results = app
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ChatEntry::ToolResult {
+                tool_call_id,
+                content,
+                ..
+            } => Some((tool_call_id.as_str(), content.as_str())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results, vec![("tool-a", "first result")]);
+    assert!(!app.entries().iter().any(|entry| {
+        matches!(
+            entry,
+            ChatEntry::ToolProgress { tool_call_id, content, .. }
+                if tool_call_id == "tool-a" && content.contains("late output")
+        )
+    }));
+}
+
+#[test]
+fn tool_header_and_progress_ids_stay_stable_until_result_is_created() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "read".to_string(),
+        arguments: Some(json!({"file_path": "README.md"})),
+        agent_id: None,
+    });
+
+    let start_changes = app.take_screen_changes();
+    let header_id = match &start_changes[0] {
+        ScreenChange::Upsert(entry) => entry.id().to_string(),
+        _ => panic!("tool start should create a header update"),
+    };
+    let progress_id = match &start_changes[1] {
+        ScreenChange::Upsert(entry) => entry.id().to_string(),
+        _ => panic!("tool start should create a progress update"),
+    };
+
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-1".to_string(),
+        content: "reading".to_string(),
+        agent_id: None,
+    });
+    let progress_update = app.take_screen_changes();
+    assert!(matches!(
+        progress_update.as_slice(),
+        [ScreenChange::Upsert(entry)] if entry.id() == progress_id
+    ));
+
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-1".to_string(),
+        success: true,
+        message: Some("read it".to_string()),
+        agent_id: None,
+    });
+    let completion_changes = app.take_screen_changes();
+    assert!(matches!(
+        completion_changes.as_slice(),
+        [
+            ScreenChange::Upsert(header),
+            ScreenChange::Remove(progress),
+            ScreenChange::Upsert(result),
+        ] if header.id() == header_id
+            && progress == &progress_id
+            && result.id() != header_id
+            && result.id() != progress_id
+    ));
+}
+
+#[test]
+fn conversation_reset_clears_unresolved_tool_presentation_state() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-1".to_string(),
+        tool_name: "glob".to_string(),
+        arguments: Some(json!({"pattern": "*.rs"})),
+        agent_id: None,
+    });
+    let _ = app.take_screen_changes();
+
+    app.reset_for_new_conversation();
+    assert!(app.entries().is_empty());
+    assert!(matches!(
+        app.take_screen_changes().as_slice(),
+        [ScreenChange::Reset]
+    ));
+
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "tool-1".to_string(),
+        success: true,
+        message: Some("late result".to_string()),
+        agent_id: None,
+    });
+    assert!(app.take_screen_changes().is_empty());
+}
+
+fn test_tool_header(
+    tool_name: &str,
+    arguments: serde_json::Value,
+    state: ToolCallState,
+    agent_id: Option<&str>,
+) -> ToolHeaderPayload {
+    ToolHeaderPayload {
+        tool_call_id: "tool-test".to_string(),
+        tool_name: tool_name.to_string(),
+        arguments: Some(arguments),
+        agent_id: agent_id.map(ToString::to_string),
+        started_at: std::time::Instant::now(),
+        state,
+        cwd: std::path::PathBuf::from("/workspace"),
+    }
+}
+
+fn test_tool_result(
+    tool_name: &str,
+    content: &str,
+    state: ToolResultState,
+    agent_id: Option<&str>,
+) -> ToolResultPayload {
+    ToolResultPayload {
+        tool_call_id: "tool-test".to_string(),
+        tool_name: tool_name.to_string(),
+        arguments: None,
+        content: content.to_string(),
+        state,
+        agent_id: agent_id.map(ToString::to_string),
+        cwd: std::path::PathBuf::from("/workspace"),
+    }
+}
+
+#[test]
+fn tool_headers_use_platform_glyphs_states_and_a_shared_blink_phase() {
+    let queued = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "README.md"}),
+        ToolCallState::Queued,
+        None,
+    ));
+    let running = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "README.md"}),
+        ToolCallState::Running,
+        None,
+    ));
+    let success = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "README.md"}),
+        ToolCallState::Success,
+        None,
+    ));
+    let error = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "README.md"}),
+        ToolCallState::Error,
+        None,
+    ));
+
+    let queued_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &queued,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    assert_eq!(queued_lines[1].to_string(), "● Read(README.md)");
+
+    let running_visible = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &running,
+        80,
+        ToolPlatform::WindowsLinux,
+        599,
+    );
+    let running_hidden = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &running,
+        80,
+        ToolPlatform::WindowsLinux,
+        600,
+    );
+    assert_eq!(running_visible[1].to_string(), "● Read(README.md)");
+    assert_eq!(running_hidden[1].to_string(), "  Read(README.md)");
+
+    let mac = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &running,
+        80,
+        ToolPlatform::MacOs,
+        0,
+    );
+    assert_eq!(mac[1].to_string(), "⏺ Read(README.md)");
+
+    let success_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &success,
+        80,
+        ToolPlatform::WindowsLinux,
+        600,
+    );
+    let error_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &error,
+        80,
+        ToolPlatform::WindowsLinux,
+        600,
+    );
+    assert_eq!(success_lines[1].to_string(), "● Read(README.md)");
+    assert_eq!(error_lines[1].to_string(), "● Read(README.md)");
+    assert_eq!(success_lines[1].spans[0].style.fg, Some(palette::SUCCESS));
+    assert_eq!(error_lines[1].spans[0].style.fg, Some(palette::ERROR));
+
+    let second_running = TranscriptPayload::ToolHeader(test_tool_header(
+        "glob",
+        json!({"pattern": "*.rs"}),
+        ToolCallState::Running,
+        None,
+    ));
+    let first_phase = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &running,
+        80,
+        ToolPlatform::WindowsLinux,
+        600,
+    );
+    let second_phase = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &second_running,
+        80,
+        ToolPlatform::WindowsLinux,
+        600,
+    );
+    assert_eq!(first_phase[1].to_string().chars().next(), Some(' '));
+    assert_eq!(second_phase[1].to_string().chars().next(), Some(' '));
+}
+
+#[test]
+fn tool_headers_omit_empty_parentheses_and_nested_spacing() {
+    let empty_summary = TranscriptPayload::ToolHeader(test_tool_header(
+        "custom_tool",
+        json!(null),
+        ToolCallState::Running,
+        None,
+    ));
+    let nested = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "README.md"}),
+        ToolCallState::Running,
+        Some("agent-1"),
+    ));
+    let hidden_name = TranscriptPayload::ToolHeader(test_tool_header(
+        "",
+        json!({"value": "ignored"}),
+        ToolCallState::Running,
+        None,
+    ));
+
+    let empty_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &empty_summary,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let nested_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::ToolNested,
+        &nested,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let hidden_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &hidden_name,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(empty_lines[1].to_string(), "● Custom Tool");
+    assert_eq!(nested_lines.len(), 1);
+    assert_eq!(nested_lines[0].to_string(), "● Read(README.md)");
+    assert!(hidden_lines.is_empty());
+}
+
+#[test]
+fn model_only_tool_progress_states_have_deterministic_surfaces() {
+    let permission = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "permission-1".to_string(),
+        tool_name: "read".to_string(),
+        content: String::new(),
+        kind: ToolProgressKind::Permission,
+        agent_id: None,
+    });
+    let classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "classifier-1".to_string(),
+        tool_name: "read".to_string(),
+        content: String::new(),
+        kind: ToolProgressKind::Classifier,
+        agent_id: None,
+    });
+    let nested_classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "classifier-2".to_string(),
+        tool_name: "read".to_string(),
+        content: "classifying".to_string(),
+        kind: ToolProgressKind::Classifier,
+        agent_id: Some("agent-1".to_string()),
+    });
+
+    let permission_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &permission,
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let classifier_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &classifier,
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let nested_classifier_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::ToolNested,
+        &nested_classifier,
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(
+        permission_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        vec![
+            "".to_string(),
+            "  ⎿ \u{00a0}Waiting for permission…".to_string()
+        ]
+    );
+    assert!(classifier_lines.is_empty());
+    assert_eq!(nested_classifier_lines.len(), 1);
+    assert_eq!(nested_classifier_lines[0].to_string(), "classifying");
+}
+
+#[test]
+fn tool_surfaces_fit_the_required_focus_widths() {
+    let header = TranscriptPayload::ToolHeader(test_tool_header(
+        "read",
+        json!({"file_path": "/workspace/a/very/long/path/to/a/file.rs"}),
+        ToolCallState::Running,
+        None,
+    ));
+    let result = TranscriptPayload::ToolResult(test_tool_result(
+        "read",
+        "first line with enough text to wrap\nsecond line\nthird line",
+        ToolResultState::Success,
+        None,
+    ));
+
+    for width in [10, 40, 80] {
+        for payload in [&header, &result] {
+            let lines = render_transcript_payload_with_clock(
+                LiveEntryKind::Tool,
+                payload,
+                width,
+                ToolPlatform::WindowsLinux,
+                0,
+            );
+            assert!(lines.iter().all(|line| line.width() <= width));
+        }
+    }
+}
+
+#[test]
+fn tool_header_truncates_without_wrapping_at_narrow_widths() {
+    let payload = TranscriptPayload::ToolHeader(test_tool_header(
+        "bash",
+        json!({"command": "echo a very long command that does not fit"}),
+        ToolCallState::Running,
+        None,
+    ));
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        10,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].width() <= 10);
+    assert!(!lines[1].to_string().contains('\n'));
+}
+
+#[test]
+fn tool_result_uses_the_five_cell_gutter_and_nested_results_do_not_stack_it() {
+    let result = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "first\n\nthird",
+        ToolResultState::Success,
+        None,
+    ));
+    let nested = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "nested result",
+        ToolResultState::Success,
+        Some("agent-1"),
+    ));
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &result,
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+    let nested_lines = render_transcript_payload_with_clock(
+        LiveEntryKind::ToolNested,
+        &nested,
+        40,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(lines[1].to_string(), "  ⎿ \u{00a0}first");
+    assert_eq!(lines[2].to_string(), "     ");
+    assert_eq!(lines[3].to_string(), "     third");
+    assert!(!lines[2].to_string().contains('⎿'));
+    assert_eq!(nested_lines.len(), 1);
+    assert_eq!(nested_lines[0].to_string(), "nested result");
+}
+
+#[test]
+fn tool_cancellation_is_a_single_dim_message() {
+    let payload = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "ignored",
+        ToolResultState::Cancelled,
+        None,
+    ));
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert_eq!(
+        lines.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec![
+            "".to_string(),
+            "  ⎿ \u{00a0}Interrupted · What should Claude do instead?".to_string(),
+        ]
+    );
+    assert!(lines[1].spans[0].style.add_modifier == ratatui::style::Modifier::DIM);
+}
+
+#[test]
+fn tool_errors_normalize_wrappers_and_input_validation() {
+    let input_validation = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "<tool_use_error>InputValidationError: missing path</tool_use_error>",
+        ToolResultState::Error,
+        None,
+    ));
+    let existing_prefix = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "<error>Error: already normalized</error>",
+        ToolResultState::Error,
+        None,
+    ));
+    let ordinary = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        "<error>something failed</error>",
+        ToolResultState::Error,
+        None,
+    ));
+
+    let render = |payload: &TranscriptPayload| {
+        render_transcript_payload_with_options(
+            LiveEntryKind::Tool,
+            payload,
+            80,
+            ToolPlatform::WindowsLinux,
+            0,
+            false,
+        )
+    };
+
+    assert!(render(&input_validation)
+        .iter()
+        .any(|line| line.to_string().contains("Invalid tool parameters")));
+    assert!(render(&existing_prefix)
+        .iter()
+        .any(|line| line.to_string().contains("Error: already normalized")));
+    assert!(render(&ordinary)
+        .iter()
+        .any(|line| line.to_string().contains("Error: something failed")));
+}
+
+#[test]
+fn tool_errors_and_write_results_use_their_ten_line_markers() {
+    let eleven_lines = (1..=11)
+        .map(|line| format!("error line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let error = TranscriptPayload::ToolResult(test_tool_result(
+        "custom_tool",
+        &eleven_lines,
+        ToolResultState::Error,
+        None,
+    ));
+    let twelve_lines = (1..=12)
+        .map(|line| format!("content line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let write = TranscriptPayload::ToolResult(test_tool_result(
+        "write",
+        &twelve_lines,
+        ToolResultState::Success,
+        None,
+    ));
+
+    let render = |payload: &TranscriptPayload, verbose| {
+        render_transcript_payload_with_options(
+            LiveEntryKind::Tool,
+            payload,
+            80,
+            ToolPlatform::WindowsLinux,
+            0,
+            verbose,
+        )
+    };
+    let error_lines = render(&error, false);
+    let verbose_error_lines = render(&error, true);
+    let write_lines = render(&write, false);
+
+    assert!(error_lines
+        .iter()
+        .any(|line| line.to_string().contains("… +1 line (ctrl+o to see all)")));
+    assert!(error_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| span.content == "ctrl+o"
+            && span
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)));
+    assert!(!verbose_error_lines
+        .iter()
+        .any(|line| line.to_string().contains("ctrl+o to see all")));
+    assert!(verbose_error_lines
+        .iter()
+        .any(|line| line.to_string().contains("error line 11")));
+    assert!(write_lines
+        .iter()
+        .any(|line| line.to_string().contains("… +2 lines (ctrl+o to expand)")));
 }
 
 #[test]

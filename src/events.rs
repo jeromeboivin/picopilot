@@ -179,9 +179,19 @@ pub enum EventUpdate {
         content: String,
         agent_id: Option<String>,
     },
+    ToolProgress {
+        tool_call_id: String,
+        content: String,
+        agent_id: Option<String>,
+    },
     ToolCompleted {
         tool_call_id: String,
         success: bool,
+        message: Option<String>,
+        agent_id: Option<String>,
+    },
+    ToolCancelled {
+        tool_call_id: String,
         message: Option<String>,
         agent_id: Option<String>,
     },
@@ -282,7 +292,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
         "tool.execution_progress" => {
             event
                 .typed_data::<ToolExecutionProgressData>()
-                .map(|data| EventUpdate::ToolOutput {
+                .map(|data| EventUpdate::ToolProgress {
                     tool_call_id: data.tool_call_id,
                     content: data.progress_message,
                     agent_id,
@@ -481,6 +491,50 @@ mod tests {
                 tool_call_id: "tool-1".to_string(),
                 success: true,
                 message: Some("Caption: Microsoft Windows 11 Pro\nVersion: 10.0.26100".to_string()),
+                agent_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn keeps_tool_progress_distinct_from_partial_output() {
+        let partial = SessionEvent {
+            id: "event-partial".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "tool.execution_partial_result".to_string(),
+            data: json!({
+                "toolCallId": "tool-1",
+                "partialOutput": "stdout chunk"
+            }),
+        };
+        let progress = SessionEvent {
+            id: "event-progress".to_string(),
+            event_type: "tool.execution_progress".to_string(),
+            data: json!({
+                "toolCallId": "tool-1",
+                "progressMessage": "waiting"
+            }),
+            ..partial.clone()
+        };
+
+        assert_eq!(
+            event_update(&partial),
+            Some(EventUpdate::ToolOutput {
+                tool_call_id: "tool-1".to_string(),
+                content: "stdout chunk".to_string(),
+                agent_id: None,
+            })
+        );
+        assert_eq!(
+            event_update(&progress),
+            Some(EventUpdate::ToolProgress {
+                tool_call_id: "tool-1".to_string(),
+                content: "waiting".to_string(),
                 agent_id: None,
             })
         );

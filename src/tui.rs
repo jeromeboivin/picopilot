@@ -5,9 +5,9 @@ use crate::events::{
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -36,7 +36,9 @@ use crate::runtime::{
 };
 use crate::screen_model::{
     enter_main_screen, render_transcript_payload, restore_main_screen, terminal_options,
-    LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel, TranscriptPayload,
+    LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel, ToolCallState,
+    ToolHeaderPayload, ToolProgressKind, ToolProgressPayload, ToolResultPayload, ToolResultState,
+    TranscriptPayload,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -119,11 +121,29 @@ pub enum ChatEntry {
     Tool {
         tool_call_id: String,
         tool_name: String,
-        command: Option<String>,
-        output: String,
+        arguments: Option<serde_json::Value>,
         success: Option<bool>,
+        state: ToolCallState,
         unknown: bool,
         agent_id: Option<String>,
+        started_at: Instant,
+        cwd: PathBuf,
+    },
+    ToolProgress {
+        tool_call_id: String,
+        tool_name: String,
+        content: String,
+        kind: ToolProgressKind,
+        agent_id: Option<String>,
+    },
+    ToolResult {
+        tool_call_id: String,
+        tool_name: String,
+        arguments: Option<serde_json::Value>,
+        content: String,
+        state: ToolResultState,
+        agent_id: Option<String>,
+        cwd: PathBuf,
     },
     Subagent {
         name: String,
@@ -202,6 +222,7 @@ pub struct App {
     next_entry_sequence: u64,
     pending_screen_changes: VecDeque<ScreenChange>,
     pending_user_messages: VecDeque<String>,
+    working_directory: PathBuf,
     project_name: Option<String>,
     status: StatusState,
     input: InputEditor,
@@ -278,6 +299,7 @@ impl App {
                 model,
                 ..StatusState::default()
             },
+            working_directory: std::env::current_dir().unwrap_or_default(),
             ..Self::default()
         };
         app.screen_namespace = next_screen_namespace();
@@ -287,6 +309,7 @@ impl App {
     pub fn new_with_working_directory(model: Option<String>, working_directory: &Path) -> Self {
         let mut app = Self::new(model);
         app.project_name = Some(working_directory_name(working_directory));
+        app.working_directory = working_directory.to_path_buf();
         app
     }
 
@@ -339,17 +362,33 @@ impl App {
                 !self.reasoning_live_ids.contains(reasoning_id),
             ),
             ChatEntry::Tool {
-                tool_name,
-                success,
+                state,
                 unknown,
+                agent_id,
                 ..
             } => (
-                if is_shell_tool(tool_name) {
-                    LiveEntryKind::Bash
+                if agent_id.is_some() {
+                    LiveEntryKind::ToolNested
                 } else {
-                    LiveEntryKind::Other
+                    LiveEntryKind::Tool
                 },
-                success.is_some() || *unknown,
+                !matches!(state, ToolCallState::Queued | ToolCallState::Running) || *unknown,
+            ),
+            ChatEntry::ToolProgress { agent_id, .. } => (
+                if agent_id.is_some() {
+                    LiveEntryKind::ToolNested
+                } else {
+                    LiveEntryKind::Tool
+                },
+                false,
+            ),
+            ChatEntry::ToolResult { agent_id, .. } => (
+                if agent_id.is_some() {
+                    LiveEntryKind::ToolNested
+                } else {
+                    LiveEntryKind::Tool
+                },
+                true,
             ),
             ChatEntry::Subagent { status, .. } => (
                 LiveEntryKind::Other,
@@ -532,13 +571,18 @@ impl App {
     }
 
     pub fn mark_in_flight_tools_unknown(&mut self) {
-        for entry in &mut self.entries {
+        for index in 0..self.entries.len() {
             if let ChatEntry::Tool {
-                success, unknown, ..
-            } = entry
+                success,
+                state,
+                unknown,
+                ..
+            } = &mut self.entries[index]
             {
                 if success.is_none() {
+                    *state = ToolCallState::Unknown;
                     *unknown = true;
+                    self.queue_screen_change(index);
                 }
             }
         }
@@ -930,15 +974,29 @@ impl App {
                 tool_name,
                 arguments,
                 agent_id,
-            } => self.push_entry(ChatEntry::Tool {
-                tool_call_id,
-                command: arguments.as_ref().and_then(tool_command),
-                tool_name,
-                output: String::new(),
-                success: None,
-                unknown: false,
-                agent_id,
-            }),
+            } => {
+                if self.tool_header_index(&tool_call_id).is_none() {
+                    let started_at = Instant::now();
+                    self.push_entry(ChatEntry::Tool {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        arguments,
+                        success: None,
+                        state: ToolCallState::Running,
+                        unknown: false,
+                        agent_id: agent_id.clone(),
+                        started_at,
+                        cwd: self.working_directory.clone(),
+                    });
+                    self.push_entry(ChatEntry::ToolProgress {
+                        tool_call_id,
+                        tool_name,
+                        content: String::new(),
+                        kind: ToolProgressKind::Tool,
+                        agent_id,
+                    });
+                }
+            }
             EventUpdate::ToolOutput {
                 tool_call_id,
                 content,
@@ -947,10 +1005,30 @@ impl App {
                 if let Some(index) = self
                     .entries
                     .iter()
-                    .position(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
+                    .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
                 {
-                    if let ChatEntry::Tool { output, .. } = &mut self.entries[index] {
-                        output.push_str(&content);
+                    if let ChatEntry::ToolProgress { content: current, .. } =
+                        &mut self.entries[index]
+                    {
+                        current.push_str(&content);
+                    }
+                    self.queue_screen_change(index);
+                }
+            }
+            EventUpdate::ToolProgress {
+                tool_call_id,
+                content,
+                agent_id: _,
+            } => {
+                if let Some(index) = self
+                    .entries
+                    .iter()
+                    .position(|entry| matches!(entry, ChatEntry::ToolProgress { tool_call_id: id, .. } if id == &tool_call_id))
+                {
+                    if let ChatEntry::ToolProgress { content: current, .. } =
+                        &mut self.entries[index]
+                    {
+                        *current = content;
                     }
                     self.queue_screen_change(index);
                 }
@@ -960,32 +1038,12 @@ impl App {
                 success,
                 message,
                 agent_id: _,
-            } => {
-                if let Some(index) = self
-                    .entries
-                    .iter()
-                    .position(|entry| matches!(entry, ChatEntry::Tool { tool_call_id: id, .. } if id == &tool_call_id))
-                {
-                    if let ChatEntry::Tool {
-                        output,
-                        success: state,
-                        unknown,
-                        ..
-                    } = &mut self.entries[index]
-                    {
-                        *state = Some(success);
-                        *unknown = false;
-                        if let Some(message) = message {
-                            if success {
-                                *output = message;
-                            } else {
-                                output.push_str(&message);
-                            }
-                        }
-                    }
-                    self.queue_screen_change(index);
-                }
-            }
+            } => self.complete_tool(tool_call_id, success, message, false),
+            EventUpdate::ToolCancelled {
+                tool_call_id,
+                message,
+                agent_id: _,
+            } => self.complete_tool(tool_call_id, false, message, true),
             EventUpdate::SubagentStarted {
                 name,
                 display_name,
@@ -1082,6 +1140,116 @@ impl App {
                 }
             }
         }
+    }
+
+    fn tool_header_index(&self, tool_call_id: &str) -> Option<usize> {
+        self.entries.iter().position(|entry| {
+            matches!(
+                entry,
+                ChatEntry::Tool {
+                    tool_call_id: current,
+                    ..
+                } if current == tool_call_id
+            )
+        })
+    }
+
+    fn complete_tool(
+        &mut self,
+        tool_call_id: String,
+        success: bool,
+        message: Option<String>,
+        cancelled: bool,
+    ) {
+        let Some(index) = self.tool_header_index(&tool_call_id) else {
+            return;
+        };
+        let Some((tool_name, arguments, agent_id, cwd)) =
+            self.entries.get(index).and_then(|entry| {
+                let ChatEntry::Tool {
+                    tool_name,
+                    arguments,
+                    agent_id,
+                    state,
+                    cwd,
+                    ..
+                } = entry
+                else {
+                    return None;
+                };
+                if matches!(
+                    state,
+                    ToolCallState::Success | ToolCallState::Error | ToolCallState::Cancelled
+                ) {
+                    return None;
+                }
+                Some((
+                    tool_name.clone(),
+                    arguments.clone(),
+                    agent_id.clone(),
+                    cwd.clone(),
+                ))
+            })
+        else {
+            return;
+        };
+
+        if let ChatEntry::Tool {
+            success: current_success,
+            state,
+            unknown,
+            ..
+        } = &mut self.entries[index]
+        {
+            *current_success = Some(success);
+            *state = if cancelled {
+                ToolCallState::Cancelled
+            } else if success {
+                ToolCallState::Success
+            } else {
+                ToolCallState::Error
+            };
+            *unknown = false;
+        }
+        self.queue_screen_change(index);
+
+        for progress_index in (0..self.entries.len()).rev() {
+            if matches!(
+                self.entries.get(progress_index),
+                Some(ChatEntry::ToolProgress {
+                    tool_call_id: current,
+                    ..
+                }) if current == &tool_call_id
+            ) {
+                self.remove_entry_at(progress_index);
+            }
+        }
+
+        self.push_entry(ChatEntry::ToolResult {
+            tool_call_id,
+            tool_name,
+            arguments,
+            content: message.unwrap_or_default(),
+            state: if cancelled {
+                ToolResultState::Cancelled
+            } else if success {
+                ToolResultState::Success
+            } else {
+                ToolResultState::Error
+            },
+            agent_id,
+            cwd,
+        });
+    }
+
+    fn remove_entry_at(&mut self, index: usize) {
+        if index >= self.entries.len() {
+            return;
+        }
+        self.entries.remove(index);
+        let id = self.entry_ids.remove(index);
+        self.pending_screen_changes
+            .push_back(ScreenChange::Remove(id));
     }
 
     fn subagent_index(
@@ -1673,14 +1841,29 @@ fn shift_is_pressed() -> bool {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    draw_frame(frame, app, None);
+    draw_frame(frame, app, None, 0);
 }
 
-fn draw_with_screen(frame: &mut Frame, app: &App, screen: &mut ScreenModel) {
-    draw_frame(frame, app, Some(screen));
+fn draw_with_screen(
+    frame: &mut Frame,
+    app: &App,
+    screen: &mut ScreenModel,
+    animation_started_at: Instant,
+) {
+    draw_frame(
+        frame,
+        app,
+        Some(screen),
+        animation_started_at.elapsed().as_millis() as u64,
+    );
 }
 
-fn draw_frame(frame: &mut Frame, app: &App, screen: Option<&mut ScreenModel>) {
+fn draw_frame(
+    frame: &mut Frame,
+    app: &App,
+    screen: Option<&mut ScreenModel>,
+    animation_elapsed_ms: u64,
+) {
     let input_height = input_height(app, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1694,7 +1877,7 @@ fn draw_frame(frame: &mut Frame, app: &App, screen: Option<&mut ScreenModel>) {
 
     frame.render_widget(status_bar(app), layout[0]);
     if let Some(screen) = screen {
-        draw_live_chat(frame, app, screen, layout[1]);
+        draw_live_chat(frame, app, screen, layout[1], animation_elapsed_ms);
     } else {
         draw_chat(frame, app, layout[1]);
     }
@@ -1788,6 +1971,7 @@ async fn run_loop(
     let mut events = runtime.session.subscribe();
     let mut screen_model = ScreenModel::default();
     let mut permission_requests_open = true;
+    let animation_started_at = Instant::now();
     let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -1795,7 +1979,8 @@ async fn run_loop(
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
-        terminal.draw(|frame| draw_with_screen(frame, &app, &mut screen_model))?;
+        terminal
+            .draw(|frame| draw_with_screen(frame, &app, &mut screen_model, animation_started_at))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);
 
@@ -3126,11 +3311,18 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     )
 }
 
-fn draw_live_chat(frame: &mut Frame, app: &App, screen: &mut ScreenModel, area: Rect) {
-    let mut lines = screen.visible_live_lines_at_width(
+fn draw_live_chat(
+    frame: &mut Frame,
+    app: &App,
+    screen: &mut ScreenModel,
+    area: Rect,
+    animation_elapsed_ms: u64,
+) {
+    let mut lines = screen.visible_live_lines_at_width_with_clock(
         Platform::current(),
         area.width as usize,
         area.height as usize,
+        animation_elapsed_ms,
     );
     if app.status.busy {
         if !lines.is_empty() {
@@ -3213,6 +3405,65 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
         ChatEntry::Assistant { content, .. } => {
             Some(TranscriptPayload::AssistantMarkdown(content.clone()))
         }
+        ChatEntry::Tool {
+            tool_call_id,
+            tool_name,
+            arguments,
+            success,
+            state,
+            agent_id,
+            started_at,
+            cwd,
+            ..
+        } => Some(TranscriptPayload::ToolHeader(ToolHeaderPayload {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            agent_id: agent_id.clone(),
+            started_at: *started_at,
+            state: if *success == Some(true) {
+                ToolCallState::Success
+            } else if *success == Some(false) {
+                if matches!(state, ToolCallState::Cancelled) {
+                    ToolCallState::Cancelled
+                } else {
+                    ToolCallState::Error
+                }
+            } else {
+                *state
+            },
+            cwd: cwd.clone(),
+        })),
+        ChatEntry::ToolProgress {
+            tool_call_id,
+            tool_name,
+            content,
+            kind,
+            agent_id,
+        } => Some(TranscriptPayload::ToolProgress(ToolProgressPayload {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            content: content.clone(),
+            kind: *kind,
+            agent_id: agent_id.clone(),
+        })),
+        ChatEntry::ToolResult {
+            tool_call_id,
+            tool_name,
+            arguments,
+            content,
+            state,
+            agent_id,
+            cwd,
+        } => Some(TranscriptPayload::ToolResult(ToolResultPayload {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            content: content.clone(),
+            state: *state,
+            agent_id: agent_id.clone(),
+            cwd: cwd.clone(),
+        })),
         _ => {
             let lines = entry_lines(entry, show_internals);
             (!lines.is_empty()).then_some(TranscriptPayload::PreRendered(lines))
@@ -3245,47 +3496,6 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
         ),
-        ChatEntry::Tool {
-            tool_name,
-            command,
-            output,
-            success,
-            unknown,
-            agent_id,
-            ..
-        } if show_internals || is_shell_tool(tool_name) => {
-            let state = if *unknown {
-                "unknown"
-            } else {
-                match success {
-                    None => "running",
-                    Some(true) => "done",
-                    Some(false) => "failed",
-                }
-            };
-            let label = format!(
-                "tool {} [{}]{}",
-                tool_name,
-                state,
-                agent_suffix(agent_id.as_deref())
-            );
-            let content = match (command, output.is_empty()) {
-                (Some(command), false) => format!("$ {command}\n{output}"),
-                (Some(command), true) => format!("$ {command}"),
-                (None, false) => output.clone(),
-                (None, true) => String::new(),
-            };
-            let mut lines = labeled_lines(
-                &label,
-                &content,
-                Style::default().fg(Color::Rgb(139, 181, 255)),
-            );
-            if content.is_empty() {
-                lines.truncate(1);
-            }
-            lines
-        }
-        ChatEntry::Tool { .. } => Vec::new(),
         ChatEntry::Subagent {
             display_name,
             status,
@@ -3366,6 +3576,9 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             )
         }
+        ChatEntry::Tool { .. } | ChatEntry::ToolProgress { .. } | ChatEntry::ToolResult { .. } => {
+            Vec::new()
+        }
         ChatEntry::Completed => Vec::new(),
     }
 }
@@ -3384,20 +3597,6 @@ fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'st
         ])
     }));
     rendered
-}
-
-fn is_shell_tool(tool_name: &str) -> bool {
-    let tool_name = tool_name.to_ascii_lowercase();
-    tool_name.contains("shell") || tool_name.contains("bash") || tool_name.contains("powershell")
-}
-
-fn tool_command(arguments: &serde_json::Value) -> Option<String> {
-    for key in ["command", "cmd", "script", "fullCommandText"] {
-        if let Some(command) = arguments.get(key).and_then(serde_json::Value::as_str) {
-            return Some(command.to_string());
-        }
-    }
-    arguments.as_str().map(ToString::to_string)
 }
 
 fn markdown_prefixed_lines(
@@ -3946,9 +4145,16 @@ mod tests {
         });
         app.add_diagnostic("session resumed");
 
-        let rendered = super::chat_lines(&app);
-        assert_eq!(rendered.len(), 2);
-        assert!(rendered[1].to_string().contains("internal chain"));
+        let rendered: Vec<String> = super::chat_lines(&app)
+            .iter()
+            .map(ToString::to_string)
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert!(rendered.iter().any(|line| line.contains("internal chain")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.to_ascii_lowercase().contains("grep")));
+        assert!(!rendered.iter().any(|line| line.contains("session resumed")));
         assert_eq!(
             handle_key(
                 &mut app,
@@ -3967,11 +4173,12 @@ mod tests {
             .map(ToString::to_string)
             .filter(|line| !line.is_empty())
             .collect();
-        assert_eq!(rendered.len(), 3);
-        assert!(rendered[0].contains("internal chain"));
-        assert!(rendered[1].contains("grep"));
-        assert!(rendered[2].starts_with("debug"));
-        assert!(rendered[2].contains("session resumed"));
+        assert!(rendered.iter().any(|line| line.contains("internal chain")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.to_ascii_lowercase().contains("grep")));
+        assert!(rendered.iter().any(|line| line.starts_with("debug")));
+        assert!(rendered.iter().any(|line| line.contains("session resumed")));
     }
 
     #[test]
