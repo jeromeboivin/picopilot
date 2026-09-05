@@ -35,8 +35,8 @@ use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
 use crate::screen_model::{
-    enter_main_screen, render_entry_lines, restore_main_screen, terminal_options, LiveEntryKind,
-    Platform, ScreenChange, ScreenEntry, ScreenModel,
+    enter_main_screen, render_transcript_payload, restore_main_screen, terminal_options,
+    LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel, TranscriptPayload,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -361,9 +361,13 @@ impl App {
             ),
             ChatEntry::Completed => return None,
         };
-        let lines = entry_lines(entry, self.show_internals);
-        (!lines.is_empty())
-            .then(|| ScreenEntry::new(self.entry_ids[index].clone(), kind, lines, completed))
+        let payload = entry_payload(entry, self.show_internals)?;
+        Some(ScreenEntry::with_payload(
+            self.entry_ids[index].clone(),
+            kind,
+            payload,
+            completed,
+        ))
     }
 
     fn queue_screen_change(&mut self, index: usize) {
@@ -1672,11 +1676,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_frame(frame, app, None);
 }
 
-fn draw_with_screen(frame: &mut Frame, app: &App, screen: &ScreenModel) {
+fn draw_with_screen(frame: &mut Frame, app: &App, screen: &mut ScreenModel) {
     draw_frame(frame, app, Some(screen));
 }
 
-fn draw_frame(frame: &mut Frame, app: &App, screen: Option<&ScreenModel>) {
+fn draw_frame(frame: &mut Frame, app: &App, screen: Option<&mut ScreenModel>) {
     let input_height = input_height(app, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1791,7 +1795,7 @@ async fn run_loop(
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
-        terminal.draw(|frame| draw_with_screen(frame, &app, &screen_model))?;
+        terminal.draw(|frame| draw_with_screen(frame, &app, &mut screen_model))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);
 
@@ -3122,7 +3126,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     )
 }
 
-fn draw_live_chat(frame: &mut Frame, app: &App, screen: &ScreenModel, area: Rect) {
+fn draw_live_chat(frame: &mut Frame, app: &App, screen: &mut ScreenModel, area: Rect) {
     let mut lines = screen.visible_live_lines_at_width(
         Platform::current(),
         area.width as usize,
@@ -3168,10 +3172,6 @@ fn chat_lines(app: &App) -> Vec<Line<'static>> {
 fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for entry in app.entries() {
-        let rendered = entry_lines(entry, app.show_internals);
-        if rendered.is_empty() {
-            continue;
-        }
         let kind = match entry {
             ChatEntry::User(_) => LiveEntryKind::User,
             ChatEntry::Assistant { agent_id, .. } => {
@@ -3183,7 +3183,10 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
             }
             _ => LiveEntryKind::Other,
         };
-        lines.extend(render_entry_lines(kind, &rendered, width));
+        let Some(payload) = entry_payload(entry, app.show_internals) else {
+            continue;
+        };
+        lines.extend(render_transcript_payload(kind, &payload, width));
     }
     if app.status.busy {
         lines.push(Line::default());
@@ -3203,6 +3206,18 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPayload> {
+    match entry {
+        ChatEntry::Assistant { content, .. } => {
+            Some(TranscriptPayload::AssistantMarkdown(content.clone()))
+        }
+        _ => {
+            let lines = entry_lines(entry, show_internals);
+            (!lines.is_empty()).then_some(TranscriptPayload::PreRendered(lines))
+        }
+    }
 }
 
 fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
@@ -3768,7 +3783,7 @@ mod tests {
         ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
-    use crate::screen_model::{render_entry_lines, ScreenChange};
+    use crate::screen_model::{render_entry_lines, render_transcript_payload, ScreenChange};
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
@@ -4225,7 +4240,7 @@ mod tests {
                 ScreenChange::Reset | ScreenChange::Remove(_) => None,
             });
             let entry = entry.expect("assistant screen change");
-            render_entry_lines(entry.kind(), entry.lines(), 40)
+            render_transcript_payload(entry.kind(), entry.payload(), 40)
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()

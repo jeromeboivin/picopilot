@@ -10,6 +10,9 @@ use syntect::highlighting::{
     StyleModifier, Theme, ThemeItem, ThemeSettings,
 };
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 
@@ -74,12 +77,40 @@ pub(crate) fn assistant_markdown_lines(content: &str, base_style: Style) -> Vec<
     assistant_markdown_lines_with_highlighter(content, base_style, Some(highlighter))
 }
 
+pub(crate) fn assistant_markdown_lines_for_widths(
+    content: &str,
+    base_style: Style,
+    table_width: usize,
+    terminal_width: usize,
+) -> Vec<Line<'static>> {
+    static HIGHLIGHTER: OnceLock<CodeHighlighter> = OnceLock::new();
+    let highlighter = HIGHLIGHTER.get_or_init(CodeHighlighter::new);
+    assistant_markdown_lines_with_highlighter_and_widths(
+        content,
+        base_style,
+        Some(highlighter),
+        table_width,
+        terminal_width,
+    )
+}
+
 fn assistant_markdown_lines_with_highlighter(
     content: &str,
     base_style: Style,
     highlighter: Option<&CodeHighlighter>,
 ) -> Vec<Line<'static>> {
-    AssistantMarkdownRenderer::new(base_style, highlighter).render(content)
+    assistant_markdown_lines_with_highlighter_and_widths(content, base_style, highlighter, 80, 80)
+}
+
+fn assistant_markdown_lines_with_highlighter_and_widths(
+    content: &str,
+    base_style: Style,
+    highlighter: Option<&CodeHighlighter>,
+    table_width: usize,
+    terminal_width: usize,
+) -> Vec<Line<'static>> {
+    AssistantMarkdownRenderer::new(base_style, highlighter, table_width, terminal_width)
+        .render(content)
 }
 
 struct AssistantMarkdownRenderer<'a> {
@@ -96,6 +127,8 @@ struct AssistantMarkdownRenderer<'a> {
     link_stack: Vec<LinkState>,
     suppressed_depth: usize,
     highlighter: Option<&'a CodeHighlighter>,
+    table_width: usize,
+    terminal_width: usize,
 }
 
 struct ListState {
@@ -115,14 +148,33 @@ struct LinkState {
 
 struct MarkdownTable {
     alignments: Vec<Alignment>,
-    rows: Vec<Vec<String>>,
-    current_row: Vec<String>,
-    current_cell: String,
+    rows: Vec<Vec<TableCell>>,
+    current_row: Vec<TableCell>,
+    current_cell: TableCell,
     header_rows: usize,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct TableCell {
+    spans: Vec<Span<'static>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableCluster {
+    text: String,
+    style: Style,
+    width: usize,
+}
+
+type WrappedTableCell = Vec<Vec<TableCluster>>;
+
 impl<'a> AssistantMarkdownRenderer<'a> {
-    fn new(base_style: Style, highlighter: Option<&'a CodeHighlighter>) -> Self {
+    fn new(
+        base_style: Style,
+        highlighter: Option<&'a CodeHighlighter>,
+        table_width: usize,
+        terminal_width: usize,
+    ) -> Self {
         Self {
             lines: Vec::new(),
             spans: Vec::new(),
@@ -137,6 +189,8 @@ impl<'a> AssistantMarkdownRenderer<'a> {
             link_stack: Vec::new(),
             suppressed_depth: 0,
             highlighter,
+            table_width,
+            terminal_width,
         }
     }
 
@@ -221,7 +275,7 @@ impl<'a> AssistantMarkdownRenderer<'a> {
                     alignments,
                     rows: Vec::new(),
                     current_row: Vec::new(),
-                    current_cell: String::new(),
+                    current_cell: TableCell::default(),
                     header_rows: 0,
                 });
             }
@@ -352,6 +406,10 @@ impl<'a> AssistantMarkdownRenderer<'a> {
 
     fn push_table_event(&mut self, event: Event<'_>) {
         match event {
+            Event::Start(Tag::Strong) => self.push_style(self.style().add_modifier(Modifier::BOLD)),
+            Event::Start(Tag::Emphasis) => {
+                self.push_style(self.style().add_modifier(Modifier::ITALIC))
+            }
             Event::Start(_) => {}
             Event::End(TagEnd::TableCell) => {
                 if let Some(table) = &mut self.table {
@@ -375,8 +433,15 @@ impl<'a> AssistantMarkdownRenderer<'a> {
             }
             Event::End(TagEnd::Table) => self.render_table(),
             Event::Text(text) => self.push_table_text(&text),
-            Event::Code(code) => self.push_table_text(&code),
+            Event::Code(code) => {
+                let mut style = self.style();
+                style.fg = Some(palette::PERMISSION);
+                style.bg = None;
+                self.push_table_text_with_style(&sanitize_text(&code), style);
+            }
             Event::SoftBreak => self.push_table_text(" "),
+            Event::HardBreak => self.push_table_text("\n"),
+            Event::End(TagEnd::Strong) | Event::End(TagEnd::Emphasis) => self.pop_style(),
             _ => {}
         }
     }
@@ -505,8 +570,13 @@ impl<'a> AssistantMarkdownRenderer<'a> {
     }
 
     fn push_table_text(&mut self, text: &str) {
+        let style = self.style();
+        self.push_table_text_with_style(&sanitize_text(text), style);
+    }
+
+    fn push_table_text_with_style(&mut self, text: &str, style: Style) {
         if let Some(table) = &mut self.table {
-            table.current_cell.push_str(&sanitize_text(text));
+            push_table_span(&mut table.current_cell.spans, text, style);
         }
     }
 
@@ -514,58 +584,11 @@ impl<'a> AssistantMarkdownRenderer<'a> {
         let Some(table) = self.table.take() else {
             return;
         };
-        let column_count = table.rows.iter().map(Vec::len).max().unwrap_or(0);
-        let widths: Vec<usize> = (0..column_count)
-            .map(|column| {
-                table
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.get(column))
-                    .map(|cell| cell.chars().count())
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-
-        for (row_index, row) in table.rows.iter().enumerate() {
-            if row_index == table.header_rows {
-                let divider = widths
-                    .iter()
-                    .map(|width| "-".repeat(width + 1))
-                    .collect::<Vec<_>>()
-                    .join("+");
-                self.lines
-                    .push(Line::from(Span::styled(divider, self.style())));
-            }
-            let cells = (0..column_count)
-                .map(|column| {
-                    let cell = row.get(column).map(String::as_str).unwrap_or("");
-                    match table
-                        .alignments
-                        .get(column)
-                        .copied()
-                        .unwrap_or(Alignment::None)
-                    {
-                        Alignment::Right => format!("{cell:>width$}", width = widths[column]),
-                        Alignment::Center => {
-                            let padding = widths[column].saturating_sub(cell.chars().count());
-                            let left = padding / 2;
-                            format!("{}{cell}{}", " ".repeat(left), " ".repeat(padding - left))
-                        }
-                        Alignment::None | Alignment::Left => {
-                            format!("{cell:<width$}", width = widths[column])
-                        }
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" | ");
-            let style = if row_index < table.header_rows {
-                self.style().add_modifier(Modifier::BOLD)
-            } else {
-                self.style()
-            };
-            self.lines.push(Line::from(Span::styled(cells, style)));
-        }
+        self.lines.extend(render_assistant_table(
+            &table,
+            self.table_width,
+            self.terminal_width,
+        ));
     }
 
     fn push_text_with_style(&mut self, text: &str, style: Style) {
@@ -618,6 +641,466 @@ impl<'a> AssistantMarkdownRenderer<'a> {
         self.flush_line(false);
         self.lines
     }
+}
+
+const MIN_TABLE_COLUMN_WIDTH: usize = 3;
+const TABLE_SAFETY_MARGIN: usize = 4;
+const TABLE_BORDER_OVERHEAD: usize = 1;
+const MAX_TABLE_ROW_LINES: usize = 4;
+
+fn push_table_span(spans: &mut Vec<Span<'static>>, text: &str, style: Style) {
+    if text.is_empty() {
+        return;
+    }
+    if spans.last().is_some_and(|span| span.style == style) {
+        spans
+            .last_mut()
+            .expect("table span exists")
+            .content
+            .to_mut()
+            .push_str(text);
+    } else {
+        spans.push(Span::styled(text.to_string(), style));
+    }
+}
+
+fn render_assistant_table(
+    table: &MarkdownTable,
+    table_width: usize,
+    terminal_width: usize,
+) -> Vec<Line<'static>> {
+    let column_count = table.rows.iter().map(Vec::len).max().unwrap_or(0);
+    if column_count == 0 || table.rows.is_empty() {
+        return Vec::new();
+    }
+
+    let (ideal_widths, minimum_widths) = table_column_widths(table, column_count);
+    let Some(widths) = allocate_table_widths(&ideal_widths, &minimum_widths, table_width) else {
+        return render_vertical_table(table, table_width, terminal_width, column_count);
+    };
+    let wrapped_rows = table
+        .rows
+        .iter()
+        .map(|row| {
+            (0..column_count)
+                .map(|column| {
+                    row.get(column)
+                        .map(|cell| wrap_table_cell(cell, widths[column]))
+                        .unwrap_or_else(|| wrap_table_cell(&TableCell::default(), widths[column]))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let row_too_tall = wrapped_rows
+        .iter()
+        .any(|row| row.iter().map(Vec::len).max().unwrap_or_default() > MAX_TABLE_ROW_LINES);
+    let normal = render_normal_table(table, &widths, &wrapped_rows, column_count);
+    let available_width = table_width.saturating_sub(TABLE_SAFETY_MARGIN);
+    let normal_too_wide = normal.iter().any(|line| line.width() > available_width);
+
+    if row_too_tall || normal_too_wide {
+        render_vertical_table(table, table_width, terminal_width, column_count)
+    } else {
+        normal
+    }
+}
+
+fn table_column_widths(table: &MarkdownTable, column_count: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut ideal = Vec::with_capacity(column_count);
+    let mut minimum = Vec::with_capacity(column_count);
+    for column in 0..column_count {
+        let mut ideal_width = 0;
+        let mut longest_word = 0;
+        for cell in table.rows.iter().filter_map(|row| row.get(column)) {
+            let lines = table_cell_lines(cell);
+            ideal_width = ideal_width.max(
+                lines
+                    .iter()
+                    .map(|line| line.iter().map(|cluster| cluster.width).sum())
+                    .max()
+                    .unwrap_or_default(),
+            );
+            longest_word = longest_word.max(
+                lines
+                    .iter()
+                    .flat_map(|line| table_word_tokens(line))
+                    .map(|word| word.iter().map(|cluster| cluster.width).sum())
+                    .max()
+                    .unwrap_or_default(),
+            );
+        }
+        ideal.push(ideal_width.max(MIN_TABLE_COLUMN_WIDTH));
+        minimum.push(longest_word.max(MIN_TABLE_COLUMN_WIDTH));
+    }
+    (ideal, minimum)
+}
+
+fn table_content_budget(terminal_width: usize, column_count: usize) -> usize {
+    terminal_width.saturating_sub(
+        TABLE_SAFETY_MARGIN + TABLE_BORDER_OVERHEAD + column_count * MIN_TABLE_COLUMN_WIDTH,
+    )
+}
+
+fn allocate_table_widths(
+    ideal_widths: &[usize],
+    minimum_widths: &[usize],
+    terminal_width: usize,
+) -> Option<Vec<usize>> {
+    let column_count = ideal_widths.len();
+    let budget = table_content_budget(terminal_width, column_count);
+    let minimum_total = column_count * MIN_TABLE_COLUMN_WIDTH;
+    if budget < minimum_total {
+        return None;
+    }
+
+    let ideal_total = ideal_widths.iter().sum::<usize>();
+    if ideal_total <= budget {
+        return Some(ideal_widths.to_vec());
+    }
+
+    let minimum_total = minimum_widths.iter().sum::<usize>();
+    if minimum_total <= budget {
+        let mut widths = minimum_widths.to_vec();
+        let weights = ideal_widths
+            .iter()
+            .zip(minimum_widths)
+            .map(|(ideal, minimum)| ideal.saturating_sub(*minimum))
+            .collect::<Vec<_>>();
+        distribute_table_slack(&mut widths, &weights, budget - minimum_total);
+        return Some(widths);
+    }
+
+    let mut widths = vec![MIN_TABLE_COLUMN_WIDTH; column_count];
+    let weights = minimum_widths
+        .iter()
+        .map(|minimum| minimum.saturating_sub(MIN_TABLE_COLUMN_WIDTH))
+        .collect::<Vec<_>>();
+    distribute_table_slack(
+        &mut widths,
+        &weights,
+        budget - column_count * MIN_TABLE_COLUMN_WIDTH,
+    );
+    Some(widths)
+}
+
+fn distribute_table_slack(widths: &mut [usize], weights: &[usize], slack: usize) {
+    if slack == 0 || widths.is_empty() {
+        return;
+    }
+    let total_weight = weights.iter().sum::<usize>();
+    if total_weight == 0 {
+        let share = slack / widths.len();
+        let remainder = slack % widths.len();
+        for (index, width) in widths.iter_mut().enumerate() {
+            *width += share + usize::from(index < remainder);
+        }
+        return;
+    }
+
+    let mut remainders = Vec::with_capacity(widths.len());
+    let mut distributed = 0;
+    for (index, weight) in weights.iter().copied().enumerate() {
+        let numerator = (slack as u128) * (weight as u128);
+        let share = (numerator / total_weight as u128) as usize;
+        let remainder = numerator % total_weight as u128;
+        widths[index] += share;
+        distributed += share;
+        remainders.push((remainder, index));
+    }
+
+    remainders.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    for (_, index) in remainders.into_iter().take(slack - distributed) {
+        widths[index] += 1;
+    }
+}
+
+fn render_normal_table(
+    table: &MarkdownTable,
+    widths: &[usize],
+    wrapped_rows: &[Vec<WrappedTableCell>],
+    column_count: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![table_border(widths, '┌', '┬', '┐')];
+    for (row_index, row) in wrapped_rows.iter().enumerate() {
+        let row_height = row.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..row_height {
+            let mut spans = vec![Span::raw("│")];
+            for column in 0..column_count {
+                let cell = &row[column];
+                let top_padding = (row_height - cell.len()) / 2;
+                let cell_line = line_index
+                    .checked_sub(top_padding)
+                    .and_then(|index| cell.get(index))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let alignment = if row_index < table.header_rows {
+                    Alignment::Center
+                } else {
+                    table
+                        .alignments
+                        .get(column)
+                        .copied()
+                        .unwrap_or(Alignment::None)
+                };
+                append_aligned_cell(&mut spans, cell_line, widths[column], alignment);
+                spans.push(Span::raw("│"));
+            }
+            lines.push(Line::from(spans));
+        }
+        if row_index + 1 < wrapped_rows.len() {
+            lines.push(table_border(widths, '├', '┼', '┤'));
+        }
+    }
+    lines.push(table_border(widths, '└', '┴', '┘'));
+    lines
+}
+
+fn table_border(widths: &[usize], left: char, junction: char, right: char) -> Line<'static> {
+    let mut spans = vec![Span::raw(left.to_string())];
+    for (index, width) in widths.iter().copied().enumerate() {
+        spans.push(Span::raw("─".repeat(width + 2)));
+        spans.push(Span::raw(if index + 1 == widths.len() {
+            right.to_string()
+        } else {
+            junction.to_string()
+        }));
+    }
+    Line::from(spans)
+}
+
+fn append_aligned_cell(
+    spans: &mut Vec<Span<'static>>,
+    cell_line: &[TableCluster],
+    width: usize,
+    alignment: Alignment,
+) {
+    spans.push(Span::raw(" "));
+    let content_width = cell_line.iter().map(|cluster| cluster.width).sum::<usize>();
+    let padding = width.saturating_sub(content_width);
+    let (left, right) = match alignment {
+        Alignment::Right => (padding, 0),
+        Alignment::Center => (padding / 2, padding - padding / 2),
+        Alignment::None | Alignment::Left => (0, padding),
+    };
+    if left > 0 {
+        spans.push(Span::raw(" ".repeat(left)));
+    }
+    append_table_clusters(spans, cell_line);
+    if right > 0 {
+        spans.push(Span::raw(" ".repeat(right)));
+    }
+    spans.push(Span::raw(" "));
+}
+
+fn append_table_clusters(spans: &mut Vec<Span<'static>>, clusters: &[TableCluster]) {
+    for cluster in clusters {
+        push_table_span(spans, &cluster.text, cluster.style);
+    }
+}
+
+fn render_vertical_table(
+    table: &MarkdownTable,
+    table_width: usize,
+    terminal_width: usize,
+    column_count: usize,
+) -> Vec<Line<'static>> {
+    let Some(headers) = table.rows.first() else {
+        return Vec::new();
+    };
+    let data_rows = table
+        .rows
+        .iter()
+        .skip(table.header_rows)
+        .collect::<Vec<_>>();
+    let separator_width = if table_width < terminal_width {
+        table_width
+    } else {
+        terminal_width.saturating_sub(1)
+    }
+    .min(40);
+    let mut lines = Vec::new();
+
+    for (row_index, row) in data_rows.iter().enumerate() {
+        for column in 0..column_count {
+            let header = headers.get(column).cloned().unwrap_or_default();
+            let label_width = table_width.saturating_sub(3).max(1);
+            let label_lines = wrap_table_label(&header, label_width);
+            let value = row.get(column).cloned().unwrap_or_default();
+            let value_width = table_width
+                .saturating_sub(
+                    label_lines
+                        .iter()
+                        .map(|line| line.iter().map(|cluster| cluster.width).sum::<usize>())
+                        .max()
+                        .unwrap_or_default()
+                        .saturating_add(2),
+                )
+                .max(1);
+            let value_lines = wrap_table_cell(&value, value_width);
+            for (line_index, label_line) in label_lines.iter().enumerate() {
+                let mut spans = Vec::new();
+                append_bold_table_clusters(&mut spans, label_line);
+                if line_index + 1 == label_lines.len() {
+                    spans.push(Span::raw(": "));
+                    append_table_clusters(&mut spans, &value_lines[0]);
+                }
+                lines.push(Line::from(spans));
+            }
+            for value_line in value_lines.iter().skip(1) {
+                let mut spans = vec![Span::raw("  ")];
+                append_table_clusters(&mut spans, value_line);
+                lines.push(Line::from(spans));
+            }
+        }
+        if row_index + 1 < data_rows.len() {
+            lines.push(Line::from("─".repeat(separator_width)));
+        }
+    }
+    lines
+}
+
+fn append_bold_table_clusters(spans: &mut Vec<Span<'static>>, clusters: &[TableCluster]) {
+    for cluster in clusters {
+        push_table_span(
+            spans,
+            &cluster.text,
+            cluster.style.add_modifier(Modifier::BOLD),
+        );
+    }
+}
+
+fn wrap_table_label(cell: &TableCell, width: usize) -> WrappedTableCell {
+    let clusters = table_clusters(&cell.spans)
+        .into_iter()
+        .map(|cluster| {
+            if cluster.text == "\n" {
+                TableCluster {
+                    text: " ".to_string(),
+                    style: cluster.style,
+                    width: 1,
+                }
+            } else {
+                cluster
+            }
+        })
+        .collect::<Vec<_>>();
+    wrap_table_line(&clusters, width)
+}
+
+fn table_cell_lines(cell: &TableCell) -> Vec<Vec<TableCluster>> {
+    let mut lines = vec![Vec::new()];
+    for cluster in table_clusters(&cell.spans) {
+        if cluster.text == "\n" {
+            lines.push(Vec::new());
+        } else {
+            lines
+                .last_mut()
+                .expect("table cell always has a line")
+                .push(cluster);
+        }
+    }
+    lines
+}
+
+fn table_clusters(spans: &[Span<'static>]) -> Vec<TableCluster> {
+    let mut text = String::new();
+    let mut styles = Vec::new();
+    let mut byte_offset = 0;
+    for span in spans {
+        for character in span.content.chars() {
+            styles.push((byte_offset, span.style));
+            byte_offset += character.len_utf8();
+            text.push(character);
+        }
+    }
+
+    let mut display_column = 0;
+    text.grapheme_indices(true)
+        .flat_map(|(start, grapheme)| {
+            let style = styles
+                .iter()
+                .rev()
+                .find(|(offset, _)| *offset <= start)
+                .map(|(_, style)| *style)
+                .unwrap_or_default();
+            let normalized = grapheme.nfc().collect::<String>();
+            if normalized == "\n" {
+                display_column = 0;
+                return vec![TableCluster {
+                    text: normalized,
+                    style,
+                    width: 0,
+                }];
+            }
+            if normalized == "\t" {
+                let spaces = 8 - (display_column % 8);
+                display_column += spaces;
+                return (0..spaces)
+                    .map(|_| TableCluster {
+                        text: " ".to_string(),
+                        style,
+                        width: 1,
+                    })
+                    .collect::<Vec<_>>();
+            }
+            let width = UnicodeWidthStr::width(normalized.as_str());
+            display_column += width;
+            vec![TableCluster {
+                text: normalized,
+                style,
+                width,
+            }]
+        })
+        .collect()
+}
+
+fn wrap_table_cell(cell: &TableCell, width: usize) -> WrappedTableCell {
+    let width = width.max(1);
+    table_cell_lines(cell)
+        .into_iter()
+        .flat_map(|line| wrap_table_line(&line, width))
+        .collect()
+}
+
+fn wrap_table_line(line: &[TableCluster], width: usize) -> WrappedTableCell {
+    if line.is_empty() {
+        return vec![Vec::new()];
+    }
+    let mut rows = vec![Vec::new()];
+    let mut column = 0;
+    for word in table_word_tokens(line) {
+        let word_width = word.iter().map(|cluster| cluster.width).sum::<usize>();
+        if column > 0 && column + word_width > width {
+            rows.push(Vec::new());
+            column = 0;
+        }
+        for cluster in word {
+            if column > 0 && column + cluster.width > width {
+                rows.push(Vec::new());
+                column = 0;
+            }
+            rows.last_mut()
+                .expect("table row always exists")
+                .push(cluster.clone());
+            column += cluster.width;
+        }
+    }
+    rows
+}
+
+fn table_word_tokens(line: &[TableCluster]) -> Vec<Vec<TableCluster>> {
+    let mut tokens = Vec::new();
+    let mut token = Vec::new();
+    for cluster in line {
+        token.push(cluster.clone());
+        if cluster.text == " " {
+            tokens.push(std::mem::take(&mut token));
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    tokens
 }
 
 struct CodeHighlighter {
@@ -883,11 +1366,26 @@ fn take_issue_name(text: &str, start: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use ratatui::style::{Color, Modifier, Style};
+    use unicode_width::UnicodeWidthStr;
 
-    use super::{assistant_markdown_lines_with_highlighter, CodeHighlighter};
+    use super::{
+        allocate_table_widths, assistant_markdown_lines_with_highlighter,
+        assistant_markdown_lines_with_highlighter_and_widths, table_content_budget,
+        wrap_table_cell, CodeHighlighter, TableCell,
+    };
 
     fn lines(content: &str) -> Vec<ratatui::text::Line<'static>> {
         assistant_markdown_lines_with_highlighter(content, Style::default().fg(Color::White), None)
+    }
+
+    fn lines_at_width(content: &str, width: usize) -> Vec<ratatui::text::Line<'static>> {
+        assistant_markdown_lines_with_highlighter_and_widths(
+            content,
+            Style::default().fg(Color::White),
+            None,
+            width,
+            width,
+        )
     }
 
     #[test]
@@ -1159,9 +1657,215 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "next milestone: Claude-style width-dependent assistant tables"]
-    fn claude_style_table_layout_is_next_milestone() {
-        let _ = lines("| Header | Value |\n| --- | --- |\n| key | value |");
-        panic!("Claude-style table layout remains unimplemented");
+    fn claude_style_table_layout_is_rendered() {
+        let rendered = lines("| Header | Value |\n| --- | --- |\n| key | value |");
+        assert_eq!(
+            rendered.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![
+                "┌────────┬───────┐",
+                "│ Header │ Value │",
+                "├────────┼───────┤",
+                "│ key    │ value │",
+                "└────────┴───────┘",
+            ]
+        );
+        assert!(rendered[0]
+            .spans
+            .iter()
+            .all(|span| span.style == Style::default()));
+        assert!(rendered[1]
+            .spans
+            .iter()
+            .all(|span| !span.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn one_column_tables_have_complete_box_borders() {
+        let rendered = lines_at_width("| Header |\n| --- |\n| value |", 80);
+
+        assert_eq!(
+            rendered.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![
+                "┌────────┐",
+                "│ Header │",
+                "├────────┤",
+                "│ value  │",
+                "└────────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_alignment_applies_only_to_data_cells() {
+        let rendered = lines_at_width(
+            "| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |",
+            80,
+        );
+        let rows = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(rows[1], "│ Left │ Center │ Right │");
+        assert_eq!(rows[3], "│ a    │   b    │     c │");
+        assert!(!rendered[1]
+            .spans
+            .iter()
+            .any(|span| span.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn table_has_a_middle_rule_after_the_header_and_between_data_rows() {
+        let rendered = lines_at_width(
+            "| H | V |\n| --- | --- |\n| one | 1 |\n| two | 2 |\n| three | 3 |",
+            80,
+        );
+        let rules = rendered
+            .iter()
+            .filter(|line| line.to_string().starts_with('├'))
+            .count();
+
+        assert_eq!(rules, 3);
+        assert_eq!(
+            rendered.first().unwrap().to_string().chars().next(),
+            Some('┌')
+        );
+        assert_eq!(
+            rendered.last().unwrap().to_string().chars().next(),
+            Some('└')
+        );
+    }
+
+    #[test]
+    fn table_width_arithmetic_includes_borders_padding_and_safety_margin() {
+        assert_eq!(table_content_budget(40, 2), 29);
+        assert_eq!(table_content_budget(10, 2), 0);
+        assert_eq!(
+            allocate_table_widths(&[10, 20], &[3, 5], 40),
+            Some(vec![10, 19])
+        );
+    }
+
+    #[test]
+    fn long_words_are_hard_broken_at_grapheme_boundaries_when_minimums_need_slack() {
+        let rendered = lines_at_width("| H |\n| --- |\n| abcdefghij |", 12);
+        let rows = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            vec![
+                "┌──────┐",
+                "│  H   │",
+                "├──────┤",
+                "│ abcd │",
+                "│ efgh │",
+                "│ ij   │",
+                "└──────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn styled_spans_cross_wrap_boundaries_without_creating_word_breaks() {
+        let rendered = lines_at_width("| H |\n| --- |\n| **hel**lo world |", 16);
+        let data = rendered
+            .iter()
+            .find(|line| line.to_string().contains("hello"))
+            .expect("first styled data row");
+        let content = data
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert_eq!(content, "│ hello    │");
+        assert!(data.spans.iter().any(|span| {
+            span.content.contains("hel") && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+    }
+
+    #[test]
+    fn unicode_table_rows_use_display_width_and_keep_graphemes() {
+        let rendered = lines_at_width(
+            "| H | Value |\n| --- | --- |\n| 界 | e\u{301} 👩\u{200d}💻 |",
+            80,
+        );
+        let data = rendered
+            .iter()
+            .find(|line| line.to_string().contains("界"))
+            .expect("unicode data row");
+
+        assert!(data.to_string().contains("界"));
+        assert!(data.to_string().contains("é"));
+        assert!(!data.to_string().contains('\u{301}'));
+        assert_eq!(data.width(), rendered[0].width());
+    }
+
+    #[test]
+    fn a_grapheme_wider_than_its_cell_is_retained() {
+        let cell = TableCell {
+            spans: vec![ratatui::text::Span::raw("界")],
+        };
+        let wrapped = wrap_table_cell(&cell, 1);
+
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped[0][0].text, "界");
+    }
+
+    #[test]
+    fn five_wrapped_lines_trigger_vertical_key_value_fallback() {
+        let rendered = lines_at_width(
+            "| Header |\n| --- |\n| abcdefghijklmnopqrstabcdefghijklmnopqrst |\n| second |",
+            16,
+        );
+        let rows = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(rows.iter().any(|row| row.starts_with("Header: ")));
+        assert!(rows.iter().any(|row| row == "───────────────"));
+        assert!(rows.iter().all(|row| !row.starts_with('┌')));
+    }
+
+    #[test]
+    fn four_wrapped_lines_remain_a_normal_table() {
+        let rendered = lines_at_width(
+            "| Header |\n| --- |\n| abcdefghijklmnopqrstabcdefghijkl |",
+            16,
+        );
+
+        assert!(rendered.first().unwrap().to_string().starts_with('┌'));
+        assert!(rendered.last().unwrap().to_string().starts_with('└'));
+    }
+
+    #[test]
+    fn width_overflow_uses_vertical_layout_and_capped_separators() {
+        let rendered = lines_at_width(
+            "| A | B | C |\n| --- | --- | --- |\n| one | two | three |\n| four | five | six |",
+            20,
+        );
+        let rows = rendered.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(rows.iter().all(|row| !row.starts_with('┌')));
+        assert!(rows.iter().any(|row| row == &"─".repeat(19)));
+        assert!(rows.iter().any(|row| row.starts_with("A: ")));
+    }
+
+    #[test]
+    fn vertical_layout_wraps_long_header_labels_to_the_table_width() {
+        let rendered = lines_at_width(
+            "| Long header label |\n| --- |\n| one two three four five |",
+            12,
+        );
+
+        assert!(rendered
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.to_string().as_str()) <= 12));
+    }
+
+    #[test]
+    fn narrow_widths_do_not_panic_during_table_rendering() {
+        for width in [0, 1, 2, 10, 40, 80] {
+            let rendered = lines_at_width(
+                "| A | B | C |\n| --- | --- | --- |\n| one | two | three |",
+                width,
+            );
+            assert!(!rendered.is_empty(), "width {width} should render rows");
+        }
     }
 }

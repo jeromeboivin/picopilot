@@ -1,8 +1,9 @@
 use picopilot::events::EventUpdate;
 use picopilot::palette;
 use picopilot::screen_model::{
-    enter_main_screen, live_preview_enabled, render_entry_lines, terminal_options, LiveEntryKind,
-    Platform, ScreenChange, ScreenEntry, ScreenModel, FIXED_LIVE_REGION_HEIGHT,
+    enter_main_screen, live_preview_enabled, render_entry_lines, render_transcript_payload,
+    terminal_options, LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel,
+    TranscriptPayload, FIXED_LIVE_REGION_HEIGHT,
 };
 use picopilot::tui::App;
 use ratatui::backend::TestBackend;
@@ -11,6 +12,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, Viewport};
 use serde_json::json;
+use unicode_width::UnicodeWidthStr;
 
 fn apply_pending_changes(
     app: &mut App,
@@ -75,7 +77,7 @@ fn assistant_markdown_visual_buffer_fixtures_at_required_widths() {
         ),
     ];
     for (width, expected) in expected {
-        let actual = render_entry_lines(entry.kind(), entry.lines(), width)
+        let actual = render_transcript_payload(entry.kind(), entry.payload(), width)
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -84,6 +86,202 @@ fn assistant_markdown_visual_buffer_fixtures_at_required_widths() {
             expected.into_iter().map(str::to_string).collect::<Vec<_>>()
         );
     }
+}
+
+#[test]
+fn assistant_vertical_table_rows_fit_after_the_transcript_prefix_is_added() {
+    let payload = TranscriptPayload::AssistantMarkdown(
+        "| A | B | C |\n| --- | --- | --- |\n| one | two | three |\n| four | five | six |"
+            .to_string(),
+    );
+    let rendered = render_transcript_payload(LiveEntryKind::Assistant, &payload, 20);
+
+    assert!(rendered
+        .iter()
+        .all(|line| UnicodeWidthStr::width(line.to_string().as_str()) <= 20));
+    assert_eq!(
+        rendered
+            .iter()
+            .filter(|line| line.to_string().contains('─'))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn app_queues_raw_assistant_markdown_for_width_aware_rendering() {
+    let markdown = "| Header | Value |\n| --- | --- |\n| narrow | wide content |";
+    let mut app = App::new(None);
+
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-table".to_string(),
+        content: markdown.to_string(),
+        agent_id: None,
+    });
+
+    let entry = app
+        .take_screen_changes()
+        .into_iter()
+        .find_map(|change| match change {
+            ScreenChange::Upsert(entry) => Some(entry),
+            ScreenChange::Reset | ScreenChange::Remove(_) => None,
+        })
+        .expect("assistant screen entry");
+
+    assert_eq!(
+        entry.payload(),
+        &TranscriptPayload::AssistantMarkdown(markdown.to_string())
+    );
+}
+
+#[test]
+fn non_assistant_entries_keep_the_pre_rendered_payload_path() {
+    let mut app = App::new(None);
+    app.add_user_message("pre-rendered user".to_string());
+
+    let entry = app
+        .take_screen_changes()
+        .into_iter()
+        .find_map(|change| match change {
+            ScreenChange::Upsert(entry) => Some(entry),
+            ScreenChange::Reset | ScreenChange::Remove(_) => None,
+        })
+        .expect("user screen entry");
+
+    assert!(matches!(
+        entry.payload(),
+        TranscriptPayload::PreRendered(lines) if lines.iter().any(|line| line.to_string() == "pre-rendered user")
+    ));
+}
+
+#[test]
+fn live_assistant_tables_rerender_after_a_width_change() {
+    let content =
+        "| Name | Description |\n| --- | --- |\n| alpha | a long description that needs room |";
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "assistant-table",
+                LiveEntryKind::Assistant,
+                TranscriptPayload::AssistantMarkdown(content.to_string()),
+                false,
+            )),
+        )
+        .expect("live table should apply");
+
+    let narrow = screen
+        .live_lines_at_width(
+            Platform {
+                is_windows: false,
+                wt_session: false,
+            },
+            24,
+        )
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let wide = screen
+        .live_lines_at_width(
+            Platform {
+                is_windows: false,
+                wt_session: false,
+            },
+            80,
+        )
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    assert_ne!(narrow, wide);
+    assert!(matches!(
+        screen.live_entries()[0].payload(),
+        TranscriptPayload::AssistantMarkdown(value) if value == content
+    ));
+}
+
+#[test]
+fn completed_assistant_tables_commit_at_the_current_width_and_keep_only_metadata() {
+    let content = "| Header | Value |\n| --- | --- |\n| key | a value that wraps |";
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(40, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "assistant-table",
+                LiveEntryKind::Assistant,
+                TranscriptPayload::AssistantMarkdown(content.to_string()),
+                false,
+            )),
+        )
+        .expect("live table should apply");
+    let live_rows = screen
+        .live_lines_at_width(
+            Platform {
+                is_windows: false,
+                wt_session: false,
+            },
+            40,
+        )
+        .len();
+
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "assistant-table",
+                LiveEntryKind::Assistant,
+                TranscriptPayload::AssistantMarkdown(content.to_string()),
+                true,
+            )),
+        )
+        .expect("completed table should commit");
+
+    assert_eq!(screen.committed_entries()[0].height() as usize, live_rows);
+    assert_eq!(screen.committed_count(), 1);
+    let metadata = format!("{:?}", screen.committed_entries());
+    assert!(!metadata.contains("Header"));
+    assert!(!metadata.contains("┌"));
+}
+
+#[test]
+fn completed_history_is_not_recommitted_or_rerendered_by_later_updates() {
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(40, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let entry = ScreenEntry::with_payload(
+        "assistant-table",
+        LiveEntryKind::Assistant,
+        TranscriptPayload::AssistantMarkdown("| H | V |\n| --- | --- |\n| a | b |".to_string()),
+        true,
+    );
+    screen
+        .apply_change(&mut terminal, ScreenChange::Upsert(entry))
+        .expect("completed table should commit");
+    let committed_height = screen.committed_entries()[0].height();
+
+    terminal
+        .resize(ratatui::layout::Rect::new(0, 0, 80, 24))
+        .expect("terminal should resize");
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "assistant-table",
+                LiveEntryKind::Assistant,
+                TranscriptPayload::AssistantMarkdown("late update".to_string()),
+                true,
+            )),
+        )
+        .expect("late update should be ignored");
+
+    assert_eq!(screen.committed_count(), 1);
+    assert_eq!(screen.committed_entries()[0].height(), committed_height);
 }
 
 fn updated_entry_id(change: &ScreenChange) -> Option<picopilot::screen_model::TranscriptEntryId> {

@@ -12,8 +12,10 @@ use ratatui::text::Span;
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use crate::markdown::assistant_markdown_lines_for_widths;
 use crate::palette;
 use crate::transcript_wrap::{wrap_lines, WrapSpec};
+use unicode_width::UnicodeWidthStr;
 
 pub const FIXED_LIVE_REGION_HEIGHT: u16 = 1 + 9 + 3 + 1;
 
@@ -107,8 +109,10 @@ impl CommittedEntry {
 pub struct LiveEntry {
     id: TranscriptEntryId,
     kind: LiveEntryKind,
-    lines: Vec<Line<'static>>,
+    payload: TranscriptPayload,
     completed: bool,
+    revision: u64,
+    cached_render: Option<CachedRender>,
 }
 
 impl LiveEntry {
@@ -121,7 +125,14 @@ impl LiveEntry {
     }
 
     pub fn lines(&self) -> &[Line<'static>] {
-        &self.lines
+        match &self.payload {
+            TranscriptPayload::PreRendered(lines) => lines,
+            TranscriptPayload::AssistantMarkdown(_) => &[],
+        }
+    }
+
+    pub fn payload(&self) -> &TranscriptPayload {
+        &self.payload
     }
 
     pub fn completed(&self) -> bool {
@@ -132,10 +143,23 @@ impl LiveEntry {
 pub type TranscriptEntryId = String;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptPayload {
+    PreRendered(Vec<Line<'static>>),
+    AssistantMarkdown(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachedRender {
+    revision: u64,
+    width: usize,
+    lines: Vec<Line<'static>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenEntry {
     id: TranscriptEntryId,
     kind: LiveEntryKind,
-    lines: Vec<Line<'static>>,
+    payload: TranscriptPayload,
     completed: bool,
 }
 
@@ -146,10 +170,24 @@ impl ScreenEntry {
         lines: Vec<Line<'static>>,
         completed: bool,
     ) -> Self {
+        Self::with_payload(
+            id,
+            kind,
+            TranscriptPayload::PreRendered(non_empty_lines(lines)),
+            completed,
+        )
+    }
+
+    pub fn with_payload(
+        id: impl Into<String>,
+        kind: LiveEntryKind,
+        payload: TranscriptPayload,
+        completed: bool,
+    ) -> Self {
         Self {
             id: id.into(),
             kind,
-            lines: non_empty_lines(lines),
+            payload,
             completed,
         }
     }
@@ -163,7 +201,14 @@ impl ScreenEntry {
     }
 
     pub fn lines(&self) -> &[Line<'static>] {
-        &self.lines
+        match &self.payload {
+            TranscriptPayload::PreRendered(lines) => lines,
+            TranscriptPayload::AssistantMarkdown(_) => &[],
+        }
+    }
+
+    pub fn payload(&self) -> &TranscriptPayload {
+        &self.payload
     }
 
     pub fn completed(&self) -> bool {
@@ -224,8 +269,10 @@ impl ScreenModel {
         self.live.push(LiveEntry {
             id,
             kind,
-            lines: non_empty_lines(lines),
+            payload: TranscriptPayload::PreRendered(non_empty_lines(lines)),
             completed: false,
+            revision: 0,
+            cached_render: None,
         });
         Ok(())
     }
@@ -234,7 +281,9 @@ impl ScreenModel {
         let Some(entry) = self.live.iter_mut().find(|entry| entry.id == id) else {
             return false;
         };
-        entry.lines = non_empty_lines(lines);
+        entry.payload = TranscriptPayload::PreRendered(non_empty_lines(lines));
+        entry.revision = entry.revision.wrapping_add(1);
+        entry.cached_render = None;
         true
     }
 
@@ -258,14 +307,18 @@ impl ScreenModel {
 
                 if let Some(current) = self.live.iter_mut().find(|current| current.id == entry.id) {
                     current.kind = entry.kind;
-                    current.lines = entry.lines;
+                    current.payload = entry.payload;
                     current.completed = entry.completed;
+                    current.revision = current.revision.wrapping_add(1);
+                    current.cached_render = None;
                 } else {
                     self.live.push(LiveEntry {
                         id: entry.id,
                         kind: entry.kind,
-                        lines: entry.lines,
+                        payload: entry.payload,
                         completed: entry.completed,
+                        revision: 0,
+                        cached_render: None,
                     });
                 }
                 self.commit_ready(terminal)?;
@@ -302,7 +355,7 @@ impl ScreenModel {
         index: usize,
     ) -> io::Result<()> {
         let width = terminal.size()?.width as usize;
-        let lines = render_entry_lines(self.live[index].kind, &self.live[index].lines, width);
+        let lines = self.live[index].rendered_at_width(width).to_vec();
         let height = u16::try_from(lines.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -319,7 +372,7 @@ impl ScreenModel {
         Ok(())
     }
 
-    pub fn draw_live(&self, frame: &mut Frame, platform: Platform) {
+    pub fn draw_live(&mut self, frame: &mut Frame, platform: Platform) {
         frame.render_widget(
             Paragraph::new(self.visible_live_lines_at_width(
                 platform,
@@ -334,7 +387,7 @@ impl ScreenModel {
         self.live
             .iter()
             .filter(|entry| live_preview_enabled(entry.kind, platform))
-            .flat_map(|entry| entry.lines.iter().cloned())
+            .flat_map(|entry| entry.lines().iter().cloned())
             .collect()
     }
 
@@ -345,16 +398,16 @@ impl ScreenModel {
             .collect()
     }
 
-    pub fn live_lines_at_width(&self, platform: Platform, width: usize) -> Vec<Line<'static>> {
+    pub fn live_lines_at_width(&mut self, platform: Platform, width: usize) -> Vec<Line<'static>> {
         self.live
-            .iter()
+            .iter_mut()
             .filter(|entry| live_preview_enabled(entry.kind, platform))
-            .flat_map(|entry| render_entry_lines(entry.kind, &entry.lines, width))
+            .flat_map(|entry| entry.rendered_at_width(width).to_vec())
             .collect()
     }
 
     pub fn visible_live_lines_at_width(
-        &self,
+        &mut self,
         platform: Platform,
         width: usize,
         max_rows: usize,
@@ -363,6 +416,56 @@ impl ScreenModel {
             .into_iter()
             .take(max_rows)
             .collect()
+    }
+}
+
+impl LiveEntry {
+    fn rendered_at_width(&mut self, width: usize) -> &[Line<'static>] {
+        let cache_is_current = self
+            .cached_render
+            .as_ref()
+            .is_some_and(|cache| cache.revision == self.revision && cache.width == width);
+        if !cache_is_current {
+            let lines = render_transcript_payload(self.kind, &self.payload, width);
+            self.cached_render = Some(CachedRender {
+                revision: self.revision,
+                width,
+                lines,
+            });
+        }
+        &self
+            .cached_render
+            .as_ref()
+            .expect("live render cache is populated")
+            .lines
+    }
+}
+
+pub fn render_transcript_payload(
+    kind: LiveEntryKind,
+    payload: &TranscriptPayload,
+    width: usize,
+) -> Vec<Line<'static>> {
+    match payload {
+        TranscriptPayload::PreRendered(lines) => render_entry_lines(kind, lines, width),
+        TranscriptPayload::AssistantMarkdown(content) => {
+            let content_width = width.saturating_sub(assistant_prefix_width(kind));
+            let lines = assistant_markdown_lines_for_widths(
+                content,
+                Style::default().fg(palette::TEXT),
+                content_width,
+                width,
+            );
+            render_entry_lines(kind, &lines, width)
+        }
+    }
+}
+
+fn assistant_prefix_width(kind: LiveEntryKind) -> usize {
+    match kind {
+        LiveEntryKind::Assistant => UnicodeWidthStr::width(assistant_dot_with_space()),
+        LiveEntryKind::AssistantNested => 0,
+        LiveEntryKind::User | LiveEntryKind::Bash | LiveEntryKind::Other => 0,
     }
 }
 
