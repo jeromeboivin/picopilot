@@ -188,10 +188,9 @@ breaks, inserts it as one editable prompt. Use the arrow keys, `Home`, `End`,
 `Backspace`, and `Delete` to correct the prompt before sending. `Ctrl+Alt`
 characters are accepted for keyboard layouts that use AltGr.
 
-Use `PageUp` and `PageDown` to scroll the transcript. `Ctrl+Home` and
-`Ctrl+End` jump to the top and bottom of the transcript. The terminal keeps
-mouse selection and clipboard handling, so drag-select and copy using the
-normal behavior of the VS Code or Windows Terminal window.
+The transcript uses the terminal's native scrollback. The terminal keeps mouse
+selection and clipboard handling, so drag-select and copy using the normal
+behavior of the VS Code or Windows Terminal window.
 
 The live context-budget regression is opt-in because it requires a running
 Copilot CLI and authentication. With a configured local provider it also

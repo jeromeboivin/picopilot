@@ -8,14 +8,8 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
-};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use pulldown_cmark::{Alignment, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -35,6 +29,10 @@ use crate::input_editor::InputEditor;
 use crate::permissions::{ApprovalDecision, ApprovalRequest};
 use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
+};
+use crate::screen_model::{
+    enter_main_screen, restore_main_screen, terminal_options, LiveEntryKind, Platform, ScreenEntry,
+    ScreenModel,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -213,7 +211,8 @@ pub struct App {
     reconnecting: bool,
     blocked: bool,
     show_internals: bool,
-    chat_scroll_offset: usize,
+    assistant_live_ids: HashSet<String>,
+    reasoning_live_ids: HashSet<String>,
     should_quit: bool,
 }
 
@@ -276,6 +275,62 @@ impl App {
 
     pub fn entries(&self) -> &[ChatEntry] {
         &self.entries
+    }
+
+    pub fn screen_entries(&self) -> Vec<ScreenEntry> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let (id, kind, completed) = match entry {
+                    ChatEntry::User(_) => (format!("user-{index}"), LiveEntryKind::Other, true),
+                    ChatEntry::Diagnostic(_) => {
+                        (format!("diagnostic-{index}"), LiveEntryKind::Other, true)
+                    }
+                    ChatEntry::Assistant { message_id, .. } => (
+                        message_id.clone(),
+                        LiveEntryKind::Assistant,
+                        !self.assistant_live_ids.contains(message_id),
+                    ),
+                    ChatEntry::Reasoning { reasoning_id, .. } => (
+                        reasoning_id.clone(),
+                        LiveEntryKind::Other,
+                        !self.reasoning_live_ids.contains(reasoning_id),
+                    ),
+                    ChatEntry::Tool {
+                        tool_call_id,
+                        tool_name,
+                        success,
+                        unknown,
+                        ..
+                    } => (
+                        tool_call_id.clone(),
+                        if is_shell_tool(tool_name) {
+                            LiveEntryKind::Bash
+                        } else {
+                            LiveEntryKind::Other
+                        },
+                        success.is_some() || *unknown,
+                    ),
+                    ChatEntry::Subagent { name, status, .. } => (
+                        format!("subagent-{name}"),
+                        LiveEntryKind::Other,
+                        !matches!(status, SubagentStatus::Running),
+                    ),
+                    ChatEntry::Banner { .. } => {
+                        (format!("banner-{index}"), LiveEntryKind::Other, true)
+                    }
+                    ChatEntry::Approval { status, .. } => (
+                        format!("approval-{index}"),
+                        LiveEntryKind::Other,
+                        !matches!(status, ApprovalStatus::Pending),
+                    ),
+                    ChatEntry::Completed => return None,
+                };
+                let lines = entry_lines(entry, self.show_internals);
+                (!lines.is_empty()).then(|| ScreenEntry::new(id, kind, lines, completed))
+            })
+            .collect()
     }
 
     pub fn status(&self) -> &StatusState {
@@ -438,22 +493,6 @@ impl App {
     fn close_modal(&mut self) {
         self.modal = None;
         self.selected_item = 0;
-    }
-
-    fn scroll_chat_up(&mut self, lines: usize) {
-        self.chat_scroll_offset = self.chat_scroll_offset.saturating_add(lines);
-    }
-
-    fn scroll_chat_down(&mut self, lines: usize) {
-        self.chat_scroll_offset = self.chat_scroll_offset.saturating_sub(lines);
-    }
-
-    fn scroll_chat_to_top(&mut self) {
-        self.chat_scroll_offset = usize::MAX;
-    }
-
-    fn scroll_chat_to_bottom(&mut self) {
-        self.chat_scroll_offset = 0;
     }
 
     fn move_selection(&mut self, delta: isize) {
@@ -726,7 +765,8 @@ impl App {
         self.todo_refresh_requested = false;
         self.reconnecting = false;
         self.blocked = false;
-        self.chat_scroll_offset = 0;
+        self.assistant_live_ids.clear();
+        self.reasoning_live_ids.clear();
     }
 
     pub fn should_quit(&self) -> bool {
@@ -750,6 +790,8 @@ impl App {
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
         self.entries.clear();
         self.pending_user_messages.clear();
+        self.assistant_live_ids.clear();
+        self.reasoning_live_ids.clear();
         self.status.busy = false;
         self.blocked = false;
         self.completion = None;
@@ -782,22 +824,34 @@ impl App {
                 message_id,
                 content,
                 agent_id,
-            } => self.append_assistant(message_id, content, agent_id),
+            } => {
+                self.assistant_live_ids.insert(message_id.clone());
+                self.append_assistant(message_id, content, agent_id);
+            }
             EventUpdate::AssistantMessage {
                 message_id,
                 content,
                 agent_id,
-            } => self.replace_assistant(message_id, content, agent_id),
+            } => {
+                self.assistant_live_ids.remove(&message_id);
+                self.replace_assistant(message_id, content, agent_id);
+            }
             EventUpdate::ReasoningDelta {
                 reasoning_id,
                 content,
                 agent_id,
-            } => self.append_reasoning(reasoning_id, content, agent_id),
+            } => {
+                self.reasoning_live_ids.insert(reasoning_id.clone());
+                self.append_reasoning(reasoning_id, content, agent_id);
+            }
             EventUpdate::Reasoning {
                 reasoning_id,
                 content,
                 agent_id,
-            } => self.replace_reasoning(reasoning_id, content, agent_id),
+            } => {
+                self.reasoning_live_ids.remove(&reasoning_id);
+                self.replace_reasoning(reasoning_id, content, agent_id);
+            }
             EventUpdate::ToolStarted {
                 tool_call_id,
                 tool_name,
@@ -914,6 +968,8 @@ impl App {
                 }
             }
             EventUpdate::Idle | EventUpdate::TaskComplete => {
+                self.assistant_live_ids.clear();
+                self.reasoning_live_ids.clear();
                 self.set_fleet_active(false);
                 self.status.busy = false;
                 if !matches!(self.entries.last(), Some(ChatEntry::Completed)) {
@@ -1362,28 +1418,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             app.show_internals = !app.show_internals;
             UiAction::None
         }
-        KeyCode::PageUp => {
-            app.scroll_chat_up(10);
-            UiAction::None
-        }
-        KeyCode::PageDown => {
-            app.scroll_chat_down(10);
-            UiAction::None
-        }
         KeyCode::Up => {
             app.move_input_up();
             UiAction::None
         }
         KeyCode::Down => {
             app.move_input_down();
-            UiAction::None
-        }
-        KeyCode::Home if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_chat_to_top();
-            UiAction::None
-        }
-        KeyCode::End if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.scroll_chat_to_bottom();
             UiAction::None
         }
         KeyCode::Left => {
@@ -1460,6 +1500,14 @@ fn shift_is_pressed() -> bool {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    draw_frame(frame, app, None);
+}
+
+fn draw_with_screen(frame: &mut Frame, app: &App, screen: &ScreenModel) {
+    draw_frame(frame, app, Some(screen));
+}
+
+fn draw_frame(frame: &mut Frame, app: &App, screen: Option<&ScreenModel>) {
     let input_height = input_height(app, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -1472,7 +1520,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     frame.render_widget(status_bar(app), layout[0]);
-    draw_chat(frame, app, layout[1]);
+    if let Some(screen) = screen {
+        draw_live_chat(frame, app, screen, layout[1]);
+    } else {
+        draw_chat(frame, app, layout[1]);
+    }
     frame.render_widget(input_box(app, layout[2]), layout[2]);
     draw_completion(frame, app, layout[2]);
     frame.render_widget(shortcut_bar(), layout[3]);
@@ -1511,18 +1563,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+    if let Err(error) = enter_main_screen(&mut stdout) {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+        let _ = restore_main_screen(&mut stdout);
         return Err(error);
     }
 
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = match Terminal::new(backend) {
+    let mut terminal = match Terminal::with_options(backend, terminal_options()) {
         Ok(terminal) => terminal,
         Err(error) => {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen);
+            let _ = restore_main_screen(&mut io::stdout());
             return Err(error);
         }
     };
@@ -1561,12 +1613,14 @@ async fn run_loop(
     }
     app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
+    let mut screen_model = ScreenModel::default();
     let mut permission_requests_open = true;
     let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !app.should_quit() {
-        terminal.draw(|frame| draw(frame, &app))?;
+        screen_model.sync(terminal, &app.screen_entries())?;
+        terminal.draw(|frame| draw_with_screen(frame, &app, &screen_model))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);
 
@@ -2051,11 +2105,7 @@ async fn refresh_todos_if_requested(
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<()> {
     let raw_mode_result = disable_raw_mode();
-    let terminal_result = execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    );
+    let terminal_result = restore_main_screen(terminal.backend_mut());
     let cursor_result = terminal.show_cursor();
     raw_mode_result?;
     terminal_result?;
@@ -2901,25 +2951,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     )
 }
 
+fn draw_live_chat(frame: &mut Frame, app: &App, screen: &ScreenModel, area: Rect) {
+    let mut lines = screen.visible_live_lines(Platform::current(), area.height as usize);
+    if app.status.busy {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                "✻ ",
+                Style::default()
+                    .fg(Color::Rgb(240, 177, 94))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Copilot is responding…",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
 fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default().padding(Padding::horizontal(2));
     let inner_width = area.width.saturating_sub(4);
-    let visible_height = area.height;
     let lines = chat_lines(app);
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
-    let total_lines = paragraph.line_count(inner_width);
-    let scroll = chat_scroll_position(app, total_lines, visible_height as usize)
+    let scroll = paragraph
+        .line_count(inner_width)
+        .saturating_sub(area.height as usize)
         .min(u16::MAX as usize) as u16;
-
     frame.render_widget(paragraph.scroll((scroll, 0)), area);
-}
-
-fn chat_scroll_position(app: &App, total_lines: usize, visible_height: usize) -> usize {
-    total_lines
-        .saturating_sub(visible_height)
-        .saturating_sub(app.chat_scroll_offset)
 }
 
 fn chat_lines(app: &App) -> Vec<Line<'static>> {
@@ -3487,11 +3554,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        chat_scroll_position, displayed_reasoning_effort, draw, draw_model_picker,
-        draw_skill_picker, draw_tool_picker, handle_key, modal_area, model_context_label,
-        model_cost_label_for, model_picker_detail_lines, model_picker_row_for,
-        send_with_fleet_fallback, skill_selection_for_invocation, status_bar, todo_detail_lines,
-        App, ChatEntry, ModalKind, ModelSelection, SendPath, UiAction,
+        displayed_reasoning_effort, draw, draw_model_picker, draw_skill_picker, draw_tool_picker,
+        handle_key, modal_area, model_context_label, model_cost_label_for,
+        model_picker_detail_lines, model_picker_row_for, send_with_fleet_fallback,
+        skill_selection_for_invocation, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
+        ModelSelection, SendPath, UiAction,
     };
     use crate::events::{EventUpdate, TodoDependencySnapshot, TodoRowSnapshot, TodoSnapshot};
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
@@ -3561,33 +3628,6 @@ mod tests {
                 agent_id: None,
             }]
         );
-    }
-
-    #[test]
-    fn page_keys_scroll_the_response_and_end_restores_bottom_follow() {
-        let mut app = App::new(None);
-        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
-
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press)),
-            UiAction::None
-        );
-        assert_eq!(chat_scroll_position(&app, 100, 20), 70);
-
-        handle_key(&mut app, key(KeyCode::PageDown, KeyEventKind::Press));
-        assert_eq!(chat_scroll_position(&app, 100, 20), 80);
-
-        handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press));
-        handle_key(
-            &mut app,
-            key_with_modifiers(KeyCode::Home, KeyModifiers::CONTROL),
-        );
-        assert_eq!(chat_scroll_position(&app, 100, 20), 0);
-        handle_key(
-            &mut app,
-            key_with_modifiers(KeyCode::End, KeyModifiers::CONTROL),
-        );
-        assert_eq!(chat_scroll_position(&app, 120, 20), 100);
     }
 
     #[test]
@@ -4283,7 +4323,6 @@ mod tests {
             rows: Vec::new(),
             dependencies: Vec::new(),
         });
-        app.chat_scroll_offset = 7;
         app.reconnecting = true;
         app.blocked = true;
 
@@ -4304,7 +4343,6 @@ mod tests {
         assert!(!app.reconnecting);
         assert!(!app.blocked);
         assert!(app.show_internals);
-        assert_eq!(app.chat_scroll_offset, 0);
     }
 
     #[test]
