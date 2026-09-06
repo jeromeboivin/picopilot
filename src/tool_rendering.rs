@@ -157,7 +157,11 @@ pub fn tool_user_facing_name(tool_name: &str) -> String {
 pub fn tool_header_name(tool_name: &str, arguments: Option<&Value>) -> String {
     match known_tool(tool_name) {
         KnownTool::Edit if file_edit_source(tool_name, arguments).is_some() => "Update".to_string(),
-        KnownTool::Create | KnownTool::Write => "Create".to_string(),
+        KnownTool::Create | KnownTool::Write
+            if file_edit_source(tool_name, arguments).is_some() =>
+        {
+            "Create".to_string()
+        }
         _ => tool_user_facing_name(tool_name),
     }
 }

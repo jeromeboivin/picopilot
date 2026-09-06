@@ -2746,6 +2746,29 @@ fn edit_argument_aliases_are_semantic_and_missing_inputs_keep_generic_results() 
 }
 
 #[test]
+fn oversized_edits_do_not_claim_every_source_line_changed() {
+    let unchanged = "same\n".repeat(110_000);
+    let old = format!("{unchanged}old\n");
+    let new = format!("{unchanged}new\n");
+    let payload = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/large.rs",
+            "old_string": old,
+            "new_string": new
+        }),
+        "updated",
+    );
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    assert!(rendered.iter().any(|line| line.contains("updated")));
+    assert!(!rendered.iter().any(|line| line.contains("Added")));
+    assert!(!rendered.iter().any(|line| line.contains("Removed")));
+}
+
+#[test]
 fn valid_mutation_headers_use_update_and_create_source_names() {
     let update = TranscriptPayload::ToolHeader(test_tool_header(
         "edit",
@@ -2769,11 +2792,18 @@ fn valid_mutation_headers_use_update_and_create_source_names() {
         ToolCallState::Success,
         None,
     ));
+    let incomplete_write = TranscriptPayload::ToolHeader(test_tool_header(
+        "write",
+        json!({"file_path": "src/incomplete.txt"}),
+        ToolCallState::Success,
+        None,
+    ));
 
     for (payload, expected) in [
         (update, "● Update(src/main.rs)"),
         (create, "● Create(src/new.rs)"),
         (write, "● Create(src/out.txt)"),
+        (incomplete_write, "● Write(src/incomplete.txt)"),
     ] {
         let lines = render_transcript_payload_with_clock(
             LiveEntryKind::Tool,
@@ -2875,6 +2905,24 @@ fn file_edit_rows_wrap_with_repeated_sigils_and_full_changed_backgrounds() {
     );
     assert_eq!(lines[added_start].width(), lines[added_start + 1].width());
     assert!(lines.iter().all(|line| line.width() <= 32));
+}
+
+#[test]
+fn file_edit_diff_renders_at_narrow_width() {
+    let payload = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "old",
+            "new_string": "new"
+        }),
+        "ignored",
+    );
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 12);
+
+    assert!(lines.iter().any(|line| line.to_string().contains("-")));
+    assert!(lines.iter().any(|line| line.to_string().contains("+")));
 }
 
 #[test]

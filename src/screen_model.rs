@@ -820,13 +820,14 @@ fn render_tool_result(
         shell_exit_code(result.shell_completion.as_ref()).is_some_and(|exit_code| exit_code != 0);
     if result.state == ToolResultState::Success && !is_shell {
         if let Some(source) = file_edit_source(&result.tool_name, result.arguments.as_ref()) {
-            let diff = build_file_diff(&source.old_text, &source.new_text);
-            return render_file_edit_result(
-                kind,
-                &diff,
-                width,
-                tool_is_nested(kind, result.nested()),
-            );
+            if let Some(diff) = build_file_diff(&source.old_text, &source.new_text) {
+                return render_file_edit_result(
+                    kind,
+                    &diff,
+                    width,
+                    tool_is_nested(kind, result.nested()),
+                );
+            }
         }
     }
     let (content_lines, style) = match result.state {
@@ -923,7 +924,7 @@ fn render_file_edit_result(
         ));
     }
 
-    let hunk_width = width.saturating_sub(12);
+    let hunk_width = width.saturating_sub(12).max(1);
     let max_digits = diff
         .hunks
         .iter()

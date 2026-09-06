@@ -44,7 +44,7 @@ pub(crate) struct DiffSegment {
 
 type InlineSegmentPair = (Vec<DiffSegment>, Vec<DiffSegment>);
 
-pub(crate) fn build_file_diff(old_text: &str, new_text: &str) -> FileDiff {
+pub(crate) fn build_file_diff(old_text: &str, new_text: &str) -> Option<FileDiff> {
     build_file_diff_with_budget(old_text, new_text, DIFF_TIMEOUT)
 }
 
@@ -52,13 +52,13 @@ pub(crate) fn build_file_diff_with_budget(
     old_text: &str,
     new_text: &str,
     budget: Duration,
-) -> FileDiff {
+) -> Option<FileDiff> {
     if old_text == new_text {
-        return FileDiff {
+        return Some(FileDiff {
             additions: 0,
             removals: 0,
             hunks: Vec::new(),
-        };
+        });
     }
 
     if old_text.len().saturating_add(new_text.len()) > MAX_DIFF_INPUT_BYTES || budget.is_zero() {
@@ -70,23 +70,26 @@ pub(crate) fn build_file_diff_with_budget(
         .algorithm(Algorithm::Myers)
         .timeout(budget)
         .diff_lines(old_text, new_text);
+    if started_at.elapsed() >= budget {
+        return None;
+    }
     let (additions, removals) = change_counts(&diff);
     if started_at.elapsed() >= budget {
-        return FileDiff {
+        return Some(FileDiff {
             additions,
             removals,
             hunks: Vec::new(),
-        };
+        });
     }
 
     let mut hunks = Vec::new();
     for operations in diff.grouped_ops(CONTEXT_LINES) {
         if started_at.elapsed() >= budget {
-            return FileDiff {
+            return Some(FileDiff {
                 additions,
                 removals,
                 hunks: Vec::new(),
-            };
+            });
         }
 
         let mut rows = Vec::new();
@@ -120,28 +123,45 @@ pub(crate) fn build_file_diff_with_budget(
         }
 
         if apply_word_highlighting(&mut rows, started_at, budget).is_err() {
-            return FileDiff {
+            return Some(FileDiff {
                 additions,
                 removals,
                 hunks: Vec::new(),
-            };
+            });
+        }
+        if started_at.elapsed() >= budget {
+            return Some(FileDiff {
+                additions,
+                removals,
+                hunks: Vec::new(),
+            });
         }
         hunks.push(DiffHunk { rows });
     }
 
-    FileDiff {
+    Some(FileDiff {
         additions,
         removals,
         hunks,
-    }
+    })
 }
 
-fn degraded_diff(old_text: &str, new_text: &str) -> FileDiff {
-    FileDiff {
-        additions: line_count(new_text),
-        removals: line_count(old_text),
-        hunks: Vec::new(),
+fn degraded_diff(old_text: &str, new_text: &str) -> Option<FileDiff> {
+    if old_text.is_empty() {
+        return Some(FileDiff {
+            additions: line_count(new_text),
+            removals: 0,
+            hunks: Vec::new(),
+        });
     }
+    if new_text.is_empty() {
+        return Some(FileDiff {
+            additions: 0,
+            removals: line_count(old_text),
+            hunks: Vec::new(),
+        });
+    }
+    None
 }
 
 fn change_counts<T: similar::DiffableStr + ?Sized>(diff: &TextDiff<'_, '_, T>) -> (usize, usize) {
@@ -216,6 +236,7 @@ fn inline_segments(
     if budget.is_zero() {
         return Err(());
     }
+    let started_at = Instant::now();
     let old_tokens = tokenize(old_text);
     let new_tokens = tokenize(new_text);
     let old_refs = old_tokens.iter().map(String::as_str).collect::<Vec<_>>();
@@ -224,13 +245,16 @@ fn inline_segments(
         .algorithm(Algorithm::Myers)
         .timeout(budget)
         .diff_slices(&old_refs, &new_refs);
+    if started_at.elapsed() >= budget {
+        return Err(());
+    }
     let mut old_segments = Vec::new();
     let mut new_segments = Vec::new();
-    let mut changed_tokens = 0;
+    let mut changed_len = 0usize;
     for change in diff.iter_all_changes() {
         let changed = change.tag() != ChangeTag::Equal;
         if changed {
-            changed_tokens += 1;
+            changed_len = changed_len.saturating_add(text_length(change.value_ref()));
         }
         match change.tag() {
             ChangeTag::Equal => {
@@ -241,11 +265,18 @@ fn inline_segments(
             ChangeTag::Insert => push_segment(&mut new_segments, change.value_ref(), true),
         }
     }
-    let total_tokens = old_tokens.len().saturating_add(new_tokens.len());
-    if total_tokens == 0 || changed_tokens * 5 > total_tokens * 2 || changed_tokens == 0 {
+    let total_len = text_length(old_text).saturating_add(text_length(new_text));
+    if total_len == 0
+        || changed_len.saturating_mul(5) > total_len.saturating_mul(2)
+        || changed_len == 0
+    {
         return Ok(None);
     }
     Ok(Some((old_segments, new_segments)))
+}
+
+fn text_length(text: &str) -> usize {
+    text.encode_utf16().count()
 }
 
 fn push_segment(segments: &mut Vec<DiffSegment>, text: &str, changed: bool) {
@@ -303,7 +334,9 @@ enum TokenKind {
 mod tests {
     use std::time::Duration;
 
-    use super::{build_file_diff_with_budget, tokenize, DiffRowKind, MAX_DIFF_INPUT_BYTES};
+    use super::{
+        build_file_diff_with_budget, inline_segments, tokenize, DiffRowKind, MAX_DIFF_INPUT_BYTES,
+    };
 
     #[test]
     fn tokenizes_unicode_word_whitespace_and_remaining_codepoints() {
@@ -312,26 +345,42 @@ mod tests {
 
     #[test]
     fn zero_budget_retains_summary_and_omits_hunks() {
-        let diff = build_file_diff_with_budget("old\n", "new\n", Duration::ZERO);
+        let diff = build_file_diff_with_budget("", "new\n", Duration::ZERO)
+            .expect("empty-side summary remains exact");
 
-        assert_eq!((diff.additions, diff.removals), (1, 1));
+        assert_eq!((diff.additions, diff.removals), (1, 0));
         assert!(diff.hunks.is_empty());
     }
 
     #[test]
-    fn oversized_input_retains_summary_and_omits_hunks() {
+    fn inline_threshold_uses_changed_text_length_not_token_count() {
+        let result = inline_segments("keep x", "keep verylongvalue", Duration::from_secs(5))
+            .expect("inline diff should complete");
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn deadline_shortened_inline_diff_is_rejected() {
+        let old = format!("{}old", "a ".repeat(4_000));
+        let new = format!("{}new", "a ".repeat(4_000));
+
+        assert!(inline_segments(&old, &new, Duration::from_nanos(1)).is_err());
+    }
+
+    #[test]
+    fn oversized_input_falls_back_when_summary_is_not_proven() {
         let old = "o".repeat(MAX_DIFF_INPUT_BYTES / 2 + 1);
         let new = "n".repeat(MAX_DIFF_INPUT_BYTES / 2 + 1);
         let diff = build_file_diff_with_budget(&old, &new, Duration::from_secs(5));
 
-        assert_eq!((diff.additions, diff.removals), (1, 1));
-        assert!(diff.hunks.is_empty());
+        assert!(diff.is_none());
     }
 
     #[test]
     fn line_rows_keep_independent_old_and_new_numbers() {
         let diff = build_file_diff_with_budget("old\n", "new\n", Duration::from_secs(5));
-        let rows = &diff.hunks[0].rows;
+        let rows = &diff.expect("small diff").hunks[0].rows;
 
         assert_eq!(rows[0].kind, DiffRowKind::Removed);
         assert_eq!(rows[0].number, 1);
