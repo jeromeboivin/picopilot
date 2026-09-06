@@ -2005,19 +2005,6 @@ impl App {
         self.completion = None;
     }
 
-    fn completion_is_incomplete(&self) -> bool {
-        let Some(completion) = self.completion.as_ref() else {
-            return false;
-        };
-        let token = &self.input()[completion.token_start..completion.token_end];
-        let cursor = self.input_cursor_byte_offset();
-        cursor != completion.token_end
-            || completion
-                .candidates
-                .get(completion.selected_item)
-                .is_some_and(|candidate| candidate.command != token)
-    }
-
     fn accept_completion(&mut self) {
         let Some(completion) = self.completion.take() else {
             return;
@@ -2207,13 +2194,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 app.accept_completion();
                 return UiAction::None;
             }
-            KeyCode::Enter
-                if !is_multiline_enter(key, shift_is_pressed())
-                    && app.completion_is_incomplete() =>
-            {
-                app.accept_completion();
-                return UiAction::None;
-            }
             _ => {}
         }
     }
@@ -2376,14 +2356,13 @@ fn draw_frame(
     screen: Option<&mut ScreenModel>,
     animation_elapsed_ms: u64,
 ) {
-    let input_height = input_height(app, frame.area());
+    let prompt_layout = prompt_layout(app, frame.area());
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(input_height),
-            Constraint::Length(1),
+            Constraint::Length(prompt_layout.total_height),
         ])
         .split(frame.area());
 
@@ -2393,39 +2372,8 @@ fn draw_frame(
     } else {
         draw_chat(frame, app, layout[1], animation_elapsed_ms);
     }
-    frame.render_widget(input_box(app, layout[2]), layout[2]);
-    draw_completion(frame, app, layout[2]);
-    frame.render_widget(shortcut_bar(), layout[3]);
+    draw_prompt(frame, app, layout[2], prompt_layout);
     draw_modal(frame, app);
-
-    if app.modal.is_none() && app.pending_approval().is_none() && !app.blocked && !app.reconnecting
-    {
-        let wrapped = wrap_input(
-            app.input(),
-            app.input_cursor_byte_offset(),
-            layout[2].width as usize,
-        );
-        let visible_lines = layout[2].height.saturating_sub(2).max(1) as usize;
-        let scroll = wrapped
-            .cursor_row
-            .saturating_sub(visible_lines.saturating_sub(1));
-        let cursor_x = layout[2].x.saturating_add(
-            wrapped
-                .cursor_column
-                .min(layout[2].width.saturating_sub(1) as usize) as u16,
-        );
-        let cursor_y = layout[2]
-            .y
-            .saturating_add(1)
-            .saturating_add(
-                wrapped
-                    .cursor_row
-                    .saturating_sub(scroll)
-                    .min(u16::MAX as usize) as u16,
-            )
-            .min(layout[2].bottom().saturating_sub(1));
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -2454,6 +2402,10 @@ pub async fn run_with_settings(
             return Err(error);
         }
     };
+    if let Err(error) = terminal.hide_cursor() {
+        let _ = restore_terminal(&mut terminal);
+        return Err(error);
+    }
 
     let result = run_loop(&mut terminal, runtime, model, reduced_motion).await;
     let restore_result = restore_terminal(&mut terminal);
@@ -3056,96 +3008,129 @@ fn displayed_reasoning_effort(
     })
 }
 
-fn shortcut_bar() -> Paragraph<'static> {
-    let shortcut = |key| {
-        Span::styled(
-            key,
-            Style::default()
-                .fg(Color::Rgb(240, 177, 94))
-                .add_modifier(Modifier::BOLD),
-        )
-    };
-
-    Paragraph::new(Line::from(vec![
-        Span::raw(" "),
-        shortcut("^N"),
-        Span::raw(" new "),
-        shortcut("^O"),
-        Span::raw(" sessions "),
-        shortcut("^P"),
-        Span::raw(" models "),
-        shortcut("^U"),
-        Span::raw(" usage "),
-        shortcut("^K"),
-        Span::raw(" tools "),
-        shortcut("^S"),
-        Span::raw(" skills "),
-        shortcut("^T"),
-        Span::raw(" todo "),
-        shortcut("^I"),
-        Span::raw(" internals "),
-        shortcut("^X"),
-        Span::raw(" exit"),
-    ]))
-    .style(Style::default().fg(Color::DarkGray))
-}
-
-const INPUT_PROMPT: &str = "  ❯ ";
-const INPUT_CONTINUATION: &str = "    ";
-const MAX_INPUT_CONTENT_LINES: usize = 8;
+const INPUT_PROMPT: &str = "❯ ";
+const INPUT_CONTINUATION: &str = "  ";
+const MIN_INPUT_ROWS: usize = 3;
+const PROMPT_CHROME_ROWS: u16 = 3;
+const MAX_COMPLETION_ROWS: usize = 6;
 
 struct WrappedInput {
     lines: Vec<Line<'static>>,
     cursor_row: usize,
-    cursor_column: usize,
 }
 
 struct WrapState {
     lines: Vec<Line<'static>>,
-    cursor_position: Option<(usize, usize)>,
+    cursor_row: Option<usize>,
     first_visual_line: bool,
 }
 
-fn input_height(app: &App, area: Rect) -> u16 {
-    if app.blocked || app.reconnecting || app.pending_approval().is_some() {
-        return 3.min(area.height.saturating_sub(3).max(1));
+#[derive(Debug, Clone, Copy)]
+struct PromptLayout {
+    input_rows: u16,
+    footer_rows: u16,
+    total_height: u16,
+}
+
+fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
+    let prompt_budget = area.height.saturating_sub(2);
+    if prompt_budget == 0 {
+        return PromptLayout {
+            input_rows: 0,
+            footer_rows: 0,
+            total_height: 0,
+        };
     }
 
-    let wrapped = wrap_input(
+    let completion_rows = app
+        .completion
+        .as_ref()
+        .filter(|completion| !completion.candidates.is_empty())
+        .map(|completion| completion.candidates.len().min(MAX_COMPLETION_ROWS) as u16);
+    let requested_footer_rows =
+        if app.blocked || app.reconnecting || app.pending_approval().is_some() {
+            0
+        } else if completion_rows.is_some() {
+            completion_rows.unwrap_or_default()
+        } else if app.status.busy || app.input().is_empty() {
+            1
+        } else {
+            0
+        };
+    let wrapped_rows = wrap_input(
         app.input(),
         app.input_cursor_byte_offset(),
         area.width as usize,
-    );
-    let desired = wrapped.lines.len().clamp(1, MAX_INPUT_CONTENT_LINES) as u16 + 2;
-    desired.min(area.height.saturating_sub(3).max(1))
+    )
+    .lines
+    .len();
+    let desired_input_rows = wrapped_rows.max(MIN_INPUT_ROWS) as u16;
+
+    if prompt_budget >= PROMPT_CHROME_ROWS + requested_footer_rows + MIN_INPUT_ROWS as u16 {
+        let max_input_rows = prompt_budget - PROMPT_CHROME_ROWS - requested_footer_rows;
+        let input_rows = desired_input_rows
+            .min(max_input_rows)
+            .max(MIN_INPUT_ROWS as u16);
+        return PromptLayout {
+            input_rows,
+            footer_rows: requested_footer_rows,
+            total_height: PROMPT_CHROME_ROWS + input_rows + requested_footer_rows,
+        };
+    }
+
+    let input_budget = prompt_budget.saturating_sub(PROMPT_CHROME_ROWS);
+    if input_budget == 0 {
+        return PromptLayout {
+            input_rows: 0,
+            footer_rows: 0,
+            total_height: prompt_budget,
+        };
+    }
+
+    let input_rows = desired_input_rows.min(input_budget).max(1);
+    PromptLayout {
+        input_rows,
+        footer_rows: 0,
+        total_height: PROMPT_CHROME_ROWS + input_rows,
+    }
 }
 
 fn wrap_input(text: &str, cursor: usize, width: usize) -> WrappedInput {
+    wrap_input_with_busy(text, cursor, width, false)
+}
+
+fn wrap_input_with_busy(text: &str, cursor: usize, width: usize, busy: bool) -> WrappedInput {
     let width = width.max(1);
     let cursor = cursor.min(text.len());
     let mut state = WrapState {
         lines: Vec::new(),
-        cursor_position: None,
+        cursor_row: None,
         first_visual_line: true,
     };
     let mut line_start = 0;
 
     for (line_end, character) in text.char_indices() {
         if character == '\n' {
-            wrap_input_line(text, line_start, line_end, cursor, width, &mut state);
+            wrap_input_line(text, line_start, line_end, cursor, width, busy, &mut state);
             line_start = line_end + character.len_utf8();
         }
     }
-    wrap_input_line(text, line_start, text.len(), cursor, width, &mut state);
+    wrap_input_line(
+        text,
+        line_start,
+        text.len(),
+        cursor,
+        width,
+        busy,
+        &mut state,
+    );
 
-    let (cursor_row, cursor_column) = state.cursor_position.unwrap_or_else(|| {
-        let row = state.lines.len().saturating_sub(1);
-        (row, display_width(INPUT_CONTINUATION))
-    });
+    let cursor_row = state
+        .cursor_row
+        .unwrap_or_else(|| state.lines.len().saturating_sub(1));
     WrappedInput {
         lines: state.lines,
         cursor_row,
-        cursor_column,
     }
 }
 
@@ -3155,6 +3140,7 @@ fn wrap_input_line(
     line_end: usize,
     cursor: usize,
     width: usize,
+    busy: bool,
     state: &mut WrapState,
 ) {
     let mut segment_start = line_start;
@@ -3175,21 +3161,29 @@ fn wrap_input_line(
         if cursor >= segment_start
             && (cursor < segment_end || (cursor == segment_end && segment_end == line_end))
         {
-            state.cursor_position = Some((
-                row,
-                prefix_width + display_width(&text[segment_start..cursor]),
-            ));
+            state.cursor_row = Some(row);
         }
 
         let prefix_span = if is_first_line {
-            Span::styled(prefix, Style::default().fg(Color::Rgb(240, 177, 94)))
+            let style = if busy {
+                Style::default().add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            Span::styled(prefix, style)
         } else {
             Span::raw(prefix)
         };
-        state.lines.push(Line::from(vec![
-            prefix_span,
-            Span::raw(segment.to_string()),
-        ]));
+        let mut spans = vec![prefix_span];
+        let cursor_in_segment = if cursor >= segment_start
+            && (cursor < segment_end || (cursor == segment_end && segment_end == line_end))
+        {
+            Some(cursor - segment_start)
+        } else {
+            None
+        };
+        spans.extend(input_content_spans(segment, cursor_in_segment));
+        state.lines.push(Line::from(spans));
         state.first_visual_line = false;
 
         if segment_end == line_end {
@@ -3197,6 +3191,37 @@ fn wrap_input_line(
         }
         segment_start = segment_end;
     }
+}
+
+fn input_content_spans(text: &str, cursor: Option<usize>) -> Vec<Span<'static>> {
+    let Some(cursor) = cursor else {
+        return vec![Span::raw(text.to_string())];
+    };
+
+    let mut spans = vec![Span::raw(text[..cursor].to_string())];
+    let remaining = &text[cursor..];
+    if let Some(grapheme) = remaining.graphemes(true).next() {
+        let grapheme_end = grapheme.len();
+        if UnicodeWidthStr::width(grapheme) == 0 {
+            spans.push(Span::styled(
+                " ",
+                Style::default().add_modifier(Modifier::REVERSED),
+            ));
+            spans.push(Span::raw(remaining.to_string()));
+        } else {
+            spans.push(Span::styled(
+                grapheme.to_string(),
+                Style::default().add_modifier(Modifier::REVERSED),
+            ));
+            spans.push(Span::raw(remaining[grapheme_end..].to_string()));
+        }
+    } else {
+        spans.push(Span::styled(
+            " ",
+            Style::default().add_modifier(Modifier::REVERSED),
+        ));
+    }
+    spans
 }
 
 fn wrapped_segment_end(text: &str, width: usize) -> usize {
@@ -3226,6 +3251,13 @@ fn input_character_width(character: char) -> usize {
     } else {
         UnicodeWidthChar::width(character).unwrap_or(1)
     }
+}
+
+fn cursor_scroll_start(cursor_row: usize, total_rows: usize, visible_rows: usize) -> usize {
+    let visible_rows = visible_rows.max(1);
+    cursor_row
+        .saturating_sub(visible_rows / 2)
+        .min(total_rows.saturating_sub(visible_rows))
 }
 
 fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
@@ -3275,97 +3307,151 @@ fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
             .wrap(Wrap { trim: false });
     }
 
-    let wrapped = wrap_input(
+    let wrapped = wrap_input_with_busy(
         app.input(),
         app.input_cursor_byte_offset(),
         area.width as usize,
+        app.status.busy,
     );
     let visible_lines = area.height.saturating_sub(2).max(1) as usize;
-    let scroll = wrapped
-        .cursor_row
-        .saturating_sub(visible_lines.saturating_sub(1));
+    let scroll = cursor_scroll_start(wrapped.cursor_row, wrapped.lines.len(), visible_lines);
 
     Paragraph::new(wrapped.lines)
         .block(
             Block::default()
                 .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(palette::PROMPT_BORDER)),
         )
         .scroll((scroll.min(u16::MAX as usize) as u16, 0))
 }
 
-fn draw_completion(frame: &mut Frame, app: &App, input_area: Rect) {
-    let Some(completion) = app.completion.as_ref() else {
-        return;
-    };
-    if completion.candidates.is_empty() || input_area.y == 0 {
+fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let visible_count = completion.candidates.len().min(7);
-    let height = visible_count as u16 + 2;
+    let input_y = area.y.saturating_add(1).min(area.bottom());
+    let input_height = layout
+        .input_rows
+        .saturating_add(2)
+        .min(area.bottom().saturating_sub(input_y));
+    if input_height == 0 {
+        return;
+    }
+    let input_area = Rect::new(area.x, input_y, area.width, input_height);
+    frame.render_widget(input_box(app, input_area), input_area);
+
+    let footer_y = input_area.bottom();
+    let footer_height = layout
+        .footer_rows
+        .min(area.bottom().saturating_sub(footer_y));
+    if footer_height == 0 {
+        return;
+    }
+    let footer_area = Rect::new(area.x, footer_y, area.width, footer_height);
+    if app
+        .completion
+        .as_ref()
+        .is_some_and(|completion| !completion.candidates.is_empty())
+    {
+        draw_completion(frame, app, footer_area);
+    } else {
+        frame.render_widget(prompt_footer(app), footer_area);
+    }
+}
+
+fn prompt_footer(app: &App) -> Paragraph<'static> {
+    let text = if app.status.busy {
+        "esc to interrupt"
+    } else {
+        "? for shortcuts"
+    };
+    Paragraph::new(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(text, Style::default().add_modifier(Modifier::DIM)),
+    ]))
+}
+
+fn draw_completion(frame: &mut Frame, app: &App, footer_area: Rect) {
+    let Some(completion) = app.completion.as_ref() else {
+        return;
+    };
+    if completion.candidates.is_empty() || footer_area.width == 0 || footer_area.height == 0 {
+        return;
+    }
+
+    let visible_count = completion
+        .candidates
+        .len()
+        .min(MAX_COMPLETION_ROWS)
+        .min(footer_area.height as usize);
+    if visible_count == 0 {
+        return;
+    }
     let first_visible = completion
         .selected_item
-        .saturating_sub(visible_count.saturating_sub(1))
+        .saturating_sub(visible_count / 2)
         .min(completion.candidates.len().saturating_sub(visible_count));
-    let displayed_candidates = completion
+    let available_width = footer_area.width as usize;
+    let command_column_width = (available_width.saturating_sub(2).saturating_mul(40) / 100).max(1);
+    let lines = completion
         .candidates
         .iter()
-        .map(|candidate| {
-            (
-                sanitize_plain(&candidate.command),
-                sanitize_plain(&candidate.description),
-            )
-        })
-        .collect::<Vec<_>>();
-    let command_width = displayed_candidates
-        .iter()
-        .map(|(command, _)| command.len())
-        .max()
-        .unwrap_or(1);
-    let desired_width = displayed_candidates
-        .iter()
-        .map(|(command, description)| command.len() + description.len() + 5)
-        .max()
-        .unwrap_or(20)
-        .min(100) as u16;
-    let x = input_area.x.saturating_add(1);
-    let width = desired_width
-        .min(frame.area().right().saturating_sub(x))
-        .max(1);
-    let y = input_area.y.saturating_sub(height);
-    let area = Rect::new(x, y, width, height);
-    frame.render_widget(ratatui::widgets::Clear, area);
-
-    let items = displayed_candidates
-        .iter()
+        .enumerate()
         .skip(first_visible)
         .take(visible_count)
-        .map(|(command, description)| {
-            ListItem::new(format!(
-                " {:<width$} {}",
-                command,
-                description,
-                width = command_width
-            ))
+        .map(|(index, candidate)| {
+            let command = truncate_tail(&sanitize_plain(&candidate.command), command_column_width);
+            let command_padding = command_column_width.saturating_sub(display_width(&command));
+            let mut row = format!("  {command}{}", " ".repeat(command_padding));
+            let description = collapsed_whitespace(&sanitize_plain(&candidate.description));
+            let separator_width = usize::from(!description.is_empty());
+            let description_width = available_width
+                .saturating_sub(display_width(&row))
+                .saturating_sub(separator_width);
+            if !description.is_empty() && description_width > 0 {
+                row.push(' ');
+                row.push_str(&truncate_tail(&description, description_width));
+            }
+            let style = if index == completion.selected_item {
+                Style::default().fg(palette::SUGGESTION)
+            } else {
+                Style::default().fg(palette::INACTIVE)
+            };
+            Line::from(Span::styled(row, style))
         })
         .collect::<Vec<_>>();
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                .title("commands"),
-        )
-        .highlight_symbol("› ")
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Rgb(240, 177, 94)),
-        );
-    let mut state = ListState::default()
-        .with_selected(Some(completion.selected_item.saturating_sub(first_visible)));
-    frame.render_stateful_widget(list, area, &mut state);
+    frame.render_widget(Paragraph::new(lines), footer_area);
+}
+
+fn collapsed_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_tail(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if display_width(text) <= width {
+        return text.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+
+    let content_width = width - 1;
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used + grapheme_width > content_width {
+            break;
+        }
+        result.push_str(grapheme);
+        used += grapheme_width;
+    }
+    result.push('…');
+    result
 }
 
 fn draw_modal(frame: &mut Frame, app: &App) {
@@ -5203,6 +5289,218 @@ mod tests {
     }
 
     #[test]
+    fn prompt_uses_full_width_rules_hint_and_no_shortcut_bar() {
+        let app = App::new(None);
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("prompt should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let top_rule = rows
+            .iter()
+            .position(|row| row.chars().all(|character| character == '─'))
+            .expect("prompt top rule should be visible");
+
+        assert!(top_rule > 0);
+        assert!(rows[top_rule - 1].trim().is_empty());
+        assert_eq!(rows[top_rule].chars().count(), 60);
+        assert!(rows[top_rule + 1].starts_with("❯ "));
+        assert!(rows.iter().any(|row| row.starts_with("  ? for shortcuts")));
+        assert!(!rows.iter().any(|row| row.contains("^N")));
+    }
+
+    #[test]
+    fn prompt_software_cursor_reverses_middle_and_end_cells() {
+        let mut app = App::new(None);
+        for character in "abcd".chars() {
+            app.push_input(character);
+        }
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("middle cursor should render");
+        let top_rule = (0..terminal.backend().buffer().area.height)
+            .find(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .all(|x| terminal.backend().buffer()[(x, *y)].symbol() == "─")
+            })
+            .expect("prompt top rule should be visible");
+        assert_eq!(terminal.backend().buffer()[(4, top_rule + 1)].symbol(), "c");
+        assert!(terminal.backend().buffer()[(4, top_rule + 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
+
+        handle_key(&mut app, key(KeyCode::End, KeyEventKind::Press));
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("end cursor should render");
+        assert_eq!(terminal.backend().buffer()[(6, top_rule + 1)].symbol(), " ");
+        assert!(terminal.backend().buffer()[(6, top_rule + 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn prompt_hides_ordinary_hint_after_first_typed_character() {
+        let mut app = App::new(None);
+        app.push_input('x');
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("typed prompt should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(!rows.iter().any(|row| row.contains("? for shortcuts")));
+    }
+
+    #[test]
+    fn prompt_budget_keeps_three_rows_and_centers_long_input_cursor() {
+        let mut app = App::new(None);
+        app.insert_paste("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
+        app.move_input_up();
+        app.move_input_up();
+
+        let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 80, 12));
+        assert_eq!(layout.input_rows, 7);
+        assert_eq!(layout.footer_rows, 0);
+        assert_eq!(
+            super::cursor_scroll_start(5, 8, layout.input_rows as usize),
+            1
+        );
+
+        let empty = App::new(None);
+        let empty_layout = super::prompt_layout(&empty, ratatui::layout::Rect::new(0, 0, 80, 12));
+        assert_eq!(empty_layout.input_rows, 3);
+    }
+
+    #[test]
+    fn busy_prompt_dims_marker_keeps_busy_hint_and_uses_prompt_palette() {
+        let mut app = App::new(None);
+        app.add_user_message("work".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("busy prompt should render");
+
+        let top_rule = (0..terminal.backend().buffer().area.height)
+            .find(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .all(|x| terminal.backend().buffer()[(x, *y)].symbol() == "─")
+            })
+            .expect("prompt top rule should be visible");
+        assert_eq!(
+            terminal.backend().buffer()[(0, top_rule)].style().fg,
+            Some(palette::PROMPT_BORDER)
+        );
+        assert!(terminal.backend().buffer()[(0, top_rule + 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::DIM));
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("esc to interrupt")));
+    }
+
+    #[test]
+    fn completions_are_below_the_rule_borderless_capped_and_color_selected() {
+        let mut app = App::new(None);
+        app.completion = Some(super::CompletionState {
+            candidates: (0..8)
+                .map(|index| super::CompletionCandidate {
+                    command: format!("/command-{index}"),
+                    description: "description   with\n collapsed whitespace".to_string(),
+                })
+                .collect(),
+            selected_item: 7,
+            token_start: 0,
+            token_end: 0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("completion surface should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let top_rule = rows
+            .iter()
+            .position(|row| row.chars().all(|character| character == '─'))
+            .expect("prompt top rule should be visible");
+        let bottom_rule = rows
+            .iter()
+            .enumerate()
+            .skip(top_rule + 1)
+            .find(|(_, row)| row.chars().all(|character| character == '─'))
+            .map(|(index, _)| index)
+            .expect("prompt bottom rule should be visible");
+        let completion_rows = &rows[bottom_rule + 1..];
+        assert_eq!(completion_rows.len(), 6);
+        assert!(completion_rows.iter().all(|row| row.starts_with("  ")));
+        assert!(!completion_rows.iter().any(|row| row.contains("commands")));
+        assert!(!completion_rows.iter().any(|row| row.contains('›')));
+        assert!(completion_rows
+            .iter()
+            .any(|row| row.contains("collapsed whitespace")));
+
+        let selected_row = bottom_rule + 1 + (7 - 2);
+        assert_eq!(
+            terminal.backend().buffer()[(2, selected_row as u16)]
+                .style()
+                .fg,
+            Some(palette::SUGGESTION)
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(2, (bottom_rule + 1) as u16)]
+                .style()
+                .fg,
+            Some(palette::INACTIVE)
+        );
+    }
+
+    #[test]
+    fn prompt_degrades_without_panicking_in_zero_and_one_row_areas() {
+        let app = App::new(None);
+        for height in [0, 1] {
+            let mut terminal = Terminal::new(TestBackend::new(40, height)).expect("test terminal");
+            terminal
+                .draw(|frame| draw(frame, &app))
+                .expect("tiny prompt should render");
+        }
+    }
+
+    #[test]
     fn altgr_style_control_alt_characters_are_kept_as_input() {
         let mut app = App::new(None);
 
@@ -5242,13 +5540,16 @@ mod tests {
         let wrapped = super::wrap_input("123456789", 9, 10);
 
         assert_eq!(wrapped.lines.len(), 2);
-        assert_eq!(wrapped.lines[0].to_string(), "  ❯ 123456");
-        assert_eq!(wrapped.lines[1].to_string(), "    789");
+        assert_eq!(wrapped.lines[0].to_string(), "❯ 12345678");
+        assert_eq!(wrapped.lines[1].to_string(), "  9 ");
         assert_eq!(wrapped.cursor_row, 1);
-        assert_eq!(wrapped.cursor_column, 7);
 
         let wide = super::wrap_input("ab🙂", "ab🙂".len(), 10);
-        assert_eq!(wide.cursor_column, 8);
+        assert_eq!(wide.cursor_row, 0);
+
+        let combining = super::wrap_input("e\u{301}x", "e\u{301}".len(), 10);
+        assert_eq!(combining.cursor_row, 0);
+        assert!(combining.lines[0].to_string().contains("e\u{301}"));
     }
 
     #[test]
@@ -6400,7 +6701,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_completion_filters_invocable_skills_and_accepts_with_enter() {
+    fn slash_completion_filters_invocable_skills_and_submits_with_enter() {
         let mut app = App::new(None);
         app.set_skill_catalog(test_skill_catalog());
         for character in "/r".chars() {
@@ -6424,9 +6725,9 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
-            UiAction::None
+            UiAction::Send("/r".to_string())
         );
-        assert_eq!(app.input(), "/runbook");
+        assert!(app.input().is_empty());
         assert!(app.completion.is_none());
 
         let mut hidden = App::new(None);
@@ -7265,7 +7566,7 @@ mod tests {
     }
 
     #[test]
-    fn main_window_renders_a_borderless_transcript_and_one_line_shortcuts() {
+    fn main_window_renders_a_borderless_transcript_and_prompt_footer() {
         let app = App::new(None);
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
 
@@ -7279,10 +7580,8 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(row(29).contains("^O sessions ^P models ^U usage"));
-        assert!(row(29).contains("^N new ^O sessions"));
-        assert!(row(29).contains("^K tools ^S skills"));
-        assert!(row(29).contains("^I internals ^X exit"));
+        assert!(row(29).starts_with("  ? for shortcuts"));
+        assert!(!row(29).contains("^N"));
         assert!(!row(1).contains('┌'));
         assert!(!row(1).contains('│'));
     }
