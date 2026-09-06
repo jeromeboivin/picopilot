@@ -1046,6 +1046,45 @@ impl App {
         self.reset_picker_options();
     }
 
+    fn add_local_output(&mut self, message: impl Into<String>) {
+        let message = sanitize_plain(&message.into());
+        self.push_entry(ChatEntry::LocalOutput(vec![Line::from(message)]));
+    }
+
+    fn cancel_picker(&mut self) {
+        let outcome = match self.picker {
+            Some(PickerKind::Sessions) => Some("Kept current session".to_string()),
+            Some(PickerKind::Models) => Some(format!(
+                "Kept model as {}",
+                self.status
+                    .model
+                    .as_deref()
+                    .and_then(|model_id| {
+                        self.models
+                            .iter()
+                            .find(|model| model.id == model_id)
+                            .map(|model| sanitize_plain(&model.name))
+                    })
+                    .or_else(|| self.status.model.as_deref().map(sanitize_plain))
+                    .unwrap_or_else(|| "auto".to_string())
+            )),
+            Some(PickerKind::Tools) => Some(format!(
+                "Kept tools: {}/{} enabled",
+                self.toolset.len(),
+                TOOL_COUNT
+            )),
+            Some(PickerKind::Skills) => Some(format!(
+                "Kept skills: {} enabled",
+                self.skill_selection.len()
+            )),
+            Some(PickerKind::Approval) | None => None,
+        };
+        self.close_picker();
+        if let Some(outcome) = outcome {
+            self.add_local_output(outcome);
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let item_count = match self.picker {
             Some(PickerKind::Sessions) => self.sessions.len(),
@@ -2285,10 +2324,13 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> UiAction {
             }
             _ => {}
         }
+        if key.code == KeyCode::Esc {
+            return UiAction::Approval(ApprovalDecision::Deny);
+        }
     }
     match key.code {
         KeyCode::Esc => {
-            app.close_picker();
+            app.cancel_picker();
             UiAction::None
         }
         KeyCode::Up => {
@@ -2328,14 +2370,6 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::None
         }
         KeyCode::Right if matches!(picker, Some(PickerKind::Models)) => {
-            app.cycle_picker_option(false);
-            UiAction::None
-        }
-        KeyCode::Char('r') if matches!(picker, Some(PickerKind::Models)) => {
-            app.cycle_picker_option(true);
-            UiAction::None
-        }
-        KeyCode::Char('c') if matches!(picker, Some(PickerKind::Models)) => {
             app.cycle_picker_option(false);
             UiAction::None
         }
@@ -2762,7 +2796,16 @@ async fn process_terminal_events(
                     );
                     app.set_toolset(runtime.active_toolset);
                     app.set_reasoning_effort(displayed_reasoning);
-                    app.apply(crate::events::EventUpdate::ModelChanged { model });
+                    app.apply(crate::events::EventUpdate::ModelChanged {
+                        model: model.clone(),
+                    });
+                    let display_model = runtime
+                        .models
+                        .iter()
+                        .find(|candidate| candidate.id == model)
+                        .map(|candidate| sanitize_plain(&candidate.name))
+                        .unwrap_or_else(|| sanitize_plain(&model));
+                    app.add_local_output(format!("Set model to {display_model}"));
                 }
             }
             UiAction::ApplyToolset(toolset) => {
@@ -2783,6 +2826,11 @@ async fn process_terminal_events(
                     Ok(()) => {
                         *events = runtime.session.subscribe();
                         app.set_toolset(runtime.active_toolset);
+                        app.add_local_output(format!(
+                            "Set tools to {}/{} enabled",
+                            app.toolset.len(),
+                            TOOL_COUNT
+                        ));
                     }
                     Err(error) if error.is_transport_failure() => {
                         recover_connection(app, runtime, events).await?;
@@ -2812,6 +2860,10 @@ async fn process_terminal_events(
                     Ok(()) => {
                         *events = runtime.session.subscribe();
                         app.set_skill_selection(runtime.active_skill_selection.clone());
+                        app.add_local_output(format!(
+                            "Set skills: {} enabled",
+                            app.skill_selection.len()
+                        ));
                     }
                     Err(error) if error.is_transport_failure() => {
                         recover_connection(app, runtime, events).await?;
@@ -3456,12 +3508,8 @@ fn todo_live_lines(app: &App) -> Vec<Line<'static>> {
         ))];
     };
 
-    let active = todos
-        .rows
-        .iter()
-        .filter(|row| !todo_status_is_finished(&row.status))
-        .collect::<Vec<_>>();
-    if active.is_empty() {
+    let rows = todos.rows.iter().collect::<Vec<_>>();
+    if rows.is_empty() {
         return vec![Line::from(Span::styled(
             "Fleet todos: no pending work.",
             Style::default().fg(palette::INACTIVE),
@@ -3474,15 +3522,15 @@ fn todo_live_lines(app: &App) -> Vec<Line<'static>> {
             .fg(palette::TEXT)
             .add_modifier(Modifier::BOLD),
     ))];
-    let visible_rows = if active.len() > MAX_TODO_ROWS {
+    let visible_rows = if rows.len() > MAX_TODO_ROWS {
         MAX_TODO_ROWS.saturating_sub(1)
     } else {
         MAX_TODO_ROWS
     };
-    for row in active.iter().take(visible_rows) {
-        let style = todo_status_style(&row.status);
+    for row in rows.iter().take(visible_rows) {
+        let (marker, style) = todo_status_marker(&row.status);
         lines.push(Line::from(vec![
-            Span::styled(format!("  [{}] ", sanitize_plain(&row.status)), style),
+            Span::styled(format!("  {marker} "), style),
             Span::styled(
                 sanitize_plain(&row.title),
                 Style::default().fg(palette::TEXT),
@@ -3490,20 +3538,24 @@ fn todo_live_lines(app: &App) -> Vec<Line<'static>> {
         ]));
     }
 
-    if active.len() > visible_rows {
-        let hidden = &active[visible_rows..];
+    if rows.len() > visible_rows {
+        let hidden = &rows[visible_rows..];
         let pending = hidden
             .iter()
-            .filter(|row| !todo_status_is_in_progress(&row.status))
+            .filter(|row| {
+                !todo_status_is_finished(&row.status) && !todo_status_is_in_progress(&row.status)
+            })
             .count();
         let in_progress = hidden
             .iter()
             .filter(|row| todo_status_is_in_progress(&row.status))
             .count();
-        lines.push(Line::from(Span::styled(
-            format!(" … +{pending} pending, {in_progress} in progress"),
-            Style::default().fg(palette::INACTIVE),
-        )));
+        if pending > 0 || in_progress > 0 {
+            lines.push(Line::from(Span::styled(
+                format!(" … +{pending} pending, {in_progress} in progress"),
+                Style::default().fg(palette::INACTIVE),
+            )));
+        }
     }
     lines
 }
@@ -3522,11 +3574,13 @@ fn todo_status_is_in_progress(status: &str) -> bool {
     )
 }
 
-fn todo_status_style(status: &str) -> Style {
-    if todo_status_is_in_progress(status) {
-        Style::default().fg(palette::SUGGESTION)
+fn todo_status_marker(status: &str) -> (&'static str, Style) {
+    if todo_status_is_finished(status) {
+        ("✓", Style::default().fg(palette::SUCCESS))
+    } else if todo_status_is_in_progress(status) {
+        ("◼", Style::default().fg(palette::SUGGESTION))
     } else {
-        Style::default().fg(palette::INACTIVE)
+        ("◻", Style::default().fg(palette::INACTIVE))
     }
 }
 
@@ -3591,7 +3645,7 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
     if let PickerKind::Approval = picker {
         if let Some(request) = app.pending_approval() {
             lines.push(Line::from(Span::styled(
-                format!("  ⎿ {}", sanitize_plain(&request.details)),
+                format!("  ⎿  {}", sanitize_plain(&request.details)),
                 Style::default().fg(palette::INACTIVE),
             )));
             lines.push(Line::from(Span::styled(
@@ -5387,6 +5441,51 @@ mod tests {
     }
 
     #[test]
+    fn todo_live_block_uses_reference_status_glyphs() {
+        let mut app = App::new(None);
+        app.set_fleet_active(true);
+        app.set_todos(TodoSnapshot {
+            rows: vec![
+                TodoRowSnapshot {
+                    id: "done".to_string(),
+                    title: "Done task".to_string(),
+                    description: String::new(),
+                    status: "completed".to_string(),
+                },
+                TodoRowSnapshot {
+                    id: "working".to_string(),
+                    title: "Working task".to_string(),
+                    description: String::new(),
+                    status: "in_progress".to_string(),
+                },
+                TodoRowSnapshot {
+                    id: "pending".to_string(),
+                    title: "Pending task".to_string(),
+                    description: String::new(),
+                    status: "pending".to_string(),
+                },
+            ],
+            dependencies: Vec::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("todos should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("✓ Done task")));
+        assert!(rows.iter().any(|row| row.contains("◼ Working task")));
+        assert!(rows.iter().any(|row| row.contains("◻ Pending task")));
+    }
+
+    #[test]
     fn approval_replaces_input_with_borderless_choices() {
         let mut app = App::new(None);
         let (respond_to, _response) = tokio::sync::oneshot::channel();
@@ -5410,11 +5509,41 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(rows.iter().any(|row| row.contains("approval required")));
-        assert!(rows.iter().any(|row| row.contains("⎿ cargo test")));
+        assert!(rows.iter().any(|row| row.contains("⎿  cargo test")));
         assert!(rows.iter().any(|row| row.contains("Allow once")));
         assert!(rows.iter().any(|row| row.contains("Deny")));
         assert!(!rows.iter().any(|row| row.contains('┌')));
         assert!(!rows.iter().any(|row| row.contains("y allow once")));
+    }
+
+    #[tokio::test]
+    async fn approval_escape_denies_the_pending_request() {
+        let mut app = App::new(None);
+        let (respond_to, response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "cargo test".to_string(),
+            respond_to,
+        });
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::Approval(crate::permissions::ApprovalDecision::Deny)
+        );
+        let request = app
+            .resolve_approval(crate::permissions::ApprovalDecision::Deny)
+            .expect("approval should still be queued");
+        request
+            .respond_to
+            .send(crate::permissions::ApprovalDecision::Deny)
+            .expect("test response receiver should still be open");
+        assert_eq!(
+            response.await.expect("approval response should arrive"),
+            crate::permissions::ApprovalDecision::Deny
+        );
+        assert!(app.pending_approval().is_none());
+        assert!(!app.picker_is_open());
     }
 
     #[test]
@@ -7391,6 +7520,53 @@ mod tests {
             ..Model::default()
         }]);
         assert_eq!(
+            handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Right, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::SwitchModel(ModelSelection {
+                model: "gpt-5".to_string(),
+                reasoning_effort: Some("low".to_string()),
+                context_tier: Some("default".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn session_resume_selection_has_no_picker_trace_before_history_replacement() {
+        let mut app = App::new(None);
+        app.set_sessions(vec![SessionMetadata {
+            session_id: SessionId::from("session-1"),
+            start_time: "2026-08-31T12:00:00Z".to_string(),
+            modified_time: "2026-08-31T12:01:00Z".to_string(),
+            summary: Some("first".to_string()),
+            is_remote: false,
+        }]);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Resume(SessionId::from("session-1"))
+        );
+        assert!(app.entries().is_empty());
+    }
+
+    #[test]
+    fn model_picker_uses_only_arrow_keys_for_option_adjustment() {
+        let mut app = App::new(None);
+        app.set_models(vec![Model {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            supported_context_tiers: Some(vec!["default".to_string()]),
+            supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+            ..Model::default()
+        }]);
+
+        assert_eq!(
             handle_key(&mut app, key(KeyCode::Char('r'), KeyEventKind::Press)),
             UiAction::None
         );
@@ -7402,10 +7578,48 @@ mod tests {
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
             UiAction::SwitchModel(ModelSelection {
                 model: "gpt-5".to_string(),
-                reasoning_effort: Some("low".to_string()),
-                context_tier: Some("default".to_string()),
+                reasoning_effort: None,
+                context_tier: None,
             })
         );
+
+        app.set_models(vec![Model {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            supported_context_tiers: Some(vec!["default".to_string()]),
+            supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+            ..Model::default()
+        }]);
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Right, KeyEventKind::Press));
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::SwitchModel(ModelSelection {
+                reasoning_effort: Some(_),
+                context_tier: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn picker_cancellation_commits_a_truthful_local_outcome() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_models(vec![Model {
+            id: "gpt-5".to_string(),
+            name: "GPT-5".to_string(),
+            ..Model::default()
+        }]);
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(matches!(
+            app.entries().last(),
+            Some(ChatEntry::LocalOutput(lines))
+                if lines.iter().any(|line| line.spans.iter().any(|span| span.content.contains("Kept model as")))
+        ));
     }
 
     #[test]
@@ -7476,8 +7690,8 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("unknown tokens")));
         assert!(!rendered.iter().any(|line| line.contains('┌')));
 
-        handle_key(&mut app, key(KeyCode::Char('r'), KeyEventKind::Press));
-        handle_key(&mut app, key(KeyCode::Char('c'), KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Left, KeyEventKind::Press));
+        handle_key(&mut app, key(KeyCode::Right, KeyEventKind::Press));
         assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
             UiAction::SwitchModel(ModelSelection {
