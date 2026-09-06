@@ -665,7 +665,7 @@ impl App {
         if !self.spinner.active || content.is_empty() {
             return;
         }
-        self.spinner.assistant_characters += content.chars().count();
+        self.spinner.assistant_characters += content.encode_utf16().count();
         self.spinner.last_output_at_ms = self.animation_elapsed_ms();
         if self.reduced_motion {
             self.spinner.displayed_characters = self.spinner.assistant_characters;
@@ -691,7 +691,13 @@ impl App {
     }
 
     fn advance_spinner(&mut self, animation_elapsed_ms: u64) {
-        if !self.spinner_visible() || animation_elapsed_ms <= self.spinner.last_advance_at_ms {
+        if !self.spinner_visible() {
+            return;
+        }
+        if self.spinner_mode() == SpinnerMode::ToolUse {
+            self.spinner.last_output_at_ms = animation_elapsed_ms;
+        }
+        if animation_elapsed_ms <= self.spinner.last_advance_at_ms {
             return;
         }
         let target_characters = self.spinner.assistant_characters;
@@ -3879,19 +3885,29 @@ fn draw_live_chat(
     area: Rect,
     animation_elapsed_ms: u64,
 ) {
+    let spinner_visible = app.spinner_visible();
+    let transcript_height = if spinner_visible {
+        area.height.saturating_sub(2) as usize
+    } else {
+        area.height as usize
+    };
     let mut lines = screen.visible_live_lines_at_width_with_clock(
         Platform::current(),
         area.width as usize,
-        area.height as usize,
+        transcript_height,
         animation_elapsed_ms,
     );
-    if app.spinner_visible() {
-        lines.push(Line::default());
-        lines.extend(spinner_lines_at_width(
-            app,
-            area.width as usize,
-            animation_elapsed_ms,
-        ));
+    if spinner_visible {
+        if area.height >= 2 {
+            lines.push(Line::default());
+        }
+        if area.height >= 1 {
+            lines.extend(spinner_lines_at_width(
+                app,
+                area.width as usize,
+                animation_elapsed_ms,
+            ));
+        }
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -5066,11 +5082,12 @@ mod tests {
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::Line;
     use ratatui::Terminal;
     use serde_json::json;
 
     use super::{
-        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_model_picker,
+        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_live_chat, draw_model_picker,
         draw_skill_picker, draw_tool_picker, format_elapsed, format_spinner_tokens, handle_key,
         modal_area, model_context_label, model_cost_label_for, model_picker_detail_lines,
         model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
@@ -5085,7 +5102,9 @@ mod tests {
     };
     use crate::palette;
     use crate::permissions::{ApprovalCategory, ApprovalRequest};
-    use crate::screen_model::{render_entry_lines, render_transcript_payload, ScreenChange};
+    use crate::screen_model::{
+        render_entry_lines, render_transcript_payload, LiveEntryKind, ScreenChange, ScreenModel,
+    };
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
@@ -5327,6 +5346,76 @@ mod tests {
     }
 
     #[test]
+    fn live_spinner_reserves_the_bottom_rows_in_a_saturated_viewport() {
+        let mut app = App::new(None);
+        app.add_user_message("Inspect this".to_string());
+        let mut screen = ScreenModel::default();
+        for index in 0..8 {
+            screen
+                .start_live(
+                    format!("live-{index}"),
+                    LiveEntryKind::Other,
+                    vec![Line::from(format!("transcript-{index}"))],
+                )
+                .expect("live entry should be accepted");
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                draw_live_chat(
+                    frame,
+                    &app,
+                    &mut screen,
+                    frame.area(),
+                    app.spinner.started_at_ms,
+                )
+            })
+            .expect("live chat should render");
+
+        let rendered = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered[3].contains('…'));
+        assert!(rendered[2].trim().is_empty());
+        assert!(!rendered[3].contains("transcript-"));
+        assert_eq!(screen.committed_count(), 0);
+    }
+
+    #[test]
+    fn live_spinner_handles_zero_and_one_row_viewports() {
+        let mut app = App::new(None);
+        app.add_user_message("Inspect this".to_string());
+
+        for height in [0, 1] {
+            let mut screen = ScreenModel::default();
+            let mut terminal = Terminal::new(TestBackend::new(80, height)).expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    draw_live_chat(
+                        frame,
+                        &app,
+                        &mut screen,
+                        frame.area(),
+                        app.spinner.started_at_ms,
+                    )
+                })
+                .expect("tiny live chat should render");
+
+            if height == 1 {
+                let row = (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                    .collect::<String>();
+                assert!(row.contains('…'));
+            }
+        }
+    }
+
+    #[test]
     fn spinner_frames_match_each_platform_and_double_the_endpoints() {
         assert_eq!(
             spinner_frames(SpinnerPlatform::Macos),
@@ -5555,6 +5644,48 @@ mod tests {
             spinner_stall_intensity(&app, now + 100, SpinnerMode::LiveResponse),
             0.0
         );
+    }
+
+    #[test]
+    fn long_active_tools_reset_stall_timing_before_response_resumes() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        app.spinner.last_output_at_ms = start;
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "Read".to_string(),
+            arguments: None,
+            agent_id: None,
+        });
+
+        app.advance_spinner(start + 10_000);
+        assert_eq!(app.spinner.last_output_at_ms, start + 10_000);
+
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "tool-1".to_string(),
+            success: true,
+            message: None,
+            agent_id: None,
+            shell_completion: None,
+        });
+        assert_eq!(
+            spinner_stall_intensity(&app, start + 10_001, SpinnerMode::Requesting),
+            0.0
+        );
+    }
+
+    #[test]
+    fn streamed_astral_response_counts_utf16_code_units_for_tokens() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        app.apply(EventUpdate::AssistantDelta {
+            message_id: "message-1".to_string(),
+            content: "🙂a".to_string(),
+            agent_id: None,
+        });
+
+        assert_eq!(app.spinner.assistant_characters, 3);
     }
 
     #[test]
