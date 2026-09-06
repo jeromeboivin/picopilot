@@ -21,7 +21,8 @@ async fn main() -> ExitCode {
 
 async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     let model = config.model.clone();
+    let reduced_motion = config.reduced_motion;
     let runtime = connect(&config).await?;
-    tui::run(runtime, model).await?;
+    tui::run_with_settings(runtime, model, reduced_motion).await?;
     Ok(())
 }

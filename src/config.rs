@@ -122,6 +122,9 @@ pub struct AppConfig {
     #[arg(long, value_name = "TIER")]
     pub context_tier: Option<String>,
 
+    #[arg(long, env = "PICOPILOT_REDUCED_MOTION")]
+    pub reduced_motion: bool,
+
     #[arg(long, env = "PICOPILOT_PROVIDER_URL", value_name = "URL")]
     pub provider_url: Option<String>,
 

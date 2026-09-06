@@ -5,6 +5,7 @@ use crate::events::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +22,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::Frame;
 use ratatui::Terminal;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
 use github_copilot_sdk::subscription::EventSubscription;
@@ -217,6 +218,237 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[("/fleet", "run work through Fleet")
 
 static NEXT_SCREEN_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
+const SPINNER_FRAME_MS: u64 = 120;
+const SPINNER_TICK_MS: u64 = 50;
+const SPINNER_STALL_AFTER_MS: u64 = 3_000;
+const SPINNER_STALL_RAMP_MS: u64 = 2_000;
+const SPINNER_STATUS_AFTER_MS: u64 = 30_000;
+const SPINNER_THINKING_MIN_MS: u64 = 2_000;
+const SPINNER_THOUGHT_HOLD_MS: u64 = 2_000;
+const SPINNER_ERROR_COLOR: (u8, u8, u8) = (171, 43, 63);
+const SPINNER_THINKING_INACTIVE: (u8, u8, u8) = (153, 153, 153);
+const SPINNER_THINKING_SHIMMER: (u8, u8, u8) = (185, 185, 185);
+
+const BUILTIN_SPINNER_VERBS: &[&str] = &[
+    "Accomplishing",
+    "Actioning",
+    "Actualizing",
+    "Architecting",
+    "Baking",
+    "Beaming",
+    "Beboppin'",
+    "Befuddling",
+    "Billowing",
+    "Blanching",
+    "Bloviating",
+    "Boogieing",
+    "Boondoggling",
+    "Booping",
+    "Bootstrapping",
+    "Brewing",
+    "Bunning",
+    "Burrowing",
+    "Calculating",
+    "Canoodling",
+    "Caramelizing",
+    "Cascading",
+    "Catapulting",
+    "Cerebrating",
+    "Channeling",
+    "Channelling",
+    "Choreographing",
+    "Churning",
+    "Clauding",
+    "Coalescing",
+    "Cogitating",
+    "Combobulating",
+    "Composing",
+    "Computing",
+    "Concocting",
+    "Considering",
+    "Contemplating",
+    "Cooking",
+    "Crafting",
+    "Creating",
+    "Crunching",
+    "Crystallizing",
+    "Cultivating",
+    "Deciphering",
+    "Deliberating",
+    "Determining",
+    "Dilly-dallying",
+    "Discombobulating",
+    "Doing",
+    "Doodling",
+    "Drizzling",
+    "Ebbing",
+    "Effecting",
+    "Elucidating",
+    "Embellishing",
+    "Enchanting",
+    "Envisioning",
+    "Evaporating",
+    "Fermenting",
+    "Fiddle-faddling",
+    "Finagling",
+    "Flambéing",
+    "Flibbertigibbeting",
+    "Flowing",
+    "Flummoxing",
+    "Fluttering",
+    "Forging",
+    "Forming",
+    "Frolicking",
+    "Frosting",
+    "Gallivanting",
+    "Galloping",
+    "Garnishing",
+    "Generating",
+    "Gesticulating",
+    "Germinating",
+    "Gitifying",
+    "Grooving",
+    "Gusting",
+    "Harmonizing",
+    "Hashing",
+    "Hatching",
+    "Herding",
+    "Honking",
+    "Hullaballooing",
+    "Hyperspacing",
+    "Ideating",
+    "Imagining",
+    "Improvising",
+    "Incubating",
+    "Inferring",
+    "Infusing",
+    "Ionizing",
+    "Jitterbugging",
+    "Julienning",
+    "Kneading",
+    "Leavening",
+    "Levitating",
+    "Lollygagging",
+    "Manifesting",
+    "Marinating",
+    "Meandering",
+    "Metamorphosing",
+    "Misting",
+    "Moonwalking",
+    "Moseying",
+    "Mulling",
+    "Mustering",
+    "Musing",
+    "Nebulizing",
+    "Nesting",
+    "Newspapering",
+    "Noodling",
+    "Nucleating",
+    "Orbiting",
+    "Orchestrating",
+    "Osmosing",
+    "Perambulating",
+    "Percolating",
+    "Perusing",
+    "Philosophising",
+    "Photosynthesizing",
+    "Pollinating",
+    "Pondering",
+    "Pontificating",
+    "Pouncing",
+    "Precipitating",
+    "Prestidigitating",
+    "Processing",
+    "Proofing",
+    "Propagating",
+    "Puttering",
+    "Puzzling",
+    "Quantumizing",
+    "Razzle-dazzling",
+    "Razzmatazzing",
+    "Recombobulating",
+    "Reticulating",
+    "Roosting",
+    "Ruminating",
+    "Sautéing",
+    "Scampering",
+    "Schlepping",
+    "Scurrying",
+    "Seasoning",
+    "Shenaniganing",
+    "Shimmying",
+    "Simmering",
+    "Skedaddling",
+    "Sketching",
+    "Slithering",
+    "Smooshing",
+    "Sock-hopping",
+    "Spelunking",
+    "Spinning",
+    "Sprouting",
+    "Stewing",
+    "Sublimating",
+    "Swirling",
+    "Swooping",
+    "Symbioting",
+    "Synthesizing",
+    "Tempering",
+    "Thinking",
+    "Thundering",
+    "Tinkering",
+    "Tomfoolering",
+    "Topsy-turvying",
+    "Transfiguring",
+    "Transmuting",
+    "Twisting",
+    "Undulating",
+    "Unfurling",
+    "Unravelling",
+    "Vibing",
+    "Waddling",
+    "Wandering",
+    "Warping",
+    "Whatchamacalliting",
+    "Whirlpooling",
+    "Whirring",
+    "Whisking",
+    "Wibbling",
+    "Working",
+    "Wrangling",
+    "Zesting",
+    "Zigzagging",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpinnerMode {
+    Requesting,
+    Reasoning,
+    LiveResponse,
+    ToolUse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpinnerPlatform {
+    Macos,
+    WindowsLinux,
+    Ghostty,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SpinnerState {
+    active: bool,
+    started_at_ms: u64,
+    verb: String,
+    assistant_characters: usize,
+    last_output_at_ms: u64,
+    reasoning_started_at_ms: Option<u64>,
+    thinking_until_ms: Option<u64>,
+    thought_until_ms: Option<u64>,
+    thought_duration_ms: u64,
+    displayed_characters: usize,
+    last_advance_at_ms: u64,
+}
+
 fn next_screen_namespace() -> u64 {
     NEXT_SCREEN_NAMESPACE.fetch_add(1, Ordering::Relaxed)
 }
@@ -265,6 +497,10 @@ pub struct App {
     reasoning_live_ids: HashSet<String>,
     ansi_streams: HashMap<AnsiStreamId, AnsiSanitizer>,
     animation_started_at: Option<Instant>,
+    spinner: SpinnerState,
+    spinner_turn: u64,
+    spinner_override: Option<String>,
+    reduced_motion: bool,
     should_quit: bool,
 }
 
@@ -338,6 +574,154 @@ impl App {
         self.animation_started_at
             .map(|started_at| started_at.elapsed().as_millis() as u64)
             .unwrap_or_default()
+    }
+
+    pub fn set_reduced_motion(&mut self, reduced_motion: bool) {
+        self.reduced_motion = reduced_motion;
+        if reduced_motion {
+            self.spinner.displayed_characters = self.spinner.assistant_characters;
+        }
+    }
+
+    pub fn reduced_motion(&self) -> bool {
+        self.reduced_motion
+    }
+
+    pub fn set_spinner_override(&mut self, override_message: Option<String>) {
+        self.spinner_override = override_message;
+    }
+
+    fn spinner_visible(&self) -> bool {
+        self.status.busy && self.spinner.active
+    }
+
+    fn spinner_mode(&self) -> SpinnerMode {
+        if self.has_active_tool() {
+            SpinnerMode::ToolUse
+        } else if !self.reasoning_live_ids.is_empty() {
+            SpinnerMode::Reasoning
+        } else if !self.assistant_live_ids.is_empty() {
+            SpinnerMode::LiveResponse
+        } else {
+            SpinnerMode::Requesting
+        }
+    }
+
+    fn has_active_tool(&self) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(
+                entry,
+                ChatEntry::Tool {
+                    state: ToolCallState::Queued | ToolCallState::Running,
+                    ..
+                } | ChatEntry::Subagent {
+                    status: SubagentStatus::Running,
+                    ..
+                }
+            )
+        })
+    }
+
+    fn spinner_elapsed_ms(&self, animation_elapsed_ms: u64) -> u64 {
+        animation_elapsed_ms.saturating_sub(self.spinner.started_at_ms)
+    }
+
+    fn start_spinner_turn(&mut self, prompt: &str) {
+        self.spinner_turn = self.spinner_turn.wrapping_add(1);
+        let started_at_ms = self.animation_elapsed_ms();
+        let verb = self
+            .spinner_override
+            .as_deref()
+            .and_then(normalize_spinner_verb)
+            .or_else(|| self.active_todo_spinner_verb())
+            .unwrap_or_else(|| builtin_spinner_verb(self.spinner_turn, prompt).to_string());
+        self.spinner = SpinnerState {
+            active: true,
+            started_at_ms,
+            verb: format!("{verb}…"),
+            last_output_at_ms: started_at_ms,
+            last_advance_at_ms: started_at_ms,
+            ..SpinnerState::default()
+        };
+    }
+
+    fn clear_spinner(&mut self) {
+        self.spinner = SpinnerState::default();
+    }
+
+    fn active_todo_spinner_verb(&self) -> Option<String> {
+        let todos = self.todos.as_ref()?;
+        todos
+            .rows
+            .iter()
+            .find(|row| is_in_progress_todo_status(&row.status))
+            .and_then(|row| {
+                normalize_spinner_verb(&row.description)
+                    .or_else(|| normalize_spinner_verb(&row.title))
+            })
+    }
+
+    fn note_assistant_output(&mut self, content: &str) {
+        if !self.spinner.active || content.is_empty() {
+            return;
+        }
+        self.spinner.assistant_characters += content.chars().count();
+        self.spinner.last_output_at_ms = self.animation_elapsed_ms();
+        if self.reduced_motion {
+            self.spinner.displayed_characters = self.spinner.assistant_characters;
+        }
+    }
+
+    fn note_reasoning_started(&mut self) {
+        if self.spinner.active && self.spinner.reasoning_started_at_ms.is_none() {
+            self.spinner.reasoning_started_at_ms = Some(self.animation_elapsed_ms());
+        }
+    }
+
+    fn note_reasoning_finished(&mut self) {
+        let Some(started_at_ms) = self.spinner.reasoning_started_at_ms.take() else {
+            return;
+        };
+        let now = self.animation_elapsed_ms();
+        let duration = now.saturating_sub(started_at_ms);
+        let thinking_until_ms = now.max(started_at_ms.saturating_add(SPINNER_THINKING_MIN_MS));
+        self.spinner.thinking_until_ms = Some(thinking_until_ms);
+        self.spinner.thought_until_ms = Some(thinking_until_ms + SPINNER_THOUGHT_HOLD_MS);
+        self.spinner.thought_duration_ms = duration;
+    }
+
+    fn advance_spinner(&mut self, animation_elapsed_ms: u64) {
+        if !self.spinner_visible() || animation_elapsed_ms <= self.spinner.last_advance_at_ms {
+            return;
+        }
+        let target_characters = self.spinner.assistant_characters;
+        if self.reduced_motion {
+            self.spinner.displayed_characters = target_characters;
+            self.spinner.last_advance_at_ms = animation_elapsed_ms;
+            return;
+        }
+
+        let ticks =
+            ((animation_elapsed_ms - self.spinner.last_advance_at_ms) / SPINNER_TICK_MS).min(128);
+        for _ in 0..ticks {
+            let gap = target_characters.saturating_sub(self.spinner.displayed_characters);
+            if gap == 0 {
+                break;
+            }
+            let increment = if gap < 70 {
+                3usize
+            } else if gap < 200 {
+                ((gap as f64 * 0.15).ceil() as usize).max(8)
+            } else {
+                50usize
+            };
+            self.spinner.displayed_characters = self
+                .spinner
+                .displayed_characters
+                .saturating_add(increment)
+                .min(target_characters);
+        }
+        self.spinner.last_advance_at_ms = animation_elapsed_ms;
     }
 
     pub fn take_screen_changes(&mut self) -> Vec<ScreenChange> {
@@ -934,6 +1318,7 @@ impl App {
 
     pub fn add_user_message(&mut self, content: String) {
         let content = sanitize_plain(&content);
+        self.start_spinner_turn(&content);
         self.pending_user_messages.push_back(content.clone());
         self.push_entry(ChatEntry::User(content));
         self.status.busy = true;
@@ -959,6 +1344,7 @@ impl App {
     }
 
     fn reset_screen_lifecycle(&mut self) {
+        self.clear_spinner();
         self.entries.clear();
         self.entry_ids.clear();
         self.reset_ansi_streams();
@@ -1000,6 +1386,7 @@ impl App {
             } => {
                 let content = self
                     .sanitize_streamed_plain(AnsiStreamId::Assistant(message_id.clone()), &content);
+                self.note_assistant_output(&content);
                 self.assistant_live_ids.insert(message_id.clone());
                 self.append_assistant(message_id, content, agent_id);
             }
@@ -1017,11 +1404,15 @@ impl App {
                 content,
                 agent_id,
             } => {
+                let was_idle = self.reasoning_live_ids.is_empty();
                 let content = self.sanitize_streamed_plain(
                     AnsiStreamId::Reasoning(reasoning_id.clone()),
                     &content,
                 );
                 self.reasoning_live_ids.insert(reasoning_id.clone());
+                if was_idle {
+                    self.note_reasoning_started();
+                }
                 self.append_reasoning(reasoning_id, content, agent_id);
             }
             EventUpdate::Reasoning {
@@ -1031,6 +1422,9 @@ impl App {
             } => {
                 self.finish_ansi_stream(AnsiStreamId::Reasoning(reasoning_id.clone()));
                 self.reasoning_live_ids.remove(&reasoning_id);
+                if self.reasoning_live_ids.is_empty() {
+                    self.note_reasoning_finished();
+                }
                 self.replace_reasoning(reasoning_id, sanitize_plain(&content), agent_id);
             }
             EventUpdate::ToolStarted {
@@ -1185,6 +1579,7 @@ impl App {
                 if severity == BannerSeverity::BlockingError {
                     self.blocked = true;
                     self.status.busy = false;
+                    self.clear_spinner();
                     self.reject_pending_approvals();
                 }
                 self.push_entry(ChatEntry::Banner {
@@ -1223,6 +1618,7 @@ impl App {
                 self.reasoning_live_ids.clear();
                 self.set_fleet_active(false);
                 self.status.busy = false;
+                self.clear_spinner();
                 for index in completed_indices {
                     self.queue_screen_change(index);
                 }
@@ -1959,8 +2355,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_frame(frame, app, None, 0);
 }
 
-fn draw_with_screen(frame: &mut Frame, app: &App, screen: &mut ScreenModel) {
-    draw_frame(frame, app, Some(screen), app.animation_elapsed_ms());
+fn draw_with_screen(
+    frame: &mut Frame,
+    app: &App,
+    screen: &mut ScreenModel,
+    animation_elapsed_ms: u64,
+) {
+    draw_frame(frame, app, Some(screen), animation_elapsed_ms);
 }
 
 fn draw_frame(
@@ -1984,7 +2385,7 @@ fn draw_frame(
     if let Some(screen) = screen {
         draw_live_chat(frame, app, screen, layout[1], animation_elapsed_ms);
     } else {
-        draw_chat(frame, app, layout[1]);
+        draw_chat(frame, app, layout[1], animation_elapsed_ms);
     }
     frame.render_widget(input_box(app, layout[2]), layout[2]);
     draw_completion(frame, app, layout[2]);
@@ -2022,6 +2423,14 @@ fn draw_frame(
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
+    run_with_settings(runtime, model, false).await
+}
+
+pub async fn run_with_settings(
+    runtime: AppRuntime,
+    model: Option<String>,
+    reduced_motion: bool,
+) -> io::Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     if let Err(error) = enter_main_screen(&mut stdout) {
@@ -2040,7 +2449,7 @@ pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
         }
     };
 
-    let result = run_loop(&mut terminal, runtime, model).await;
+    let result = run_loop(&mut terminal, runtime, model, reduced_motion).await;
     let restore_result = restore_terminal(&mut terminal);
     result.and(restore_result)
 }
@@ -2049,6 +2458,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     mut runtime: AppRuntime,
     model: Option<String>,
+    reduced_motion: bool,
 ) -> io::Result<()> {
     let reasoning_effort = displayed_reasoning_effort(
         &runtime.models,
@@ -2061,6 +2471,7 @@ async fn run_loop(
         .map(|registry| registry.qualified_model_ids())
         .unwrap_or_default();
     let mut app = App::new_with_working_directory(model, &runtime.working_directory);
+    app.set_reduced_motion(reduced_motion);
     app.set_local_model_ids(local_model_ids);
     app.set_toolset(runtime.active_toolset);
     app.set_skill_catalog(runtime.skill_catalog.clone());
@@ -2083,7 +2494,10 @@ async fn run_loop(
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
-        terminal.draw(|frame| draw_with_screen(frame, &app, &mut screen_model))?;
+        let animation_elapsed_ms = app.animation_elapsed_ms();
+        app.advance_spinner(animation_elapsed_ms);
+        terminal
+            .draw(|frame| draw_with_screen(frame, &app, &mut screen_model, animation_elapsed_ms))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);
 
@@ -3471,30 +3885,19 @@ fn draw_live_chat(
         area.height as usize,
         animation_elapsed_ms,
     );
-    if app.status.busy {
-        if !lines.is_empty() {
-            lines.push(Line::default());
-        }
-        lines.push(Line::from(vec![
-            Span::styled(
-                "✻ ",
-                Style::default()
-                    .fg(Color::Rgb(240, 177, 94))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Copilot is responding…",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+    if app.spinner_visible() {
+        lines.push(Line::default());
+        lines.extend(spinner_lines_at_width(
+            app,
+            area.width as usize,
+            animation_elapsed_ms,
+        ));
     }
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let lines = chat_lines_at_width(app, area.width as usize);
+fn draw_chat(frame: &mut Frame, app: &App, area: Rect, animation_elapsed_ms: u64) {
+    let lines = chat_lines_at_width_with_clock(app, area.width as usize, animation_elapsed_ms);
     let scroll = lines
         .len()
         .saturating_sub(area.height as usize)
@@ -3505,10 +3908,19 @@ fn draw_chat(frame: &mut Frame, app: &App, area: Rect) {
 
 #[cfg(test)]
 fn chat_lines(app: &App) -> Vec<Line<'static>> {
-    chat_lines_at_width(app, 80)
+    chat_lines_at_width_with_clock(app, 80, app.animation_elapsed_ms())
 }
 
+#[cfg(test)]
 fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
+    chat_lines_at_width_with_clock(app, width, app.animation_elapsed_ms())
+}
+
+fn chat_lines_at_width_with_clock(
+    app: &App,
+    width: usize,
+    animation_elapsed_ms: u64,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for entry in app.entries() {
         let kind = match entry {
@@ -3527,24 +3939,423 @@ fn chat_lines_at_width(app: &App, width: usize) -> Vec<Line<'static>> {
         };
         lines.extend(render_transcript_payload(kind, &payload, width));
     }
-    if app.status.busy {
+    if app.spinner_visible() {
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(
-                "✻ ",
-                Style::default()
-                    .fg(Color::Rgb(240, 177, 94))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Copilot is responding…",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
+        lines.extend(spinner_lines_at_width(app, width, animation_elapsed_ms));
     }
     lines
+}
+
+fn normalize_spinner_verb(value: &str) -> Option<String> {
+    let sanitized = sanitize_plain(value);
+    let value = sanitized.trim().trim_end_matches('…').trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn is_in_progress_todo_status(status: &str) -> bool {
+    matches!(
+        status
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['-', ' '], "_")
+            .as_str(),
+        "in_progress" | "inprogress" | "active" | "doing"
+    )
+}
+
+fn builtin_spinner_verb(turn: u64, prompt: &str) -> &'static str {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    turn.hash(&mut hasher);
+    prompt.hash(&mut hasher);
+    let index = (hasher.finish() as usize) % BUILTIN_SPINNER_VERBS.len();
+    BUILTIN_SPINNER_VERBS[index]
+}
+
+fn spinner_platform_for(term: Option<&str>, is_macos: bool) -> SpinnerPlatform {
+    if term == Some("xterm-ghostty") {
+        SpinnerPlatform::Ghostty
+    } else if is_macos {
+        SpinnerPlatform::Macos
+    } else {
+        SpinnerPlatform::WindowsLinux
+    }
+}
+
+fn current_spinner_platform() -> SpinnerPlatform {
+    spinner_platform_for(
+        std::env::var("TERM").ok().as_deref(),
+        cfg!(target_os = "macos"),
+    )
+}
+
+fn spinner_frames(platform: SpinnerPlatform) -> [&'static str; 12] {
+    let base = match platform {
+        SpinnerPlatform::Macos => ["·", "✢", "✳", "✶", "✻", "✽"],
+        SpinnerPlatform::WindowsLinux => ["·", "✢", "*", "✶", "✻", "✽"],
+        SpinnerPlatform::Ghostty => ["·", "✢", "✳", "✶", "✻", "*"],
+    };
+    let mut frames = [""; 12];
+    for (index, frame) in base.iter().enumerate() {
+        frames[index] = frame;
+    }
+    for (index, frame) in base.iter().rev().enumerate() {
+        frames[base.len() + index] = frame;
+    }
+    frames
+}
+
+fn spinner_lines_at_width(
+    app: &App,
+    width: usize,
+    animation_elapsed_ms: u64,
+) -> Vec<Line<'static>> {
+    vec![render_spinner_line(app, width, animation_elapsed_ms)]
+}
+
+fn render_spinner_line(app: &App, width: usize, animation_elapsed_ms: u64) -> Line<'static> {
+    render_spinner_line_for_platform(app, width, animation_elapsed_ms, current_spinner_platform())
+}
+
+fn render_spinner_line_for_platform(
+    app: &App,
+    width: usize,
+    animation_elapsed_ms: u64,
+    platform: SpinnerPlatform,
+) -> Line<'static> {
+    let elapsed_ms = app.spinner_elapsed_ms(animation_elapsed_ms);
+    let mode = app.spinner_mode();
+    let stall_intensity = spinner_stall_intensity(app, animation_elapsed_ms, mode);
+    let flash_opacity = if app.reduced_motion || mode != SpinnerMode::ToolUse {
+        0.0
+    } else {
+        ((elapsed_ms as f64 / 1_000.0 * std::f64::consts::PI).sin() + 1.0) / 2.0
+    };
+    let message_color = if stall_intensity > 0.0 {
+        interpolate_rgb(palette::CLAUDE, SPINNER_ERROR_COLOR, stall_intensity)
+    } else if mode == SpinnerMode::ToolUse {
+        interpolate_rgb(
+            palette::CLAUDE,
+            color_components(palette::CLAUDE_SHIMMER),
+            flash_opacity,
+        )
+    } else {
+        palette::CLAUDE
+    };
+    let shimmer_color = if stall_intensity > 0.0 {
+        message_color
+    } else {
+        palette::CLAUDE_SHIMMER
+    };
+    let glyph = if app.reduced_motion {
+        "●"
+    } else {
+        let frames = spinner_frames(platform);
+        frames[((elapsed_ms / SPINNER_FRAME_MS) as usize) % frames.len()]
+    };
+    let message = &app.spinner.verb;
+    let message_width = UnicodeWidthStr::width(message.as_str());
+    let prefix_width = 2usize.saturating_add(message_width).saturating_add(1);
+    let mut spans = vec![Span::styled(
+        format!("{glyph} "),
+        Style::default().fg(message_color),
+    )];
+    spans.extend(spinner_message_spans(
+        message,
+        message_color,
+        shimmer_color,
+        mode,
+        elapsed_ms,
+        stall_intensity,
+        app.reduced_motion,
+    ));
+    let status_parts = spinner_status_parts(app, mode, animation_elapsed_ms, width, prefix_width);
+    if !status_parts.is_empty() {
+        let status_text = status_parts
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let thinking_only = status_parts.len() == 1 && status_parts[0].1;
+        let style = if thinking_only {
+            thinking_status_style(app, elapsed_ms)
+        } else {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
+        };
+        spans.push(Span::styled(format!(" ({status_text})"), style));
+    }
+    clip_spinner_line(Line::from(spans), width)
+}
+
+fn spinner_message_spans(
+    message: &str,
+    message_color: Color,
+    shimmer_color: Color,
+    mode: SpinnerMode,
+    elapsed_ms: u64,
+    stall_intensity: f64,
+    reduced_motion: bool,
+) -> Vec<Span<'static>> {
+    let base_style = Style::default().fg(message_color);
+    if reduced_motion || stall_intensity > 0.0 || mode == SpinnerMode::ToolUse {
+        return vec![Span::styled(format!("{message} "), base_style)];
+    }
+
+    let message_width = UnicodeWidthStr::width(message);
+    let speed_ms = if mode == SpinnerMode::Requesting {
+        50
+    } else {
+        200
+    };
+    let cycle_length = message_width.saturating_add(20).max(1);
+    let cycle_position = (elapsed_ms / speed_ms) as usize % cycle_length;
+    let glimmer_index = if mode == SpinnerMode::Requesting {
+        cycle_position as isize - 10
+    } else {
+        message_width as isize + 10 - cycle_position as isize
+    };
+    let band_start = glimmer_index - 1;
+    let band_end = glimmer_index + 2;
+    let shimmer_style = Style::default().fg(shimmer_color);
+    let mut spans = Vec::new();
+    let mut column = 0isize;
+    for grapheme in message.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme) as isize;
+        let style = if column < band_end && column + grapheme_width > band_start {
+            shimmer_style
+        } else {
+            base_style
+        };
+        spans.push(Span::styled(grapheme.to_string(), style));
+        column += grapheme_width;
+    }
+    spans.push(Span::styled(" ", base_style));
+    spans
+}
+
+fn spinner_status_parts(
+    app: &App,
+    mode: SpinnerMode,
+    animation_elapsed_ms: u64,
+    width: usize,
+    prefix_width: usize,
+) -> Vec<(String, bool)> {
+    let elapsed_ms = app.spinner_elapsed_ms(animation_elapsed_ms);
+    let mut parts = Vec::new();
+    if let Some(thinking) = thinking_status(app, animation_elapsed_ms) {
+        let with_effort = thinking.0;
+        let bare = "thinking".to_string();
+        if spinner_status_fits(prefix_width, width, std::slice::from_ref(&with_effort)) {
+            parts.push((with_effort, true));
+        } else if spinner_status_fits(prefix_width, width, std::slice::from_ref(&bare)) {
+            parts.push((bare, true));
+        }
+    }
+
+    let wants_timer_and_tokens = app.show_internals || elapsed_ms > SPINNER_STATUS_AFTER_MS;
+    if wants_timer_and_tokens {
+        let timer = format_elapsed(elapsed_ms);
+        if spinner_status_fits(
+            prefix_width,
+            width,
+            &parts
+                .iter()
+                .map(|(text, _)| text.clone())
+                .chain(std::iter::once(timer.clone()))
+                .collect::<Vec<_>>(),
+        ) {
+            parts.push((timer, false));
+        }
+        let tokens = ((app.spinner.displayed_characters + 2) / 4) as u64;
+        if tokens > 0 {
+            let token_text = format!(
+                "{} {} tokens",
+                if mode == SpinnerMode::Requesting {
+                    "↑"
+                } else {
+                    "↓"
+                },
+                format_spinner_tokens(tokens)
+            );
+            let candidate = parts
+                .iter()
+                .map(|(text, _)| text.clone())
+                .chain(std::iter::once(token_text.clone()))
+                .collect::<Vec<_>>();
+            if spinner_status_fits(prefix_width, width, &candidate) {
+                parts.push((token_text, false));
+            }
+        }
+    }
+    parts
+}
+
+fn spinner_status_fits(prefix_width: usize, width: usize, parts: &[String]) -> bool {
+    if parts.is_empty() {
+        return false;
+    }
+    let status_width = 2usize.saturating_add(UnicodeWidthStr::width(parts.join(" · ").as_str()));
+    prefix_width.saturating_add(status_width) <= width
+}
+
+fn thinking_status(app: &App, animation_elapsed_ms: u64) -> Option<(String, bool)> {
+    if !app.reasoning_live_ids.is_empty() {
+        let text = app
+            .status
+            .reasoning_effort
+            .as_deref()
+            .filter(|effort| !effort.trim().is_empty())
+            .map(|effort| format!("thinking with {} effort", sanitize_plain(effort)))
+            .unwrap_or_else(|| "thinking".to_string());
+        return Some((text, true));
+    }
+
+    let elapsed_ms = app.spinner_elapsed_ms(animation_elapsed_ms);
+    let absolute_ms = app.spinner.started_at_ms.saturating_add(elapsed_ms);
+    if let Some(thinking_until_ms) = app.spinner.thinking_until_ms {
+        if absolute_ms < thinking_until_ms {
+            return Some(("thinking".to_string(), true));
+        }
+        if app
+            .spinner
+            .thought_until_ms
+            .is_some_and(|until| absolute_ms < until)
+        {
+            let seconds =
+                ((app.spinner.thought_duration_ms as f64 / 1_000.0).round() as u64).max(1);
+            return Some((format!("thought for {seconds}s"), false));
+        }
+    }
+    None
+}
+
+fn thinking_status_style(app: &App, elapsed_ms: u64) -> Style {
+    if app.reduced_motion {
+        return Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+    }
+    let opacity = ((elapsed_ms as f64 / 1_000.0 * std::f64::consts::PI).sin() + 1.0) / 2.0;
+    Style::default().fg(interpolate_rgb(
+        Color::Rgb(
+            SPINNER_THINKING_INACTIVE.0,
+            SPINNER_THINKING_INACTIVE.1,
+            SPINNER_THINKING_INACTIVE.2,
+        ),
+        (
+            SPINNER_THINKING_SHIMMER.0,
+            SPINNER_THINKING_SHIMMER.1,
+            SPINNER_THINKING_SHIMMER.2,
+        ),
+        opacity,
+    ))
+}
+
+fn spinner_stall_intensity(app: &App, animation_elapsed_ms: u64, mode: SpinnerMode) -> f64 {
+    if mode == SpinnerMode::ToolUse {
+        return 0.0;
+    }
+    let elapsed_since_output = animation_elapsed_ms.saturating_sub(app.spinner.last_output_at_ms);
+    if elapsed_since_output <= SPINNER_STALL_AFTER_MS {
+        return 0.0;
+    }
+    let ramp_elapsed = elapsed_since_output - SPINNER_STALL_AFTER_MS;
+    let raw = (ramp_elapsed as f64 / SPINNER_STALL_RAMP_MS as f64).min(1.0);
+    if app.reduced_motion {
+        return raw;
+    }
+
+    let steps = ramp_elapsed / SPINNER_TICK_MS;
+    let initial_steps = steps.min(SPINNER_STALL_RAMP_MS / SPINNER_TICK_MS);
+    let mut smoothed = 0.0;
+    for step in 1..=initial_steps {
+        let step_target = (step * SPINNER_TICK_MS) as f64 / SPINNER_STALL_RAMP_MS as f64;
+        smoothed += (step_target.min(1.0) - smoothed) * 0.1;
+    }
+    if steps > initial_steps {
+        smoothed = 1.0 - (1.0 - smoothed) * 0.9_f64.powf((steps - initial_steps) as f64);
+    }
+    smoothed
+}
+
+fn format_elapsed(milliseconds: u64) -> String {
+    if milliseconds < 60_000 {
+        return format!("{}s", milliseconds / 1_000);
+    }
+    let total_seconds = (milliseconds as f64 / 1_000.0).round() as u64;
+    let total_minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    if total_minutes < 60 {
+        return format!("{total_minutes}m {seconds}s");
+    }
+    let total_hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if total_hours < 24 {
+        return format!("{total_hours}h {minutes}m {seconds}s");
+    }
+    let days = total_hours / 24;
+    let hours = total_hours % 24;
+    format!("{days}d {hours}h {minutes}m")
+}
+
+fn format_spinner_tokens(tokens: u64) -> String {
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    if tokens < 1_000_000 {
+        format!("{:.1}k", tokens as f64 / 1_000.0)
+    } else {
+        format!("{:.1}m", tokens as f64 / 1_000_000.0)
+    }
+}
+
+fn color_components(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        _ => (255, 255, 255),
+    }
+}
+
+fn interpolate_rgb(start: Color, end: (u8, u8, u8), amount: f64) -> Color {
+    let amount = amount.clamp(0.0, 1.0);
+    let (start_red, start_green, start_blue) = color_components(start);
+    let channel = |from: u8, to: u8| {
+        (from as f64 + (to as f64 - from as f64) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::Rgb(
+        channel(start_red, end.0),
+        channel(start_green, end.1),
+        channel(start_blue, end.2),
+    )
+}
+
+fn clip_spinner_line(line: Line<'static>, width: usize) -> Line<'static> {
+    if width == 0 || line.width() <= width {
+        return if width == 0 { Line::default() } else { line };
+    }
+    let mut remaining = width;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        let mut content = String::new();
+        for grapheme in span.content.graphemes(true) {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if grapheme_width > remaining {
+                break;
+            }
+            content.push_str(grapheme);
+            remaining = remaining.saturating_sub(grapheme_width);
+        }
+        if !content.is_empty() {
+            spans.push(Span::styled(content, span.style));
+        }
+        if remaining == 0 {
+            break;
+        }
+    }
+    Line::from(spans)
 }
 
 fn sanitize_json_value(value: &mut serde_json::Value) {
@@ -4259,16 +5070,20 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        displayed_reasoning_effort, draw, draw_model_picker, draw_skill_picker, draw_tool_picker,
-        handle_key, modal_area, model_context_label, model_cost_label_for,
-        model_picker_detail_lines, model_picker_row_for, send_with_fleet_fallback,
-        skill_selection_for_invocation, status_bar, todo_detail_lines, App, ChatEntry, ModalKind,
-        ModelSelection, SendPath, UiAction,
+        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_model_picker,
+        draw_skill_picker, draw_tool_picker, format_elapsed, format_spinner_tokens, handle_key,
+        modal_area, model_context_label, model_cost_label_for, model_picker_detail_lines,
+        model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
+        skill_selection_for_invocation, spinner_frames, spinner_message_spans,
+        spinner_platform_for, spinner_stall_intensity, status_bar, thinking_status,
+        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, SpinnerMode,
+        SpinnerPlatform, UiAction, SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
         TodoRowSnapshot, TodoSnapshot, UsageMetricsSnapshot,
     };
+    use crate::palette;
     use crate::permissions::{ApprovalCategory, ApprovalRequest};
     use crate::screen_model::{render_entry_lines, render_transcript_payload, ScreenChange};
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
@@ -4489,7 +5304,356 @@ mod tests {
         assert_eq!(lines[3].to_string(), "   Checking the files");
         assert_eq!(lines[5].to_string(), "● Done");
         assert_eq!(lines[3].spans[1].style.fg, Some(Color::DarkGray));
-        assert_eq!(lines[7].to_string(), "✻ Copilot is responding…");
+        assert!(lines[7].to_string().ends_with(' '));
+    }
+
+    #[test]
+    fn busy_chat_uses_a_source_derived_spinner_row() {
+        let mut app = App::new(None);
+        app.add_user_message("Inspect this".to_string());
+
+        let lines = super::chat_lines_at_width(&app, 80);
+        let spinner_rows = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.to_string().contains('…'))
+            .collect::<Vec<_>>();
+
+        assert_eq!(spinner_rows.len(), 1);
+        let (index, spinner) = spinner_rows[0];
+        assert!(index > 0 && lines[index - 1].to_string().is_empty());
+        assert!(spinner.to_string().ends_with(' '));
+        assert!(!spinner.to_string().contains("Copilot is responding"));
+    }
+
+    #[test]
+    fn spinner_frames_match_each_platform_and_double_the_endpoints() {
+        assert_eq!(
+            spinner_frames(SpinnerPlatform::Macos),
+            ["·", "✢", "✳", "✶", "✻", "✽", "✽", "✻", "✶", "✳", "✢", "·"]
+        );
+        assert_eq!(
+            spinner_frames(SpinnerPlatform::WindowsLinux),
+            ["·", "✢", "*", "✶", "✻", "✽", "✽", "✻", "✶", "*", "✢", "·"]
+        );
+        assert_eq!(
+            spinner_frames(SpinnerPlatform::Ghostty),
+            ["·", "✢", "✳", "✶", "✻", "*", "*", "✻", "✶", "✳", "✢", "·"]
+        );
+        assert_eq!(
+            spinner_platform_for(Some("xterm-ghostty"), true),
+            SpinnerPlatform::Ghostty
+        );
+        assert_eq!(
+            spinner_platform_for(Some("xterm-256color"), true),
+            SpinnerPlatform::Macos
+        );
+        assert_eq!(
+            spinner_platform_for(Some("xterm-256color"), false),
+            SpinnerPlatform::WindowsLinux
+        );
+    }
+
+    #[test]
+    fn spinner_frame_changes_only_at_the_120_ms_boundaries() {
+        let mut app = App::new(None);
+        app.add_user_message("Inspect this".to_string());
+        let start = app.spinner.started_at_ms;
+        let expected = ["·", "✢", "*", "✶", "✻", "✽", "✽", "✻", "✶", "*", "✢", "·"];
+
+        for (index, glyph) in expected.iter().enumerate() {
+            let before = render_spinner_line_for_platform(
+                &app,
+                80,
+                start + index as u64 * 120 + 119,
+                SpinnerPlatform::WindowsLinux,
+            );
+            assert!(before.to_string().starts_with(&format!("{glyph} ")));
+            let at_boundary = render_spinner_line_for_platform(
+                &app,
+                80,
+                start + (index as u64 + 1) * 120,
+                SpinnerPlatform::WindowsLinux,
+            );
+            let next_glyph = expected[(index + 1) % expected.len()];
+            assert!(at_boundary
+                .to_string()
+                .starts_with(&format!("{next_glyph} ")));
+        }
+    }
+
+    #[test]
+    fn spinner_verb_precedence_is_stable_for_a_turn_and_resets_on_idle() {
+        let mut app = App::new(None);
+        app.set_spinner_override(Some("Explicit…".to_string()));
+        app.add_user_message("first".to_string());
+        assert_eq!(app.spinner.verb, "Explicit…");
+        let first_verb = app.spinner.verb.clone();
+        let start = app.spinner.started_at_ms;
+        assert_eq!(
+            render_spinner_line_for_platform(&app, 80, start, SpinnerPlatform::WindowsLinux)
+                .to_string()
+                .trim_start_matches("· ")
+                .split('…')
+                .next(),
+            Some("Explicit")
+        );
+
+        app.apply(EventUpdate::Idle);
+        assert!(!app.spinner_visible());
+        app.add_user_message("second".to_string());
+        assert_eq!(app.spinner.verb, first_verb);
+        assert_eq!(
+            builtin_spinner_verb(1, "first"),
+            builtin_spinner_verb(1, "first")
+        );
+    }
+
+    #[test]
+    fn spinner_verb_uses_the_active_todo_before_the_builtin_list() {
+        let mut app = App::new(None);
+        app.set_todos(TodoSnapshot {
+            rows: vec![TodoRowSnapshot {
+                id: "todo-1".to_string(),
+                title: "Fallback title".to_string(),
+                description: "Inspecting the source".to_string(),
+                status: "in_progress".to_string(),
+            }],
+            dependencies: Vec::new(),
+        });
+        app.add_user_message("inspect".to_string());
+        assert_eq!(app.spinner.verb, "Inspecting the source…");
+
+        let mut title_app = App::new(None);
+        title_app.set_todos(TodoSnapshot {
+            rows: vec![TodoRowSnapshot {
+                id: "todo-2".to_string(),
+                title: "Fallback title".to_string(),
+                description: "  ".to_string(),
+                status: "in-progress".to_string(),
+            }],
+            dependencies: Vec::new(),
+        });
+        title_app.add_user_message("inspect".to_string());
+        assert_eq!(title_app.spinner.verb, "Fallback title…");
+    }
+
+    #[test]
+    fn spinner_mode_precedence_is_tool_then_reasoning_then_response_then_requesting() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        assert_eq!(app.spinner_mode(), SpinnerMode::Requesting);
+        app.apply(EventUpdate::AssistantDelta {
+            message_id: "message-1".to_string(),
+            content: "response".to_string(),
+            agent_id: None,
+        });
+        assert_eq!(app.spinner_mode(), SpinnerMode::LiveResponse);
+        app.apply(EventUpdate::ReasoningDelta {
+            reasoning_id: "reasoning-1".to_string(),
+            content: "thinking".to_string(),
+            agent_id: None,
+        });
+        assert_eq!(app.spinner_mode(), SpinnerMode::Reasoning);
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "Read".to_string(),
+            arguments: None,
+            agent_id: None,
+        });
+        assert_eq!(app.spinner_mode(), SpinnerMode::ToolUse);
+    }
+
+    #[test]
+    fn reduced_motion_is_static_and_uses_immediate_stall_color() {
+        let mut app = App::new(None);
+        app.set_reduced_motion(true);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        let line =
+            render_spinner_line_for_platform(&app, 80, start + 500, SpinnerPlatform::Ghostty);
+        assert!(line.to_string().starts_with("● "));
+        assert!(line.spans.iter().all(|span| {
+            span.style.fg != Some(palette::CLAUDE_SHIMMER)
+                && span.style.fg != Some(Color::Rgb(185, 185, 185))
+        }));
+        let stalled =
+            render_spinner_line_for_platform(&app, 80, start + 5_001, SpinnerPlatform::Ghostty);
+        assert_eq!(stalled.spans[0].style.fg, Some(Color::Rgb(171, 43, 63)));
+        assert_eq!(app.spinner.displayed_characters, 0);
+    }
+
+    #[test]
+    fn shimmer_is_grapheme_aware_and_moves_by_mode() {
+        let spans = spinner_message_spans(
+            "a🙂b",
+            palette::CLAUDE,
+            palette::CLAUDE_SHIMMER,
+            SpinnerMode::Requesting,
+            500,
+            0.0,
+            false,
+        );
+        assert_eq!(spans[0].style.fg, Some(palette::CLAUDE_SHIMMER));
+        assert_eq!(spans[1].style.fg, Some(palette::CLAUDE_SHIMMER));
+        assert_eq!(spans[2].style.fg, Some(palette::CLAUDE));
+
+        let reverse = spinner_message_spans(
+            "abc",
+            palette::CLAUDE,
+            palette::CLAUDE_SHIMMER,
+            SpinnerMode::LiveResponse,
+            2_000,
+            0.0,
+            false,
+        );
+        assert!(reverse
+            .iter()
+            .any(|span| span.style.fg == Some(palette::CLAUDE_SHIMMER)));
+    }
+
+    #[test]
+    fn tool_flash_is_whole_message_interpolation_and_stall_excludes_tools() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-1".to_string(),
+            tool_name: "Read".to_string(),
+            arguments: None,
+            agent_id: None,
+        });
+        let beginning =
+            render_spinner_line_for_platform(&app, 80, start, SpinnerPlatform::WindowsLinux);
+        let middle =
+            render_spinner_line_for_platform(&app, 80, start + 500, SpinnerPlatform::WindowsLinux);
+        assert_ne!(beginning.spans[1].style.fg, middle.spans[1].style.fg);
+        assert_eq!(
+            spinner_stall_intensity(&app, start + 20_000, SpinnerMode::ToolUse),
+            0.0
+        );
+    }
+
+    #[test]
+    fn stall_starts_after_three_seconds_smooths_and_resets_on_output() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        assert_eq!(
+            spinner_stall_intensity(&app, start + 3_000, SpinnerMode::Requesting),
+            0.0
+        );
+        assert!(spinner_stall_intensity(&app, start + 3_050, SpinnerMode::Requesting) > 0.0);
+        assert!(spinner_stall_intensity(&app, start + 5_000, SpinnerMode::Requesting) < 1.0);
+        app.apply(EventUpdate::AssistantDelta {
+            message_id: "message-1".to_string(),
+            content: "new output".to_string(),
+            agent_id: None,
+        });
+        let now = app.animation_elapsed_ms();
+        assert_eq!(
+            spinner_stall_intensity(&app, now + 100, SpinnerMode::LiveResponse),
+            0.0
+        );
+    }
+
+    #[test]
+    fn spinner_status_gate_formatting_and_token_animation_match_the_spec() {
+        assert_eq!(format_elapsed(0), "0s");
+        assert_eq!(format_elapsed(12_000), "12s");
+        assert_eq!(format_elapsed(65_000), "1m 5s");
+        assert_eq!(format_elapsed(3_723_000), "1h 2m 3s");
+        assert_eq!(format_elapsed(93_783_000), "1d 2h 3m");
+        assert_eq!(format_spinner_tokens(900), "900");
+        assert_eq!(format_spinner_tokens(1_000), "1.0k");
+        assert_eq!(format_spinner_tokens(12_400), "12.4k");
+        assert_eq!(format_spinner_tokens(1_200_000), "1.2m");
+
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        app.spinner.displayed_characters = 4_936;
+        let before_gate = render_spinner_line_for_platform(
+            &app,
+            80,
+            start + SPINNER_STATUS_AFTER_MS,
+            SpinnerPlatform::WindowsLinux,
+        );
+        assert!(!before_gate.to_string().contains("30s"));
+        let after_gate = render_spinner_line_for_platform(
+            &app,
+            80,
+            start + SPINNER_STATUS_AFTER_MS + 1,
+            SpinnerPlatform::WindowsLinux,
+        );
+        assert!(after_gate.to_string().contains("30s"));
+        assert!(after_gate.to_string().contains("1.2k tokens"));
+
+        app.spinner.displayed_characters = 0;
+        app.spinner.assistant_characters = 400;
+        app.advance_spinner(start + 50);
+        assert_eq!(app.spinner.displayed_characters, 50);
+        app.set_reduced_motion(true);
+        app.spinner.assistant_characters = 4_000;
+        app.advance_spinner(start + 100);
+        assert_eq!(app.spinner.displayed_characters, 4_000);
+    }
+
+    #[test]
+    fn thinking_status_holds_then_reports_duration_and_glows() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        app.set_reasoning_effort(Some("high".to_string()));
+        let start = app.spinner.started_at_ms;
+        app.reasoning_live_ids.insert("reasoning-1".to_string());
+        assert_eq!(
+            thinking_status(&app, start + 500),
+            Some(("thinking with high effort".to_string(), true))
+        );
+        app.reasoning_live_ids.clear();
+        app.spinner.thinking_until_ms = Some(start + 2_000);
+        app.spinner.thought_until_ms = Some(start + 4_000);
+        app.spinner.thought_duration_ms = 1_500;
+        assert_eq!(
+            thinking_status(&app, start + 1_999),
+            Some(("thinking".to_string(), true))
+        );
+        assert_eq!(
+            thinking_status(&app, start + 2_001),
+            Some(("thought for 2s".to_string(), false))
+        );
+        let glowing = super::thinking_status_style(&app, 500).fg;
+        let dimmer = super::thinking_status_style(&app, 1_500).fg;
+        assert_ne!(glowing, dimmer);
+    }
+
+    #[test]
+    fn spinner_width_never_overflows_and_idle_cleanup_leaves_no_spinner_history() {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        app.show_internals = true;
+        app.spinner.displayed_characters = 49_600;
+        let start = app.spinner.started_at_ms;
+        for width in 0..=40 {
+            let line = render_spinner_line_for_platform(
+                &app,
+                width,
+                start + 31_000,
+                SpinnerPlatform::WindowsLinux,
+            );
+            assert!(line.width() <= width, "spinner overflow at width {width}");
+        }
+        app.apply(EventUpdate::Idle);
+        assert!(super::chat_lines_at_width(&app, 80)
+            .iter()
+            .all(|line| !line.to_string().contains("tokens")));
+        app.add_user_message("blocked".to_string());
+        app.apply(EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::BlockingError,
+            message: "blocked".to_string(),
+            url: None,
+        });
+        assert!(!app.spinner_visible());
     }
 
     #[test]
