@@ -22,7 +22,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wra
 use ratatui::Frame;
 use ratatui::Terminal;
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
 use github_copilot_sdk::subscription::EventSubscription;
@@ -3066,20 +3066,8 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     .len();
     let desired_input_rows = wrapped_rows.max(MIN_INPUT_ROWS) as u16;
 
-    if prompt_budget >= PROMPT_CHROME_ROWS + requested_footer_rows + MIN_INPUT_ROWS as u16 {
-        let max_input_rows = prompt_budget - PROMPT_CHROME_ROWS - requested_footer_rows;
-        let input_rows = desired_input_rows
-            .min(max_input_rows)
-            .max(MIN_INPUT_ROWS as u16);
-        return PromptLayout {
-            input_rows,
-            footer_rows: requested_footer_rows,
-            total_height: PROMPT_CHROME_ROWS + input_rows + requested_footer_rows,
-        };
-    }
-
-    let input_budget = prompt_budget.saturating_sub(PROMPT_CHROME_ROWS);
-    if input_budget == 0 {
+    let input_and_footer_budget = prompt_budget.saturating_sub(PROMPT_CHROME_ROWS);
+    if input_and_footer_budget == 0 {
         return PromptLayout {
             input_rows: 0,
             footer_rows: 0,
@@ -3087,11 +3075,19 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
         };
     }
 
-    let input_rows = desired_input_rows.min(input_budget).max(1);
+    let footer_rows =
+        requested_footer_rows.min(input_and_footer_budget.saturating_sub(MIN_INPUT_ROWS as u16));
+    let input_budget = input_and_footer_budget - footer_rows;
+    let minimum_input_rows = if input_budget >= MIN_INPUT_ROWS as u16 {
+        MIN_INPUT_ROWS as u16
+    } else {
+        1
+    };
+    let input_rows = desired_input_rows.min(input_budget).max(minimum_input_rows);
     PromptLayout {
         input_rows,
-        footer_rows: 0,
-        total_height: PROMPT_CHROME_ROWS + input_rows,
+        footer_rows,
+        total_height: PROMPT_CHROME_ROWS + input_rows + footer_rows,
     }
 }
 
@@ -3227,13 +3223,13 @@ fn input_content_spans(text: &str, cursor: Option<usize>) -> Vec<Span<'static>> 
 fn wrapped_segment_end(text: &str, width: usize) -> usize {
     let mut display_width: usize = 0;
     let mut end = 0;
-    for (index, character) in text.char_indices() {
-        let character_width = input_character_width(character);
-        if end != 0 && display_width.saturating_add(character_width) > width {
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = input_grapheme_width(grapheme);
+        if end != 0 && display_width.saturating_add(grapheme_width) > width {
             break;
         }
-        end = index + character.len_utf8();
-        display_width = display_width.saturating_add(character_width);
+        end += grapheme.len();
+        display_width = display_width.saturating_add(grapheme_width);
         if display_width >= width {
             break;
         }
@@ -3242,14 +3238,14 @@ fn wrapped_segment_end(text: &str, width: usize) -> usize {
 }
 
 fn display_width(text: &str) -> usize {
-    text.chars().map(input_character_width).sum()
+    text.graphemes(true).map(input_grapheme_width).sum()
 }
 
-fn input_character_width(character: char) -> usize {
-    if character == '\t' {
+fn input_grapheme_width(grapheme: &str) -> usize {
+    if grapheme == "\t" {
         4
     } else {
-        UnicodeWidthChar::width(character).unwrap_or(1)
+        UnicodeWidthStr::width(grapheme)
     }
 }
 
@@ -5171,6 +5167,7 @@ mod tests {
     use ratatui::text::Line;
     use ratatui::Terminal;
     use serde_json::json;
+    use unicode_segmentation::UnicodeSegmentation;
 
     use super::{
         builtin_spinner_verb, displayed_reasoning_effort, draw, draw_live_chat, draw_model_picker,
@@ -5490,6 +5487,59 @@ mod tests {
     }
 
     #[test]
+    fn completions_use_remaining_budget_in_a_twelve_row_frame() {
+        let mut app = App::new(None);
+        app.completion = Some(super::CompletionState {
+            candidates: (0..8)
+                .map(|index| super::CompletionCandidate {
+                    command: format!("/command-{index}"),
+                    description: format!("description {index}"),
+                })
+                .collect(),
+            selected_item: 4,
+            token_start: 0,
+            token_end: 0,
+        });
+
+        let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 80, 12));
+        assert_eq!(layout.input_rows, 3);
+        assert_eq!(layout.footer_rows, 4);
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("partial completion surface should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let top_rule = rows
+            .iter()
+            .position(|row| row.chars().all(|character| character == '─'))
+            .expect("prompt top rule should be visible");
+        let bottom_rule = rows
+            .iter()
+            .enumerate()
+            .skip(top_rule + 1)
+            .find(|(_, row)| row.chars().all(|character| character == '─'))
+            .map(|(index, _)| index)
+            .expect("prompt bottom rule should be visible");
+        let completion_rows = &rows[bottom_rule + 1..];
+        assert_eq!(completion_rows.len(), 4);
+        assert!(completion_rows[2].contains("/command-4"));
+        assert_eq!(
+            terminal.backend().buffer()[(2, (bottom_rule + 1 + 2) as u16)]
+                .style()
+                .fg,
+            Some(palette::SUGGESTION)
+        );
+    }
+
+    #[test]
     fn prompt_degrades_without_panicking_in_zero_and_one_row_areas() {
         let app = App::new(None);
         for height in [0, 1] {
@@ -5550,6 +5600,25 @@ mod tests {
         let combining = super::wrap_input("e\u{301}x", "e\u{301}".len(), 10);
         assert_eq!(combining.cursor_row, 0);
         assert!(combining.lines[0].to_string().contains("e\u{301}"));
+    }
+
+    #[test]
+    fn input_wrap_preserves_combining_and_zwj_graphemes_at_narrow_boundaries() {
+        let combining_text = "e\u{301}x";
+        let combining_end = combining_text.graphemes(true).next().unwrap().len();
+        let combining = super::wrap_input(combining_text, combining_end, 3);
+        assert_eq!(combining.lines.len(), 2);
+        assert_eq!(combining.lines[0].to_string(), "❯ e\u{301}");
+        assert_eq!(combining.lines[1].to_string(), "  x");
+        assert_eq!(combining.cursor_row, 1);
+
+        let zwj_text = "👩‍💻x";
+        let zwj_end = zwj_text.graphemes(true).next().unwrap().len();
+        let zwj = super::wrap_input(zwj_text, zwj_end, 3);
+        assert_eq!(zwj.lines.len(), 2);
+        assert_eq!(zwj.lines[0].to_string(), "❯ 👩‍💻");
+        assert_eq!(zwj.lines[1].to_string(), "  x");
+        assert_eq!(zwj.cursor_row, 1);
     }
 
     #[test]
