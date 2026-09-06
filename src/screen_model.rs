@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, Write};
-use std::time::Duration;
 
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
@@ -671,14 +670,19 @@ fn render_tool_progress(
     {
         return render_shell_progress(kind, progress, width, animation_elapsed_ms);
     }
-    let content = if progress.content.is_empty() {
+    let content = if progress.status.is_empty() {
         match progress.kind {
             ToolProgressKind::Permission => "Waiting for permission…",
             ToolProgressKind::Tool => "",
             ToolProgressKind::Classifier => "",
         }
     } else {
-        progress.content.as_str()
+        progress.status.as_str()
+    };
+    let content = if content.is_empty() {
+        progress.output.as_str()
+    } else {
+        content
     };
     if content.is_empty() {
         return Vec::new();
@@ -702,17 +706,17 @@ fn render_shell_progress(
     kind: LiveEntryKind,
     progress: &ToolProgressPayload,
     width: usize,
-    _animation_elapsed_ms: u64,
+    animation_elapsed_ms: u64,
 ) -> Vec<Line<'static>> {
     let nested = tool_is_nested(kind, progress.agent_id.is_some());
     let content_width = shell_wrap_width(width);
     let gutter_style = Style::default()
         .fg(palette::INACTIVE)
         .add_modifier(ratatui::style::Modifier::DIM);
-    let mut content_lines = if progress.content.is_empty() {
+    let mut content_lines = if progress.output.is_empty() {
         let timing = progress
             .started_at
-            .map(|started_at| format_elapsed(started_at.elapsed()));
+            .map(|started_at| format_elapsed(animation_elapsed_ms.saturating_sub(started_at)));
         let mut timing_parts = Vec::new();
         if let Some(elapsed) = timing {
             timing_parts.push(elapsed);
@@ -720,14 +724,19 @@ fn render_shell_progress(
         if let Some(timeout) = progress.timeout.as_deref() {
             timing_parts.push(format!("timeout {timeout}"));
         };
-        let text = if timing_parts.is_empty() {
-            "Running… ".to_string()
+        let label = if progress.status.is_empty() {
+            "Running…"
         } else {
-            format!("Running… ({})", timing_parts.join(" · "))
+            progress.status.as_str()
+        };
+        let text = if timing_parts.is_empty() {
+            label.to_string()
+        } else {
+            format!("{label} ({})", timing_parts.join(" · "))
         };
         vec![Line::from(Span::styled(text, gutter_style))]
     } else {
-        parse_sanitized_ansi(&progress.content, Style::default().fg(palette::TEXT))
+        parse_sanitized_ansi(&progress.output, Style::default().fg(palette::TEXT))
             .into_iter()
             .rev()
             .take(5)
@@ -738,23 +747,29 @@ fn render_shell_progress(
             .collect::<Vec<_>>()
     };
 
-    if !progress.content.is_empty() {
-        let total_lines = progress.content.split('\n').count();
+    if !progress.output.is_empty() {
+        let total_lines = progress.output.split('\n').count();
         let extra_lines = total_lines.saturating_sub(5);
-        let mut status = vec![format!("+{extra_lines} lines")];
+        let mut status = Vec::new();
+        if !progress.status.is_empty() {
+            status.push(progress.status.clone());
+        }
+        if extra_lines > 0 {
+            status.push(format!("+{extra_lines} lines"));
+        }
         if let Some(started_at) = progress.started_at {
-            status.push(format!("({})", format_elapsed(started_at.elapsed())));
-        }
-        if let Some(timeout) = progress.timeout.as_deref() {
-            if progress.started_at.is_some() {
-                let previous = status.pop().expect("elapsed status exists");
-                status.push(format!("({previous} · timeout {timeout})"));
+            let elapsed = format_elapsed(animation_elapsed_ms.saturating_sub(started_at));
+            if let Some(timeout) = progress.timeout.as_deref() {
+                status.push(format!("({elapsed} · timeout {timeout})"));
             } else {
-                status.push(format!("(timeout {timeout})"));
+                status.push(format!("({elapsed})"));
             }
+        } else if let Some(timeout) = progress.timeout.as_deref() {
+            status.push(format!("(timeout {timeout})"));
         }
-        status.push(format_byte_count(progress.content.len()));
-        content_lines.push(Line::from(Span::styled(status.join(" "), gutter_style)));
+        if !status.is_empty() {
+            content_lines.push(Line::from(Span::styled(status.join(" "), gutter_style)));
+        }
     }
 
     let mut rendered = Vec::with_capacity(content_lines.len());
@@ -773,8 +788,8 @@ fn render_shell_progress(
     rendered
 }
 
-fn format_elapsed(duration: Duration) -> String {
-    let total_seconds = duration.as_secs();
+fn format_elapsed(elapsed_ms: u64) -> String {
+    let total_seconds = elapsed_ms / 1_000;
     let days = total_seconds / 86_400;
     let hours = (total_seconds % 86_400) / 3_600;
     let minutes = (total_seconds % 3_600) / 60;
@@ -787,26 +802,6 @@ fn format_elapsed(duration: Duration) -> String {
         format!("{minutes}m {seconds}s")
     } else {
         format!("{seconds}s")
-    }
-}
-
-fn format_byte_count(bytes: usize) -> String {
-    fn compact(value: f64, suffix: &str) -> String {
-        if value.fract() == 0.0 {
-            format!("{value:.0}{suffix}")
-        } else {
-            format!("{value:.1}{suffix}")
-        }
-    }
-
-    if bytes >= 1_000_000_000 {
-        compact(bytes as f64 / 1_000_000_000.0, "GB")
-    } else if bytes >= 1_000_000 {
-        compact(bytes as f64 / 1_000_000.0, "MB")
-    } else if bytes >= 1_000 {
-        compact(bytes as f64 / 1_000.0, "KB")
-    } else {
-        format!("{bytes} bytes")
     }
 }
 
@@ -902,11 +897,6 @@ fn shell_result_lines(
             error_content.push_str(&output);
         }
         error_result_lines(&error_content, verbose)?
-    } else if output_is_empty
-        && shell_background_requested(result.arguments.as_ref())
-        && exit_code.is_none_or(|exit_code| exit_code == 0)
-    {
-        vec![Line::from("Running in the background (↓ to manage)")]
     } else if result.state == ToolResultState::Error {
         error_result_lines(&result.content, verbose)?
     } else if output_is_empty {
@@ -945,6 +935,8 @@ fn shell_output(result: &ToolResultPayload, completion: Option<&ShellCompletion>
                     .and_then(|exit| exit.output_preview.clone())
                     .filter(|output| !output.trim().is_empty())
             })
+            .or_else(|| (!result.content.trim().is_empty()).then(|| result.content.clone()))
+            .or_else(|| result.partial_output.clone())
             .unwrap_or_default()
     } else {
         if result.content.trim().is_empty() {
@@ -991,15 +983,6 @@ fn shell_command(arguments: Option<&serde_json::Value>) -> Option<&str> {
             .iter()
             .find_map(|key| arguments.get(*key).and_then(serde_json::Value::as_str))
     })
-}
-
-fn shell_background_requested(arguments: Option<&serde_json::Value>) -> bool {
-    let Some(arguments) = arguments.and_then(serde_json::Value::as_object) else {
-        return false;
-    };
-    ["background", "runInBackground", "run_in_background"]
-        .iter()
-        .any(|key| arguments.get(*key).and_then(serde_json::Value::as_bool) == Some(true))
 }
 
 fn shell_output_lines(

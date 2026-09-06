@@ -128,16 +128,17 @@ pub enum ChatEntry {
         state: ToolCallState,
         unknown: bool,
         agent_id: Option<String>,
-        started_at: Instant,
+        started_at: u64,
         cwd: PathBuf,
     },
     ToolProgress {
         tool_call_id: String,
         tool_name: String,
-        content: String,
+        output: String,
+        status: String,
         kind: ToolProgressKind,
         agent_id: Option<String>,
-        started_at: Option<Instant>,
+        started_at: Option<u64>,
         timeout: Option<String>,
     },
     ToolResult {
@@ -145,6 +146,7 @@ pub enum ChatEntry {
         tool_name: String,
         arguments: Option<serde_json::Value>,
         content: String,
+        partial_output: Option<String>,
         shell_completion: Option<ShellCompletion>,
         state: ToolResultState,
         agent_id: Option<String>,
@@ -262,6 +264,7 @@ pub struct App {
     assistant_live_ids: HashSet<String>,
     reasoning_live_ids: HashSet<String>,
     ansi_streams: HashMap<AnsiStreamId, AnsiSanitizer>,
+    animation_started_at: Option<Instant>,
     should_quit: bool,
 }
 
@@ -313,6 +316,7 @@ impl App {
                 ..StatusState::default()
             },
             working_directory: std::env::current_dir().unwrap_or_default(),
+            animation_started_at: Some(Instant::now()),
             ..Self::default()
         };
         app.screen_namespace = next_screen_namespace();
@@ -328,6 +332,12 @@ impl App {
 
     pub fn entries(&self) -> &[ChatEntry] {
         &self.entries
+    }
+
+    pub fn animation_elapsed_ms(&self) -> u64 {
+        self.animation_started_at
+            .map(|started_at| started_at.elapsed().as_millis() as u64)
+            .unwrap_or_default()
     }
 
     pub fn take_screen_changes(&mut self) -> Vec<ScreenChange> {
@@ -1037,7 +1047,7 @@ impl App {
                         arguments
                     });
                     let timeout = shell_timeout(arguments.as_ref());
-                    let started_at = Instant::now();
+                    let started_at = self.animation_elapsed_ms();
                     self.push_entry(ChatEntry::Tool {
                         tool_call_id: tool_call_id.clone(),
                         tool_name: tool_name.clone(),
@@ -1052,7 +1062,8 @@ impl App {
                     self.push_entry(ChatEntry::ToolProgress {
                         tool_call_id,
                         tool_name,
-                        content: String::new(),
+                        output: String::new(),
+                        status: String::new(),
                         kind: ToolProgressKind::Tool,
                         agent_id,
                         started_at: Some(started_at),
@@ -1078,7 +1089,7 @@ impl App {
                     &content,
                 );
                 if let ChatEntry::ToolProgress {
-                    content: current, ..
+                    output: current, ..
                 } = &mut self.entries[index]
                 {
                     current.push_str(&content);
@@ -1100,7 +1111,7 @@ impl App {
                 };
                 let content = sanitize_ansi(&content);
                 if let ChatEntry::ToolProgress {
-                    content: current, ..
+                    status: current, ..
                 } = &mut self.entries[index]
                 {
                     *current = content;
@@ -1277,6 +1288,17 @@ impl App {
         };
 
         let shell_completion = shell_completion.map(sanitize_shell_completion);
+        let partial_output = self.entries.iter().find_map(|entry| {
+            let ChatEntry::ToolProgress {
+                tool_call_id: current,
+                output,
+                ..
+            } = entry
+            else {
+                return None;
+            };
+            (current == &tool_call_id && !output.is_empty()).then(|| output.clone())
+        });
         let success = success
             && shell_completion
                 .as_ref()
@@ -1321,6 +1343,7 @@ impl App {
             content: message
                 .map(|message| sanitize_ansi(&message))
                 .unwrap_or_default(),
+            partial_output,
             shell_completion,
             state: if cancelled {
                 ToolResultState::Cancelled
@@ -1936,18 +1959,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_frame(frame, app, None, 0);
 }
 
-fn draw_with_screen(
-    frame: &mut Frame,
-    app: &App,
-    screen: &mut ScreenModel,
-    animation_started_at: Instant,
-) {
-    draw_frame(
-        frame,
-        app,
-        Some(screen),
-        animation_started_at.elapsed().as_millis() as u64,
-    );
+fn draw_with_screen(frame: &mut Frame, app: &App, screen: &mut ScreenModel) {
+    draw_frame(frame, app, Some(screen), app.animation_elapsed_ms());
 }
 
 fn draw_frame(
@@ -2063,7 +2076,6 @@ async fn run_loop(
     let mut events = runtime.session.subscribe();
     let mut screen_model = ScreenModel::default();
     let mut permission_requests_open = true;
-    let animation_started_at = Instant::now();
     let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -2071,8 +2083,7 @@ async fn run_loop(
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
-        terminal
-            .draw(|frame| draw_with_screen(frame, &app, &mut screen_model, animation_started_at))?;
+        terminal.draw(|frame| draw_with_screen(frame, &app, &mut screen_model))?;
         let tick = tokio::time::sleep(Duration::from_millis(50));
         tokio::pin!(tick);
 
@@ -3578,11 +3589,87 @@ fn shell_timeout(arguments: Option<&serde_json::Value>) -> Option<String> {
     ["timeout", "timeout_ms", "timeoutMs"]
         .iter()
         .find_map(|key| arguments.get(*key))
-        .and_then(|value| match value {
-            serde_json::Value::String(value) => Some(value.clone()),
-            serde_json::Value::Number(value) => Some(value.to_string()),
-            _ => None,
-        })
+        .and_then(normalize_timeout_value)
+}
+
+fn normalize_timeout_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(value) => parse_timeout_ms(value)
+            .map(format_timeout)
+            .or_else(|| (!value.trim().is_empty()).then(|| value.trim().to_string())),
+        serde_json::Value::Number(value) => value.as_u64().map(format_timeout),
+        _ => None,
+    }
+}
+
+fn parse_timeout_ms(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    let mut total = 0u64;
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let number_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if number_start == index {
+            return None;
+        }
+        let number = value[number_start..index].parse::<u64>().ok()?;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let (multiplier, unit_length) = if bytes
+            .get(index..)
+            .is_some_and(|unit| unit.starts_with(b"ms"))
+        {
+            (1, 2)
+        } else if bytes.get(index) == Some(&b's') {
+            (1_000, 1)
+        } else if bytes.get(index) == Some(&b'm') {
+            (60_000, 1)
+        } else if bytes.get(index) == Some(&b'h') {
+            (3_600_000, 1)
+        } else if bytes.get(index) == Some(&b'd') {
+            (86_400_000, 1)
+        } else if index == bytes.len() {
+            (1, 0)
+        } else {
+            return None;
+        };
+        total = total.checked_add(number.checked_mul(multiplier)?)?;
+        index += unit_length;
+    }
+    Some(total)
+}
+
+fn format_timeout(milliseconds: u64) -> String {
+    let total_seconds = milliseconds.saturating_add(999) / 1_000;
+    let days = total_seconds / 86_400;
+    let hours = (total_seconds % 86_400) / 3_600;
+    let minutes = (total_seconds % 3_600) / 60;
+    let seconds = total_seconds % 60;
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if seconds > 0 || parts.is_empty() {
+        parts.push(format!("{seconds}s"));
+    }
+    parts.join(" ")
 }
 
 fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPayload> {
@@ -3622,7 +3709,8 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
         ChatEntry::ToolProgress {
             tool_call_id,
             tool_name,
-            content,
+            output,
+            status,
             kind,
             agent_id,
             started_at,
@@ -3630,7 +3718,8 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
         } => Some(TranscriptPayload::ToolProgress(ToolProgressPayload {
             tool_call_id: tool_call_id.clone(),
             tool_name: tool_name.clone(),
-            content: content.clone(),
+            output: output.clone(),
+            status: status.clone(),
             kind: *kind,
             agent_id: agent_id.clone(),
             started_at: *started_at,
@@ -3641,6 +3730,7 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
             tool_name,
             arguments,
             content,
+            partial_output,
             shell_completion,
             state,
             agent_id,
@@ -3650,6 +3740,7 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
             tool_name: tool_name.clone(),
             arguments: arguments.clone(),
             content: content.clone(),
+            partial_output: partial_output.clone(),
             shell_completion: shell_completion.clone(),
             state: *state,
             agent_id: agent_id.clone(),

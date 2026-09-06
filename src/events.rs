@@ -254,13 +254,26 @@ fn map_tool_completion(
         return (message, None);
     };
     let mut shell_exit = None;
+    let mut terminal_exit = None;
     let mut output = Vec::new();
     let mut image_detected = false;
 
     for content in contents {
         match content {
             ToolExecutionCompleteContent::Text(content) => output.push(content.text),
-            ToolExecutionCompleteContent::Terminal(content) => output.push(content.text),
+            ToolExecutionCompleteContent::Terminal(content) => {
+                if let Some(exit_code) = content.exit_code {
+                    terminal_exit = Some(ShellExitMetadata {
+                        cwd: content.cwd,
+                        exit_code,
+                        output_file_path: None,
+                        output_preview: None,
+                        output_truncated: None,
+                        shell_id: String::new(),
+                    });
+                }
+                output.push(content.text);
+            }
             ToolExecutionCompleteContent::ShellExit(content) => {
                 shell_exit = Some(ShellExitMetadata {
                     cwd: content.cwd,
@@ -281,7 +294,7 @@ fn map_tool_completion(
     (
         message,
         Some(ShellCompletion {
-            exit: shell_exit,
+            exit: shell_exit.or(terminal_exit),
             output: (!output.is_empty()).then(|| output.join("\n")),
             image_detected,
         }),
@@ -587,7 +600,12 @@ mod tests {
                             "outputTruncated": true,
                             "shellId": "shell-1"
                         },
-                        {"type": "terminal", "text": "terminal output"},
+                        {
+                            "type": "terminal",
+                            "cwd": "C:/terminal-fallback",
+                            "exitCode": 9,
+                            "text": "terminal output"
+                        },
                         {"type": "text", "text": "text output"},
                         {
                             "type": "image",
@@ -616,6 +634,57 @@ mod tests {
                     }),
                     output: Some("terminal output\ntext output".to_string()),
                     image_detected: true,
+                }),
+                agent_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn maps_terminal_exit_metadata_when_shell_exit_is_absent() {
+        let event = SessionEvent {
+            id: "event-terminal-only".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "tool.execution_complete".to_string(),
+            data: json!({
+                "toolCallId": "tool-terminal-only",
+                "success": false,
+                "result": {
+                    "content": "",
+                    "contents": [
+                        {
+                            "type": "terminal",
+                            "cwd": "C:/terminal",
+                            "exitCode": 2,
+                            "text": "terminal failure"
+                        }
+                    ]
+                }
+            }),
+        };
+
+        assert_eq!(
+            event_update(&event),
+            Some(EventUpdate::ToolCompleted {
+                tool_call_id: "tool-terminal-only".to_string(),
+                success: false,
+                message: Some("".to_string()),
+                shell_completion: Some(ShellCompletion {
+                    exit: Some(ShellExitMetadata {
+                        cwd: Some("C:/terminal".to_string()),
+                        exit_code: 2,
+                        output_file_path: None,
+                        output_preview: None,
+                        output_truncated: None,
+                        shell_id: String::new(),
+                    }),
+                    output: Some("terminal failure".to_string()),
+                    image_detected: false,
                 }),
                 agent_id: None,
             })

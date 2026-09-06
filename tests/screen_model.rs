@@ -169,6 +169,7 @@ fn wrapped_tool_result_keeps_sgr_style_on_every_fragment_without_escape_bytes() 
         tool_name: "bash".to_string(),
         arguments: None,
         content: sanitize_ansi("\u{1b}[31mred red red red red\u{1b}[0m"),
+        partial_output: None,
         shell_completion: None,
         state: ToolResultState::Success,
         agent_id: None,
@@ -199,6 +200,7 @@ fn structured_shell_output_renders_styled_terminal_text() {
         tool_name: "bash".to_string(),
         arguments: Some(json!({"command": "printf red"})),
         content: "fallback should not render".to_string(),
+        partial_output: None,
         shell_completion: Some(ShellCompletion {
             exit: Some(ShellExitMetadata {
                 cwd: Some("/workspace".to_string()),
@@ -235,6 +237,136 @@ fn structured_shell_output_renders_styled_terminal_text() {
 }
 
 #[test]
+fn shell_completion_without_typed_output_uses_detailed_result_fallback() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "shell-detailed-fallback".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf output"})),
+        content: "detailed fallback".to_string(),
+        partial_output: None,
+        shell_completion: Some(ShellCompletion {
+            exit: Some(ShellExitMetadata {
+                cwd: Some("/workspace".to_string()),
+                exit_code: 0,
+                output_file_path: None,
+                output_preview: None,
+                output_truncated: Some(false),
+                shell_id: "shell-detailed-fallback".to_string(),
+            }),
+            output: None,
+            image_detected: false,
+        }),
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+
+    assert!(lines
+        .iter()
+        .any(|line| line.to_string().ends_with("detailed fallback")));
+    assert!(!lines
+        .iter()
+        .any(|line| line.to_string().contains("(No output)")));
+}
+
+#[test]
+fn shell_completion_preserves_accumulated_partial_output_as_a_fallback() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "shell-partial-fallback".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf partial"})),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "shell-partial-fallback".to_string(),
+        content: "partial output".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolCompleted {
+        tool_call_id: "shell-partial-fallback".to_string(),
+        success: true,
+        message: None,
+        shell_completion: Some(ShellCompletion {
+            exit: Some(ShellExitMetadata {
+                cwd: Some("/workspace".to_string()),
+                exit_code: 0,
+                output_file_path: None,
+                output_preview: None,
+                output_truncated: None,
+                shell_id: "shell-partial-fallback".to_string(),
+            }),
+            output: None,
+            image_detected: false,
+        }),
+        agent_id: None,
+    });
+
+    let (content, partial_output) = app
+        .entries()
+        .iter()
+        .find_map(|entry| match entry {
+            ChatEntry::ToolResult {
+                content,
+                partial_output,
+                ..
+            } => Some((content.as_str(), partial_output.as_deref())),
+            _ => None,
+        })
+        .expect("completed shell result");
+    assert_eq!(content, "");
+    assert_eq!(partial_output, Some("partial output"));
+}
+
+#[test]
+fn typed_shell_output_wins_without_duplicate_fallback_sources() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "shell-output-precedence".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({"command": "printf typed"})),
+        content: "detailed fallback".to_string(),
+        partial_output: Some("partial fallback".to_string()),
+        shell_completion: Some(ShellCompletion {
+            exit: Some(ShellExitMetadata {
+                cwd: Some("/workspace".to_string()),
+                exit_code: 0,
+                output_file_path: None,
+                output_preview: Some("preview fallback".to_string()),
+                output_truncated: Some(false),
+                shell_id: "shell-output-precedence".to_string(),
+            }),
+            output: Some("typed output".to_string()),
+            image_detected: false,
+        }),
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    assert_eq!(
+        rendered
+            .iter()
+            .filter(|line| line.contains("typed output"))
+            .count(),
+        1
+    );
+    assert!(!rendered
+        .iter()
+        .any(|line| line.contains("preview fallback")));
+    assert!(!rendered
+        .iter()
+        .any(|line| line.contains("detailed fallback")));
+    assert!(!rendered
+        .iter()
+        .any(|line| line.contains("partial fallback")));
+}
+
+#[test]
 fn shell_success_renders_output_empty_states_and_silent_commands() {
     let output = render_transcript_payload(
         LiveEntryKind::Tool,
@@ -253,18 +385,6 @@ fn shell_success_renders_output_empty_states_and_silent_commands() {
     assert!(empty
         .iter()
         .any(|line| line.to_string().ends_with("(No output)")));
-
-    let mut background = shell_result("long-running command", None, Some(0), Some(false), false);
-    if let TranscriptPayload::ToolResult(result) = &mut background {
-        result.arguments = Some(json!({
-            "command": "long-running command",
-            "runInBackground": true
-        }));
-    }
-    let background = render_transcript_payload(LiveEntryKind::Tool, &background, 80);
-    assert!(background.iter().any(|line| line
-        .to_string()
-        .ends_with("Running in the background (↓ to manage)")));
 
     for command in [
         "mv a b",
@@ -294,6 +414,26 @@ fn shell_success_renders_output_empty_states_and_silent_commands() {
             "expected Done for {command}"
         );
     }
+}
+
+#[test]
+fn shell_arguments_do_not_fabricate_background_completion_state() {
+    let mut payload = shell_result("long-running command", None, Some(0), Some(false), false);
+    if let TranscriptPayload::ToolResult(result) = &mut payload {
+        result.arguments = Some(json!({
+            "command": "long-running command",
+            "runInBackground": true
+        }));
+    }
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+
+    assert!(lines
+        .iter()
+        .any(|line| line.to_string().ends_with("(No output)")));
+    assert!(!lines
+        .iter()
+        .any(|line| line.to_string().contains("Running in the background")));
 }
 
 #[test]
@@ -462,10 +602,11 @@ fn bash_progress_keeps_timing_and_the_last_five_output_lines_live() {
     let no_output = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "progress-empty".to_string(),
         tool_name: "bash".to_string(),
-        content: String::new(),
+        output: String::new(),
+        status: String::new(),
         kind: ToolProgressKind::Tool,
         agent_id: None,
-        started_at: Some(std::time::Instant::now() - std::time::Duration::from_secs(12)),
+        started_at: Some(0),
         timeout: Some("2m".to_string()),
     });
     let empty_lines = render_transcript_payload_with_clock(
@@ -499,7 +640,8 @@ fn bash_progress_keeps_timing_and_the_last_five_output_lines_live() {
     let with_output = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "progress-output".to_string(),
         tool_name: "bash".to_string(),
-        content: sanitize_ansi(&output),
+        output: sanitize_ansi(&output),
+        status: String::new(),
         kind: ToolProgressKind::Tool,
         agent_id: None,
         started_at: None,
@@ -524,9 +666,82 @@ fn bash_progress_keeps_timing_and_the_last_five_output_lines_live() {
     assert!(output_lines
         .iter()
         .any(|line| line.to_string().contains("+1 lines")));
-    assert!(output_lines
+}
+
+#[test]
+fn bash_progress_elapsed_time_uses_the_sampled_frame_clock() {
+    let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-clock".to_string(),
+        tool_name: "bash".to_string(),
+        output: String::new(),
+        status: String::new(),
+        kind: ToolProgressKind::Tool,
+        agent_id: None,
+        started_at: Some(1_000),
+        timeout: None,
+    });
+
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        80,
+        ToolPlatform::WindowsLinux,
+        12_000,
+    );
+
+    assert!(lines.iter().any(|line| line.to_string().contains("11s")));
+}
+
+#[test]
+fn bash_progress_formats_numeric_timeout_values_for_display() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "progress-timeout".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: Some(json!({
+            "command": "long-running command",
+            "timeoutMs": 65_000
+        })),
+        agent_id: None,
+    });
+
+    let timeout = app
+        .entries()
         .iter()
-        .any(|line| line.to_string().contains("bytes")));
+        .find_map(|entry| match entry {
+            ChatEntry::ToolProgress { timeout, .. } => timeout.as_deref(),
+            _ => None,
+        })
+        .expect("timeout should be stored on the live progress entry");
+
+    assert_eq!(timeout, "1m 5s");
+}
+
+#[test]
+fn bash_progress_hides_zero_line_delta_and_unqualified_byte_count() {
+    let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
+        tool_call_id: "progress-short-output".to_string(),
+        tool_name: "bash".to_string(),
+        output: "line".to_string(),
+        status: String::new(),
+        kind: ToolProgressKind::Tool,
+        agent_id: None,
+        started_at: None,
+        timeout: None,
+    });
+
+    let lines = render_transcript_payload_with_clock(
+        LiveEntryKind::Tool,
+        &payload,
+        80,
+        ToolPlatform::WindowsLinux,
+        0,
+    );
+
+    assert!(!lines
+        .iter()
+        .any(|line| line.to_string().contains("+0 lines")));
+    assert!(!lines.iter().any(|line| line.to_string().contains("bytes")));
 }
 
 #[test]
@@ -584,6 +799,7 @@ fn tool_error_normalization_preserves_sgr_styles_without_escape_bytes() {
         tool_name: "bash".to_string(),
         arguments: None,
         content: sanitize_ansi("<error>failure \u{1b}[31mred\u{1b}[0m</error>"),
+        partial_output: None,
         shell_completion: None,
         state: ToolResultState::Error,
         agent_id: None,
@@ -680,7 +896,7 @@ fn reset_drops_unfinished_tool_ansi_state_before_a_reused_id() {
 
     assert!(app.entries().iter().any(|entry| matches!(
         entry,
-        ChatEntry::ToolProgress { content, .. } if content == "mcontinued"
+        ChatEntry::ToolProgress { output, .. } if output == "mcontinued"
     )));
 }
 
@@ -724,7 +940,7 @@ fn idle_and_reconnect_drop_unfinished_ansi_state() {
     )));
     assert!(app.entries().iter().any(|entry| matches!(
         entry,
-        ChatEntry::ToolProgress { content, .. } if content == "tool mcontinued"
+        ChatEntry::ToolProgress { output, .. } if output == "tool mcontinued"
     )));
 }
 
@@ -776,6 +992,7 @@ fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
                 tool_name,
                 arguments,
                 content,
+                partial_output,
                 shell_completion,
                 state,
                 agent_id,
@@ -785,6 +1002,7 @@ fn all_untrusted_display_surfaces_are_plain_or_sanitized_before_storage() {
                 tool_name: tool_name.clone(),
                 arguments: arguments.clone(),
                 content: content.clone(),
+                partial_output: partial_output.clone(),
                 shell_completion: shell_completion.clone(),
                 state: *state,
                 agent_id: agent_id.clone(),
@@ -889,8 +1107,47 @@ fn tool_progress_starts_fresh_after_partial_tool_output() {
 
     assert!(app.entries().iter().any(|entry| matches!(
         entry,
-        ChatEntry::ToolProgress { content, .. } if content == "complete"
+        ChatEntry::ToolProgress { status, .. } if status == "complete"
     )));
+}
+
+#[test]
+fn tool_output_and_progress_keep_separate_live_values() {
+    let mut app = App::new(None);
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-output-status".to_string(),
+        tool_name: "bash".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-status".to_string(),
+        content: "first".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolProgress {
+        tool_call_id: "tool-output-status".to_string(),
+        content: "waiting".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::ToolOutput {
+        tool_call_id: "tool-output-status".to_string(),
+        content: "second".to_string(),
+        agent_id: None,
+    });
+
+    let (output, status) = app
+        .entries()
+        .iter()
+        .find_map(|entry| match entry {
+            ChatEntry::ToolProgress { output, status, .. } => {
+                Some((output.as_str(), status.as_str()))
+            }
+            _ => None,
+        })
+        .expect("live tool progress entry");
+    assert_eq!(output, "firstsecond");
+    assert_eq!(status, "waiting");
 }
 
 #[test]
@@ -915,7 +1172,7 @@ fn tool_progress_tab_uses_its_own_columns() {
 
     assert!(app.entries().iter().any(|entry| matches!(
         entry,
-        ChatEntry::ToolProgress { content, .. } if content == "        complete"
+        ChatEntry::ToolProgress { status, .. } if status == "        complete"
     )));
 }
 
@@ -957,9 +1214,9 @@ fn concurrent_tool_output_streams_remain_independent() {
         .filter_map(|entry| match entry {
             ChatEntry::ToolProgress {
                 tool_call_id,
-                content,
+                output,
                 ..
-            } => Some((tool_call_id.as_str(), content.as_str())),
+            } => Some((tool_call_id.as_str(), output.as_str())),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -994,8 +1251,8 @@ fn progress_does_not_corrupt_a_later_output_continuation() {
 
     assert!(app.entries().iter().any(|entry| matches!(
         entry,
-        ChatEntry::ToolProgress { content, .. }
-            if content == "complete\u{1b}[31mred"
+        ChatEntry::ToolProgress { output, status, .. }
+            if output == "prefix \u{1b}[31mred" && status == "complete"
     )));
 }
 
@@ -1620,15 +1877,19 @@ fn tool_progress_is_call_scoped_and_late_completion_is_ignored() {
         .filter_map(|entry| match entry {
             ChatEntry::ToolProgress {
                 tool_call_id,
-                content,
+                output,
+                status,
                 ..
-            } => Some((tool_call_id.as_str(), content.as_str())),
+            } => Some((tool_call_id.as_str(), output.as_str(), status.as_str())),
             _ => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(
         progress,
-        vec![("tool-a", "a status tail"), ("tool-b", "b progress")]
+        vec![
+            ("tool-a", "a output tail", "a status"),
+            ("tool-b", "", "b progress"),
+        ]
     );
 
     app.apply(EventUpdate::ToolCompleted {
@@ -1667,8 +1928,8 @@ fn tool_progress_is_call_scoped_and_late_completion_is_ignored() {
     assert!(!app.entries().iter().any(|entry| {
         matches!(
             entry,
-            ChatEntry::ToolProgress { tool_call_id, content, .. }
-                if tool_call_id == "tool-a" && content.contains("late output")
+            ChatEntry::ToolProgress { tool_call_id, output, .. }
+                if tool_call_id == "tool-a" && output.contains("late output")
         )
     }));
 }
@@ -1764,7 +2025,7 @@ fn test_tool_header(
         tool_name: tool_name.to_string(),
         arguments: Some(arguments),
         agent_id: agent_id.map(ToString::to_string),
-        started_at: std::time::Instant::now(),
+        started_at: 0,
         state,
         cwd: std::path::PathBuf::from("/workspace"),
     }
@@ -1781,6 +2042,7 @@ fn test_tool_result(
         tool_name: tool_name.to_string(),
         arguments: None,
         content: content.to_string(),
+        partial_output: None,
         shell_completion: None,
         state,
         agent_id: agent_id.map(ToString::to_string),
@@ -1801,6 +2063,7 @@ fn shell_result(
         tool_name: "bash".to_string(),
         arguments: Some(json!({"command": command})),
         content: output.clone().unwrap_or_default(),
+        partial_output: None,
         shell_completion: Some(ShellCompletion {
             exit: exit_code.map(|exit_code| ShellExitMetadata {
                 cwd: Some("/workspace".to_string()),
@@ -2024,7 +2287,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
     let permission = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "permission-1".to_string(),
         tool_name: "read".to_string(),
-        content: String::new(),
+        output: String::new(),
+        status: String::new(),
         kind: ToolProgressKind::Permission,
         agent_id: None,
         started_at: None,
@@ -2033,7 +2297,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
     let classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "classifier-1".to_string(),
         tool_name: "read".to_string(),
-        content: String::new(),
+        output: String::new(),
+        status: String::new(),
         kind: ToolProgressKind::Classifier,
         agent_id: None,
         started_at: None,
@@ -2042,7 +2307,8 @@ fn model_only_tool_progress_states_have_deterministic_single_rows() {
     let nested_classifier = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "classifier-2".to_string(),
         tool_name: "read".to_string(),
-        content: "classifying".to_string(),
+        output: String::new(),
+        status: "classifying".to_string(),
         kind: ToolProgressKind::Classifier,
         agent_id: Some("agent-1".to_string()),
         started_at: None,
@@ -2088,7 +2354,8 @@ fn tool_progress_is_one_clipped_row_even_with_long_multiline_content() {
     let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "progress-1".to_string(),
         tool_name: "read".to_string(),
-        content: "0123456789abcdef\nsecond line".to_string(),
+        output: String::new(),
+        status: "0123456789abcdef\nsecond line".to_string(),
         kind: ToolProgressKind::Tool,
         agent_id: None,
         started_at: None,
@@ -2114,7 +2381,8 @@ fn nested_tool_progress_is_one_clipped_row_without_a_gutter() {
     let payload = TranscriptPayload::ToolProgress(ToolProgressPayload {
         tool_call_id: "progress-nested".to_string(),
         tool_name: "read".to_string(),
-        content: "0123456789abcdef\nsecond line".to_string(),
+        output: String::new(),
+        status: "0123456789abcdef\nsecond line".to_string(),
         kind: ToolProgressKind::Tool,
         agent_id: Some("agent-1".to_string()),
         started_at: None,

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use serde_json::Value;
 
@@ -58,7 +57,7 @@ pub struct ToolHeaderPayload {
     pub tool_name: String,
     pub arguments: Option<Value>,
     pub agent_id: Option<String>,
-    pub started_at: Instant,
+    pub started_at: u64,
     pub state: ToolCallState,
     pub cwd: PathBuf,
 }
@@ -73,10 +72,11 @@ impl ToolHeaderPayload {
 pub struct ToolProgressPayload {
     pub tool_call_id: String,
     pub tool_name: String,
-    pub content: String,
+    pub output: String,
+    pub status: String,
     pub kind: ToolProgressKind,
     pub agent_id: Option<String>,
-    pub started_at: Option<Instant>,
+    pub started_at: Option<u64>,
     pub timeout: Option<String>,
 }
 
@@ -92,6 +92,7 @@ pub struct ToolResultPayload {
     pub tool_name: String,
     pub arguments: Option<Value>,
     pub content: String,
+    pub partial_output: Option<String>,
     pub shell_completion: Option<ShellCompletion>,
     pub state: ToolResultState,
     pub agent_id: Option<String>,
