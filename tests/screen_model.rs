@@ -2050,6 +2050,24 @@ fn test_tool_result(
     }
 }
 
+fn file_edit_result(
+    tool_name: &str,
+    arguments: serde_json::Value,
+    content: &str,
+) -> TranscriptPayload {
+    TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "file-edit-test".to_string(),
+        tool_name: tool_name.to_string(),
+        arguments: Some(arguments),
+        content: content.to_string(),
+        partial_output: None,
+        shell_completion: None,
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    })
+}
+
 fn shell_result(
     command: &str,
     output: Option<&str>,
@@ -2549,6 +2567,410 @@ fn tool_result_uses_the_five_cell_gutter_and_nested_results_do_not_stack_it() {
     assert!(!lines[2].to_string().contains('⎿'));
     assert_eq!(nested_lines.len(), 1);
     assert_eq!(nested_lines[0].to_string(), "nested result");
+}
+
+#[test]
+fn successful_edit_result_renders_a_semantic_diff_instead_of_generic_text() {
+    let payload = TranscriptPayload::ToolResult(ToolResultPayload {
+        tool_call_id: "edit-diff".to_string(),
+        tool_name: "edit".to_string(),
+        arguments: Some(json!({
+            "file_path": "src/main.rs",
+            "old_string": "old",
+            "new_string": "new"
+        })),
+        content: "updated".to_string(),
+        partial_output: None,
+        shell_completion: None,
+        state: ToolResultState::Success,
+        agent_id: None,
+        cwd: std::path::PathBuf::from("/workspace"),
+    });
+
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    assert_eq!(rendered[1], "  ⎿ \u{00a0}Added 1 line, removed 1 line");
+    assert!(rendered[2].trim_end().ends_with("      1 -old"));
+    assert!(rendered[3].trim_end().ends_with("      1 +new"));
+    assert!(lines[2]
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(palette::DIFF_REMOVED)));
+    assert!(lines[3]
+        .spans
+        .iter()
+        .any(|span| span.style.bg == Some(palette::DIFF_ADDED)));
+    assert!(!rendered.iter().any(|line| line.contains("updated")));
+
+    let count_span = lines[1]
+        .spans
+        .iter()
+        .find(|span| span.content == "1")
+        .expect("summary count");
+    assert!(count_span
+        .style
+        .add_modifier
+        .contains(ratatui::style::Modifier::BOLD));
+}
+
+#[test]
+fn file_edit_summary_uses_the_required_grammar_for_additions_removals_and_mixes() {
+    let cases = [
+        (
+            json!({
+                "file_path": "src/main.rs",
+                "old_string": "",
+                "new_string": "new\n"
+            }),
+            "  ⎿ \u{00a0}Added 1 line",
+            1,
+        ),
+        (
+            json!({
+                "file_path": "src/main.rs",
+                "old_string": "old\n",
+                "new_string": ""
+            }),
+            "  ⎿ \u{00a0}Removed 1 line",
+            1,
+        ),
+        (
+            json!({
+                "file_path": "src/main.rs",
+                "old_string": "old\n",
+                "new_string": "new\n"
+            }),
+            "  ⎿ \u{00a0}Added 1 line, removed 1 line",
+            2,
+        ),
+    ];
+
+    for (arguments, expected_summary, expected_bold_counts) in cases {
+        let payload = file_edit_result("edit", arguments, "completion text");
+        let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+
+        assert_eq!(lines[1].to_string(), expected_summary);
+        assert_eq!(
+            lines[1]
+                .spans
+                .iter()
+                .filter(|span| span
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD))
+                .count(),
+            expected_bold_counts
+        );
+    }
+}
+
+#[test]
+fn create_and_write_results_diff_from_empty_content() {
+    let create = file_edit_result(
+        "create",
+        json!({"file_path": "src/new.rs", "content": "first\nsecond\n"}),
+        "created",
+    );
+    let create_lines = render_transcript_payload(LiveEntryKind::Tool, &create, 80);
+    let create_text = create_lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(create_text[1], "  ⎿ \u{00a0}Added 2 lines");
+    assert!(create_text.iter().any(|line| line.contains("+first")));
+    assert!(create_text.iter().any(|line| line.contains("+second")));
+
+    let write_empty = file_edit_result(
+        "write",
+        json!({"file_path": "src/empty.txt", "content": ""}),
+        "written",
+    );
+    let write_lines = render_transcript_payload(LiveEntryKind::Tool, &write_empty, 80);
+    assert_eq!(write_lines[1].to_string(), "  ⎿ \u{00a0}Added 0 lines");
+    assert_eq!(write_lines.len(), 2);
+}
+
+#[test]
+fn file_edit_diffs_have_no_write_result_row_cap() {
+    let content = (1..=12)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let payload = file_edit_result(
+        "write",
+        json!({"file_path": "src/output.txt", "content": content}),
+        "ignored",
+    );
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|line| line.to_string().contains('+'))
+            .count(),
+        12
+    );
+    assert!(!lines.iter().any(|line| line.to_string().contains("ctrl+o")));
+}
+
+#[test]
+fn edit_argument_aliases_are_semantic_and_missing_inputs_keep_generic_results() {
+    let aliases = file_edit_result(
+        "edit",
+        json!({
+            "filePath": "src/main.rs",
+            "oldString": "before",
+            "newString": "after"
+        }),
+        "completion text",
+    );
+    let alias_lines = render_transcript_payload(LiveEntryKind::Tool, &aliases, 80);
+    assert_eq!(
+        alias_lines[1].to_string(),
+        "  ⎿ \u{00a0}Added 1 line, removed 1 line"
+    );
+
+    let missing_new = file_edit_result(
+        "edit",
+        json!({"file_path": "src/main.rs", "old_string": "before"}),
+        "completion text",
+    );
+    let missing_lines = render_transcript_payload(LiveEntryKind::Tool, &missing_new, 80);
+    assert!(missing_lines
+        .iter()
+        .any(|line| line.to_string().contains("completion text")));
+    assert!(!missing_lines
+        .iter()
+        .any(|line| line.to_string().contains("Added")));
+}
+
+#[test]
+fn valid_mutation_headers_use_update_and_create_source_names() {
+    let update = TranscriptPayload::ToolHeader(test_tool_header(
+        "edit",
+        json!({
+            "filePath": "src/main.rs",
+            "old_string": "before",
+            "new_string": "after"
+        }),
+        ToolCallState::Success,
+        None,
+    ));
+    let create = TranscriptPayload::ToolHeader(test_tool_header(
+        "create",
+        json!({"file_path": "src/new.rs", "content": "new"}),
+        ToolCallState::Success,
+        None,
+    ));
+    let write = TranscriptPayload::ToolHeader(test_tool_header(
+        "write",
+        json!({"file_path": "src/out.txt", "content": "new"}),
+        ToolCallState::Success,
+        None,
+    ));
+
+    for (payload, expected) in [
+        (update, "● Update(src/main.rs)"),
+        (create, "● Create(src/new.rs)"),
+        (write, "● Create(src/out.txt)"),
+    ] {
+        let lines = render_transcript_payload_with_clock(
+            LiveEntryKind::Tool,
+            &payload,
+            80,
+            ToolPlatform::WindowsLinux,
+            0,
+        );
+        assert_eq!(lines[1].to_string(), expected);
+    }
+}
+
+#[test]
+fn file_edit_hunks_keep_three_context_lines_and_separate_distant_changes() {
+    let old = (1..=15)
+        .map(|line| match line {
+            4 => "old one".to_string(),
+            12 => "old two".to_string(),
+            line => format!("line {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let new = (1..=15)
+        .map(|line| match line {
+            4 => "new one".to_string(),
+            12 => "new two".to_string(),
+            line => format!("line {line}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let payload = file_edit_result(
+        "edit",
+        json!({"file_path": "src/main.rs", "old_string": old, "new_string": new}),
+        "ignored",
+    );
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+    for context in ["line 1", "line 2", "line 3", "line 5", "line 6", "line 7"] {
+        assert!(rendered.iter().any(|line| line.contains(context)));
+    }
+    assert!(!rendered.iter().any(|line| line.contains("line 8")));
+    assert_eq!(
+        rendered.iter().filter(|line| line.trim() == "...").count(),
+        1
+    );
+    let separator = rendered
+        .iter()
+        .position(|line| line.trim() == "...")
+        .expect("distant hunk separator");
+    assert!(!rendered[separator + 1].trim().is_empty());
+    assert!(lines[separator].spans.iter().any(|span| span
+        .style
+        .add_modifier
+        .contains(ratatui::style::Modifier::DIM)));
+}
+
+#[test]
+fn file_edit_rows_wrap_with_repeated_sigils_and_full_changed_backgrounds() {
+    let payload = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "old line abcdefghijklmnop",
+            "new_string": "new line qrstuvwxyzabcdef"
+        }),
+        "ignored",
+    );
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 32);
+    let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let removed = rendered
+        .iter()
+        .filter(|line| line.contains('-'))
+        .collect::<Vec<_>>();
+    let added = rendered
+        .iter()
+        .filter(|line| line.contains('+'))
+        .collect::<Vec<_>>();
+
+    assert!(removed.len() > 1);
+    assert!(added.len() > 1);
+    assert!(removed[0].contains(" 1 -"));
+    assert!(added[0].contains(" 1 +"));
+    assert!(removed[1].contains('-'));
+    assert!(added[1].contains('+'));
+    assert!(!removed[1].contains(" 1 -"));
+    assert!(!added[1].contains(" 1 +"));
+    let removed_start = rendered
+        .iter()
+        .position(|line| line.contains(" 1 -"))
+        .expect("removed row");
+    let added_start = rendered
+        .iter()
+        .position(|line| line.contains(" 1 +"))
+        .expect("added row");
+    assert_eq!(
+        lines[removed_start].width(),
+        lines[removed_start + 1].width()
+    );
+    assert_eq!(lines[added_start].width(), lines[added_start + 1].width());
+    assert!(lines.iter().all(|line| line.width() <= 32));
+}
+
+#[test]
+fn file_edit_word_highlighting_obeys_the_change_ratio_boundary() {
+    let below = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "keep same old value",
+            "new_string": "keep same new value"
+        }),
+        "ignored",
+    );
+    let below_lines = render_transcript_payload(LiveEntryKind::Tool, &below, 80);
+    assert!(below_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| { span.style.bg == Some(palette::DIFF_ADDED_WORD) }));
+    assert!(below_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| { span.style.bg == Some(palette::DIFF_REMOVED_WORD) }));
+
+    let above = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "one two",
+            "new_string": "three four"
+        }),
+        "ignored",
+    );
+    let above_lines = render_transcript_payload(LiveEntryKind::Tool, &above, 80);
+    assert!(!above_lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .any(|span| {
+            span.style.bg == Some(palette::DIFF_ADDED_WORD)
+                || span.style.bg == Some(palette::DIFF_REMOVED_WORD)
+        }));
+}
+
+#[test]
+fn file_edit_context_body_is_unstyled_while_its_gutters_are_dim() {
+    let payload = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "same\nold",
+            "new_string": "same\nnew"
+        }),
+        "ignored",
+    );
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 80);
+    let context = lines
+        .iter()
+        .find(|line| line.to_string().contains("same"))
+        .expect("context row");
+    let body = context
+        .spans
+        .iter()
+        .find(|span| span.content.contains("same"))
+        .expect("context body");
+    let diff_gutter = context
+        .spans
+        .iter()
+        .find(|span| span.content == " 1  ")
+        .expect("context diff gutter");
+
+    assert_eq!(body.style.bg, None);
+    assert_eq!(body.style.fg, Some(palette::TEXT));
+    assert!(!body
+        .style
+        .add_modifier
+        .contains(ratatui::style::Modifier::DIM));
+    assert!(diff_gutter
+        .style
+        .add_modifier
+        .contains(ratatui::style::Modifier::DIM));
+}
+
+#[test]
+fn file_edit_unicode_content_keeps_graphemes_intact_when_wrapping() {
+    let payload = file_edit_result(
+        "edit",
+        json!({
+            "file_path": "src/main.rs",
+            "old_string": "keep cafe 👩‍💻 alpha",
+            "new_string": "keep café 👩‍💻 omega"
+        }),
+        "ignored",
+    );
+    let lines = render_transcript_payload(LiveEntryKind::Tool, &payload, 28);
+
+    assert!(lines.iter().any(|line| line.to_string().contains("👩‍💻")));
+    assert!(lines.iter().all(|line| line.width() <= 28));
 }
 
 #[test]

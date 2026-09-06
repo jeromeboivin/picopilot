@@ -110,6 +110,7 @@ enum KnownTool {
     Bash,
     Read,
     Edit,
+    Create,
     Write,
     Grep,
     Glob,
@@ -127,6 +128,8 @@ fn known_tool(tool_name: &str) -> KnownTool {
         KnownTool::Read
     } else if normalized == "edit" || normalized.ends_with("_edit") {
         KnownTool::Edit
+    } else if normalized == "create" || normalized.ends_with("_create") {
+        KnownTool::Create
     } else if normalized == "write" || normalized.ends_with("_write") {
         KnownTool::Write
     } else if normalized == "grep" || normalized.ends_with("_grep") {
@@ -143,10 +146,19 @@ pub fn tool_user_facing_name(tool_name: &str) -> String {
         KnownTool::Bash => "Bash".to_string(),
         KnownTool::Read => "Read".to_string(),
         KnownTool::Edit => "Edit".to_string(),
+        KnownTool::Create => "Create".to_string(),
         KnownTool::Write => "Write".to_string(),
         KnownTool::Grep => "Grep".to_string(),
         KnownTool::Glob => "Glob".to_string(),
         KnownTool::Unknown => readable_fallback_name(tool_name),
+    }
+}
+
+pub fn tool_header_name(tool_name: &str, arguments: Option<&Value>) -> String {
+    match known_tool(tool_name) {
+        KnownTool::Edit if file_edit_source(tool_name, arguments).is_some() => "Update".to_string(),
+        KnownTool::Create | KnownTool::Write => "Create".to_string(),
+        _ => tool_user_facing_name(tool_name),
     }
 }
 
@@ -163,7 +175,7 @@ pub fn tool_summary(
     match known_tool(tool_name) {
         KnownTool::Bash => bash_summary(arguments, verbose),
         KnownTool::Read => read_summary(arguments, cwd, verbose),
-        KnownTool::Edit | KnownTool::Write => edit_summary(arguments, cwd),
+        KnownTool::Edit | KnownTool::Create | KnownTool::Write => edit_summary(arguments, cwd),
         KnownTool::Grep | KnownTool::Glob => search_summary(arguments, cwd),
         KnownTool::Unknown => unknown_summary(arguments),
     }
@@ -249,13 +261,59 @@ fn read_summary(arguments: &Value, cwd: &Path, verbose: bool) -> String {
 }
 
 fn edit_summary(arguments: &Value, cwd: &Path) -> String {
-    let Some(path) = first_string(arguments, &["file_path", "path"]) else {
+    let Some(path) = first_string(arguments, &["file_path", "filePath", "path"]) else {
         return String::new();
     };
     if is_plan_file(&path) {
         String::new()
     } else {
         display_path(&path, cwd)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileEditKind {
+    Edit,
+    Create,
+    Write,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileEditSource {
+    pub kind: FileEditKind,
+    pub path: String,
+    pub old_text: String,
+    pub new_text: String,
+}
+
+pub(crate) fn file_edit_source(
+    tool_name: &str,
+    arguments: Option<&Value>,
+) -> Option<FileEditSource> {
+    let arguments = arguments?;
+    let kind = match known_tool(tool_name) {
+        KnownTool::Edit => FileEditKind::Edit,
+        KnownTool::Create => FileEditKind::Create,
+        KnownTool::Write => FileEditKind::Write,
+        _ => return None,
+    };
+    let path = first_string(arguments, &["file_path", "filePath", "path"])?;
+    match kind {
+        FileEditKind::Edit => Some(FileEditSource {
+            kind,
+            path,
+            old_text: first_string(arguments, &["old_string", "oldString"])?,
+            new_text: first_string(arguments, &["new_string", "newString"])?,
+        }),
+        FileEditKind::Create | FileEditKind::Write => Some(FileEditSource {
+            kind,
+            path,
+            old_text: String::new(),
+            new_text: first_string(
+                arguments,
+                &["content", "contents", "file_content", "fileContent", "text"],
+            )?,
+        }),
     }
 }
 

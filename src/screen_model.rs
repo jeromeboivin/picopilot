@@ -14,9 +14,13 @@ use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::ansi::parse_sanitized_ansi;
 use crate::events::ShellCompletion;
+use crate::file_diff::{build_file_diff, DiffRow, DiffRowKind, FileDiff};
 use crate::markdown::assistant_markdown_lines_for_widths;
 use crate::palette;
-use crate::tool_rendering::{is_silent_shell_command, tool_summary, tool_user_facing_name};
+use crate::tool_rendering::{
+    file_edit_source, is_silent_shell_command, tool_header_name, tool_summary,
+    tool_user_facing_name,
+};
 pub use crate::tool_rendering::{
     ToolCallState, ToolHeaderPayload, ToolPlatform, ToolProgressKind, ToolProgressPayload,
     ToolResultPayload, ToolResultState,
@@ -577,7 +581,7 @@ fn render_tool_header(
     animation_elapsed_ms: u64,
     verbose: bool,
 ) -> Vec<Line<'static>> {
-    let name = tool_user_facing_name(&header.tool_name);
+    let name = tool_header_name(&header.tool_name, header.arguments.as_ref());
     if name.is_empty() {
         return Vec::new();
     }
@@ -814,6 +818,17 @@ fn render_tool_result(
     let is_shell = tool_user_facing_name(&result.tool_name) == "Bash";
     let shell_error =
         shell_exit_code(result.shell_completion.as_ref()).is_some_and(|exit_code| exit_code != 0);
+    if result.state == ToolResultState::Success && !is_shell {
+        if let Some(source) = file_edit_source(&result.tool_name, result.arguments.as_ref()) {
+            let diff = build_file_diff(&source.old_text, &source.new_text);
+            return render_file_edit_result(
+                kind,
+                &diff,
+                width,
+                tool_is_nested(kind, result.nested()),
+            );
+        }
+    }
     let (content_lines, style) = match result.state {
         ToolResultState::Success if is_shell => (
             shell_result_lines(
@@ -866,6 +881,197 @@ fn render_tool_result(
         tool_is_nested(kind, result.nested()),
         style,
     )
+}
+
+fn render_file_edit_result(
+    _kind: LiveEntryKind,
+    diff: &FileDiff,
+    width: usize,
+    nested: bool,
+) -> Vec<Line<'static>> {
+    let mut rendered = Vec::new();
+    if !nested {
+        rendered.push(Line::default());
+    }
+
+    let body_width = width.saturating_sub(if nested {
+        0
+    } else {
+        UnicodeWidthStr::width(TOOL_BODY_GUTTER)
+    });
+    let summary = file_edit_summary(diff);
+    let summary_lines = wrap_lines(
+        &[summary],
+        &WrapSpec {
+            wrap_width: body_width,
+            fill_width: 0,
+            first_prefix: Vec::new(),
+            continuation_prefix: Vec::new(),
+            fill_style: None,
+        },
+    );
+    for (index, line) in summary_lines.into_iter().enumerate() {
+        rendered.push(prepend_tool_gutter(
+            line,
+            if nested {
+                ""
+            } else if index == 0 {
+                TOOL_BODY_GUTTER
+            } else {
+                TOOL_BODY_CONTINUATION_GUTTER
+            },
+        ));
+    }
+
+    let hunk_width = width.saturating_sub(12);
+    let max_digits = diff
+        .hunks
+        .iter()
+        .flat_map(|hunk| hunk.rows.iter())
+        .map(|row| row.number)
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len();
+    for (hunk_index, hunk) in diff.hunks.iter().enumerate() {
+        if hunk_index > 0 {
+            rendered.push(prepend_tool_gutter(
+                Line::from(Span::styled(
+                    "...",
+                    Style::default()
+                        .fg(palette::INACTIVE)
+                        .add_modifier(ratatui::style::Modifier::DIM),
+                )),
+                if nested {
+                    ""
+                } else {
+                    TOOL_BODY_CONTINUATION_GUTTER
+                },
+            ));
+        }
+        for row in &hunk.rows {
+            for line in render_diff_row(row, hunk_width, max_digits) {
+                rendered.push(prepend_tool_gutter(
+                    line,
+                    if nested {
+                        ""
+                    } else {
+                        TOOL_BODY_CONTINUATION_GUTTER
+                    },
+                ));
+            }
+        }
+    }
+    rendered
+}
+
+fn file_edit_summary(diff: &FileDiff) -> Line<'static> {
+    let mut spans = Vec::new();
+    if diff.additions == 0 && diff.removals > 0 {
+        spans.push(Span::raw("Removed "));
+        append_bold_count(&mut spans, diff.removals);
+        spans.push(Span::raw(format!(" {}", line_word(diff.removals))));
+    } else {
+        spans.push(Span::raw("Added "));
+        append_bold_count(&mut spans, diff.additions);
+        spans.push(Span::raw(format!(" {}", line_word(diff.additions))));
+        if diff.removals > 0 {
+            spans.push(Span::raw(", removed "));
+            append_bold_count(&mut spans, diff.removals);
+            spans.push(Span::raw(format!(" {}", line_word(diff.removals))));
+        }
+    }
+    Line::from(spans)
+}
+
+fn append_bold_count(spans: &mut Vec<Span<'static>>, count: usize) {
+    spans.push(Span::styled(
+        count.to_string(),
+        Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+    ));
+}
+
+fn line_word(count: usize) -> &'static str {
+    if count == 1 {
+        "line"
+    } else {
+        "lines"
+    }
+}
+
+fn render_diff_row(row: &DiffRow, hunk_width: usize, max_digits: usize) -> Vec<Line<'static>> {
+    let (sigil, gutter_style, content_style, word_style, fill_style) = match row.kind {
+        DiffRowKind::Context => (
+            ' ',
+            Style::default()
+                .fg(palette::INACTIVE)
+                .add_modifier(ratatui::style::Modifier::DIM),
+            Style::default().fg(palette::TEXT),
+            Style::default().fg(palette::TEXT),
+            None,
+        ),
+        DiffRowKind::Removed => (
+            '-',
+            Style::default().fg(palette::TEXT).bg(palette::DIFF_REMOVED),
+            Style::default().fg(palette::TEXT).bg(palette::DIFF_REMOVED),
+            Style::default()
+                .fg(palette::TEXT)
+                .bg(palette::DIFF_REMOVED_WORD),
+            Some(Style::default().fg(palette::TEXT).bg(palette::DIFF_REMOVED)),
+        ),
+        DiffRowKind::Added => (
+            '+',
+            Style::default().fg(palette::TEXT).bg(palette::DIFF_ADDED),
+            Style::default().fg(palette::TEXT).bg(palette::DIFF_ADDED),
+            Style::default()
+                .fg(palette::TEXT)
+                .bg(palette::DIFF_ADDED_WORD),
+            Some(Style::default().fg(palette::TEXT).bg(palette::DIFF_ADDED)),
+        ),
+    };
+    let gutter = format!(" {:>width$} {sigil}", row.number, width = max_digits);
+    let continuation = format!("{}{}", " ".repeat(max_digits + 2), sigil);
+    let content = Line::from(
+        row.segments
+            .iter()
+            .map(|segment| {
+                Span::styled(
+                    segment.text.clone(),
+                    if segment.changed {
+                        word_style
+                    } else {
+                        content_style
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+    );
+    wrap_lines(
+        &[content],
+        &WrapSpec {
+            wrap_width: hunk_width,
+            fill_width: if row.kind == DiffRowKind::Context {
+                0
+            } else {
+                hunk_width
+            },
+            first_prefix: vec![Span::styled(gutter, gutter_style)],
+            continuation_prefix: vec![Span::styled(continuation, gutter_style)],
+            fill_style,
+        },
+    )
+}
+
+fn prepend_tool_gutter(line: Line<'static>, prefix: &str) -> Line<'static> {
+    if prefix.is_empty() {
+        return line;
+    }
+    let gutter_style = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    let mut spans = vec![Span::styled(prefix.to_string(), gutter_style)];
+    spans.extend(line.spans);
+    Line::from(spans)
 }
 
 fn shell_result_lines(

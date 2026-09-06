@@ -4,6 +4,7 @@ pub mod markdown;
 
 pub mod config;
 pub mod events;
+mod file_diff;
 pub mod palette;
 pub mod permissions;
 pub mod provider;
