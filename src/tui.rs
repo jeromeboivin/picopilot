@@ -88,6 +88,9 @@ pub enum UiAction {
     LoadSessions,
     LoadModels,
     LoadUsage,
+    LoadUsageCommand,
+    LoadStatus,
+    LocalCommandError(String),
     LoadTodos,
     LoadTools,
     LoadSkills,
@@ -214,7 +217,11 @@ struct CompletionState {
     token_end: usize,
 }
 
-const BUILTIN_COMMANDS: &[(&str, &str)] = &[("/fleet", "run work through Fleet")];
+const BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    ("/fleet", "run work through Fleet"),
+    ("/status", "show session and configuration status"),
+    ("/usage", "show session usage and context attribution"),
+];
 
 static NEXT_SCREEN_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
@@ -469,7 +476,7 @@ pub struct App {
     pending_screen_changes: VecDeque<ScreenChange>,
     pending_user_messages: VecDeque<String>,
     working_directory: PathBuf,
-    project_name: Option<String>,
+    session_id: Option<String>,
     status: StatusState,
     input: InputEditor,
     pending_approvals: VecDeque<ApprovalRequest>,
@@ -491,6 +498,8 @@ pub struct App {
     todos: Option<TodoSnapshot>,
     show_todos: bool,
     todo_refresh_requested: bool,
+    context_warning_suppressed: bool,
+    observed_compactions: Option<i64>,
     reconnecting: bool,
     blocked: bool,
     show_internals: bool,
@@ -562,7 +571,6 @@ impl App {
 
     pub fn new_with_working_directory(model: Option<String>, working_directory: &Path) -> Self {
         let mut app = Self::new(model);
-        app.project_name = Some(working_directory_name(working_directory));
         app.working_directory = working_directory.to_path_buf();
         app
     }
@@ -882,6 +890,10 @@ impl App {
         self.status.model = model;
     }
 
+    pub fn set_session_id(&mut self, session_id: impl Into<String>) {
+        self.session_id = Some(sanitize_plain(&session_id.into()));
+    }
+
     pub fn open_tool_picker(&mut self) {
         self.picker_toolset = self.toolset;
         self.open_picker(PickerKind::Tools);
@@ -956,14 +968,41 @@ impl App {
         metrics: UsageMetricsSnapshot,
         context_attribution: Option<ContextAttributionSnapshot>,
     ) {
-        self.status.usage_metrics = Some(metrics);
-        self.status.context_attribution = context_attribution;
-        self.push_entry(ChatEntry::User("/usage".to_string()));
+        self.add_local_command("/usage");
+        self.set_usage_snapshot(metrics, context_attribution);
         self.push_entry(ChatEntry::LocalOutput(usage_detail_lines(self)));
+    }
+
+    fn set_usage_snapshot(
+        &mut self,
+        metrics: UsageMetricsSnapshot,
+        context_attribution: Option<ContextAttributionSnapshot>,
+    ) {
+        self.status.usage_metrics = Some(metrics);
+        self.observe_context_attribution(context_attribution.as_ref());
+        self.status.context_attribution = context_attribution;
+    }
+
+    fn observe_context_attribution(&mut self, context: Option<&ContextAttributionSnapshot>) {
+        let Some(context) = context else {
+            return;
+        };
+        if self
+            .observed_compactions
+            .is_some_and(|observed| context.compactions > observed)
+        {
+            self.context_warning_suppressed = true;
+        }
+        self.observed_compactions = Some(context.compactions);
     }
 
     pub fn set_usage_metrics(&mut self, metrics: UsageMetricsSnapshot) {
         self.status.usage_metrics = Some(metrics);
+    }
+
+    pub fn set_context_attribution(&mut self, context: Option<ContextAttributionSnapshot>) {
+        self.observe_context_attribution(context.as_ref());
+        self.status.context_attribution = context;
     }
 
     pub fn set_reasoning_effort(&mut self, reasoning_effort: Option<String>) {
@@ -1052,6 +1091,14 @@ impl App {
     fn add_local_output(&mut self, message: impl Into<String>) {
         let message = sanitize_plain(&message.into());
         self.push_entry(ChatEntry::LocalOutput(vec![Line::from(message)]));
+    }
+
+    fn add_local_output_lines(&mut self, lines: Vec<Line<'static>>) {
+        self.push_entry(ChatEntry::LocalOutput(lines));
+    }
+
+    fn add_local_command(&mut self, command: &str) {
+        self.push_entry(ChatEntry::User(sanitize_plain(command)));
     }
 
     fn cancel_picker(&mut self) {
@@ -1397,6 +1444,7 @@ impl App {
         self.status.usage = None;
         self.status.usage_metrics = None;
         self.status.context_attribution = None;
+        self.reset_context_warning_state();
         self.status.busy = false;
         self.close_picker();
         self.picker_reasoning_effort = None;
@@ -1424,6 +1472,7 @@ impl App {
 
     pub fn add_user_message(&mut self, content: String) {
         let content = sanitize_plain(&content);
+        self.context_warning_suppressed = false;
         self.start_spinner_turn(&content);
         self.pending_user_messages.push_back(content.clone());
         self.push_entry(ChatEntry::User(content));
@@ -1440,6 +1489,10 @@ impl App {
         self.assistant_live_ids.clear();
         self.reasoning_live_ids.clear();
         self.status.busy = false;
+        self.status.usage = None;
+        self.status.usage_metrics = None;
+        self.status.context_attribution = None;
+        self.reset_context_warning_state();
         self.blocked = false;
         self.completion = None;
         for event in events {
@@ -1458,6 +1511,11 @@ impl App {
         self.next_entry_sequence = 0;
         self.pending_screen_changes.clear();
         self.pending_screen_changes.push_back(ScreenChange::Reset);
+    }
+
+    fn reset_context_warning_state(&mut self) {
+        self.context_warning_suppressed = false;
+        self.observed_compactions = None;
     }
 
     pub fn apply(&mut self, update: EventUpdate) {
@@ -2278,6 +2336,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             let input = app.take_input();
             if input.trim().is_empty() {
                 UiAction::None
+            } else if input == "/status" {
+                UiAction::LoadStatus
+            } else if input == "/usage" {
+                UiAction::LoadUsageCommand
+            } else if matches!(input.split_whitespace().next(), Some("/status" | "/usage")) {
+                let command = input.split_whitespace().next().unwrap_or_default();
+                UiAction::LocalCommandError(format!(
+                    "{command} does not accept arguments. Use {command} without arguments."
+                ))
             } else if let Some(prompt) = input.strip_prefix("/fleet ") {
                 let prompt = prompt.trim();
                 if prompt.is_empty() {
@@ -2469,19 +2536,17 @@ fn draw_frame(
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(prompt_layout.total_height),
         ])
         .split(frame.area());
 
-    frame.render_widget(status_bar(app), layout[0]);
     if let Some(screen) = screen {
-        draw_live_chat(frame, app, screen, layout[1], animation_elapsed_ms);
+        draw_live_chat(frame, app, screen, layout[0], animation_elapsed_ms);
     } else {
-        draw_chat(frame, app, layout[1], animation_elapsed_ms);
+        draw_chat(frame, app, layout[0], animation_elapsed_ms);
     }
-    draw_prompt(frame, app, layout[2], prompt_layout);
+    draw_prompt(frame, app, layout[1], prompt_layout);
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -2542,6 +2607,7 @@ async fn run_loop(
     app.set_toolset(runtime.active_toolset);
     app.set_skill_catalog(runtime.skill_catalog.clone());
     app.set_skill_selection(runtime.active_skill_selection.clone());
+    app.set_session_id(runtime.session.id().to_string());
     for diagnostic in runtime.skill_catalog.diagnostics() {
         app.add_diagnostic(format!(
             "skill discovery: {} ({})",
@@ -2626,6 +2692,19 @@ async fn refresh_status_cost(
         }
         Err(_) => {}
     }
+    match runtime
+        .session
+        .rpc()
+        .metadata()
+        .get_context_attribution()
+        .await
+    {
+        Ok(result) => app.set_context_attribution(context_attribution_snapshot(&result)),
+        Err(error) if error.is_transport_failure() => {
+            recover_connection(app, runtime, events).await?;
+        }
+        Err(_) => {}
+    }
     Ok(())
 }
 
@@ -2673,6 +2752,7 @@ async fn process_terminal_events(
                 Ok(()) => {
                     *events = runtime.session.subscribe();
                     app.reset_for_new_conversation();
+                    app.set_session_id(runtime.session.id().to_string());
                     app.set_skill_selection(runtime.active_skill_selection.clone());
                     app.add_diagnostic("new conversation started");
                 }
@@ -2694,19 +2774,24 @@ async fn process_terminal_events(
             UiAction::LoadSkills => {
                 app.open_skill_picker();
             }
-            UiAction::LoadUsage => {
+            UiAction::LoadStatus => {
+                app.add_local_command("/status");
+                app.add_local_output_lines(status_detail_lines(app));
+            }
+            UiAction::LocalCommandError(message) => {
+                app.add_local_output(message);
+            }
+            UiAction::LoadUsage | UiAction::LoadUsageCommand => {
+                app.add_local_command("/usage");
                 let metrics = match runtime.session.rpc().usage().get_metrics().await {
                     Ok(metrics) => metrics,
                     Err(error) if error.is_transport_failure() => {
                         recover_connection(app, runtime, events).await?;
+                        app.add_local_output(format!("Usage unavailable: {error}"));
                         continue;
                     }
                     Err(error) => {
-                        app.apply(crate::events::EventUpdate::Banner {
-                            severity: crate::events::BannerSeverity::RecoverableError,
-                            message: format!("could not load usage metrics: {error}"),
-                            url: None,
-                        });
+                        app.add_local_output(format!("Usage unavailable: {error}"));
                         continue;
                     }
                 };
@@ -2720,11 +2805,13 @@ async fn process_terminal_events(
                     Ok(result) => context_attribution_snapshot(&result),
                     Err(error) if error.is_transport_failure() => {
                         recover_connection(app, runtime, events).await?;
+                        app.add_local_output(format!("Usage unavailable: {error}"));
                         continue;
                     }
                     Err(_) => None,
                 };
-                app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
+                app.set_usage_snapshot(usage_metrics_snapshot(&metrics), context_attribution);
+                app.add_local_output_lines(usage_detail_lines(app));
             }
             UiAction::LoadTodos => {
                 load_todos(app, runtime, events).await?;
@@ -2733,6 +2820,7 @@ async fn process_terminal_events(
                 Ok(history) => {
                     *events = runtime.session.subscribe();
                     app.replace_history(&history);
+                    app.set_session_id(runtime.session.id().to_string());
                     app.set_toolset(runtime.active_toolset);
                     app.set_skill_selection(runtime.active_skill_selection.clone());
                     app.set_model(runtime.active_model_options.model.clone());
@@ -2790,6 +2878,7 @@ async fn process_terminal_events(
                     }
                 } else {
                     *events = runtime.session.subscribe();
+                    app.set_session_id(runtime.session.id().to_string());
                     let displayed_reasoning = displayed_reasoning_effort(
                         &runtime.models,
                         Some(&model),
@@ -2826,6 +2915,7 @@ async fn process_terminal_events(
                 match result {
                     Ok(()) => {
                         *events = runtime.session.subscribe();
+                        app.set_session_id(runtime.session.id().to_string());
                         app.set_toolset(runtime.active_toolset);
                         app.add_local_output(format!(
                             "Set tools to {}/{} enabled",
@@ -2860,6 +2950,7 @@ async fn process_terminal_events(
                 match result {
                     Ok(()) => {
                         *events = runtime.session.subscribe();
+                        app.set_session_id(runtime.session.id().to_string());
                         app.set_skill_selection(runtime.active_skill_selection.clone());
                         app.add_local_output(format!(
                             "Set skills: {} enabled",
@@ -2897,6 +2988,7 @@ async fn process_terminal_events(
                     match result {
                         Ok(()) => {
                             *events = runtime.session.subscribe();
+                            app.set_session_id(runtime.session.id().to_string());
                             app.set_skill_selection(runtime.active_skill_selection.clone());
                         }
                         Err(error) if error.is_transport_failure() => {
@@ -2991,6 +3083,7 @@ async fn recover_connection(
         match runtime.recover_transport().await {
             Ok(()) => {
                 *events = runtime.session.subscribe();
+                app.set_session_id(runtime.session.id().to_string());
                 app.set_reconnecting(false);
                 app.apply(crate::events::EventUpdate::Banner {
                     severity: crate::events::BannerSeverity::Warning,
@@ -3073,53 +3166,6 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io
     cursor_result
 }
 
-fn status_bar(app: &App) -> Paragraph<'static> {
-    let status = app.status();
-    let project = app
-        .project_name
-        .as_deref()
-        .map(|project| format!("{}  ·  ", sanitize_plain(project)))
-        .unwrap_or_default();
-    let model = status
-        .model
-        .as_deref()
-        .map(sanitize_plain)
-        .unwrap_or_else(|| "auto".to_string());
-    let reasoning = status
-        .reasoning_effort
-        .as_deref()
-        .map(sanitize_plain)
-        .unwrap_or_else(|| "default".to_string());
-    let mode = if status.busy { "working" } else { "ready" };
-    let context = status
-        .usage
-        .as_ref()
-        .map(|usage| format_tokens(usage.current_tokens, usage.token_limit))
-        .unwrap_or_else(|| "--/--".to_string());
-    let cost = status
-        .usage_metrics
-        .as_ref()
-        .map(format_cost)
-        .unwrap_or_else(|| "--".to_string());
-    let label = format!(
-        " {project}{model}  ·  {reasoning} reasoning  ·  autopilot {mode}  ·  tools {}/{}  ·  skills {}/{}  ·  {context} tokens  ·  {cost} ",
-        app.toolset.len(),
-        TOOL_COUNT,
-        app.skill_selection.len(),
-        app.skill_catalog.skills().len(),
-    );
-
-    Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
-}
-
-fn working_directory_name(working_directory: &Path) -> String {
-    working_directory
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "project".to_string())
-}
-
 fn displayed_reasoning_effort(
     models: &[Model],
     model_id: Option<&str>,
@@ -3141,6 +3187,7 @@ const PROMPT_CHROME_ROWS: u16 = 3;
 const MAX_COMPLETION_ROWS: usize = 6;
 const MAX_PICKER_ROWS: usize = 5;
 const MAX_TODO_ROWS: usize = 5;
+const CONTEXT_WARNING_BUFFER_TOKENS: i64 = 20_000;
 
 struct WrappedInput {
     lines: Vec<Line<'static>>,
@@ -3161,8 +3208,32 @@ struct PromptLayout {
     total_height: u16,
 }
 
+fn context_warning_text(app: &App) -> Option<String> {
+    if app.context_warning_suppressed {
+        return None;
+    }
+    let usage = app.status.usage.as_ref()?;
+    if usage.token_limit <= 0 {
+        return None;
+    }
+
+    let warning_threshold = usage
+        .token_limit
+        .saturating_sub(CONTEXT_WARNING_BUFFER_TOKENS);
+    if usage.current_tokens < warning_threshold {
+        return None;
+    }
+
+    let percent = ((usage.token_limit.saturating_sub(usage.current_tokens) as f64
+        / usage.token_limit as f64
+        * 100.0)
+        .round()
+        .max(0.0)) as i64;
+    Some(format!("{percent}% until auto-compact"))
+}
+
 fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
-    let prompt_budget = area.height.saturating_sub(2);
+    let prompt_budget = area.height.saturating_sub(1);
     if prompt_budget == 0 {
         return PromptLayout {
             todo_rows: 0,
@@ -3193,10 +3264,15 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
             0
         } else if completion_rows.is_some() {
             completion_rows.unwrap_or_default()
-        } else if app.status.busy || app.input().is_empty() {
-            1
         } else {
-            0
+            let left_footer_rows = u16::from(app.status.busy || app.input().is_empty());
+            let warning_rows =
+                if context_warning_text(app).is_some() && area.width < 80 && left_footer_rows > 0 {
+                    1
+                } else {
+                    0
+                };
+            (left_footer_rows + warning_rows).max(u16::from(context_warning_text(app).is_some()))
         };
     let wrapped_rows = wrap_input(
         app.input(),
@@ -3497,7 +3573,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
     {
         draw_completion(frame, app, footer_area);
     } else {
-        frame.render_widget(prompt_footer(app), footer_area);
+        frame.render_widget(prompt_footer(app, footer_area), footer_area);
     }
 }
 
@@ -3782,16 +3858,64 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn prompt_footer(app: &App) -> Paragraph<'static> {
-    let text = if app.status.busy {
-        "esc to interrupt"
+fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
+    let left = if app.status.busy {
+        Some("  esc to interrupt".to_string())
+    } else if app.input().is_empty() {
+        Some("  ? for shortcuts".to_string())
     } else {
-        "? for shortcuts"
+        None
     };
-    Paragraph::new(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(text, Style::default().add_modifier(Modifier::DIM)),
-    ]))
+    let has_left = left.is_some();
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let warning = context_warning_text(app);
+
+    if area.width < 80 {
+        let mut lines = Vec::new();
+        if let Some(left) = left {
+            lines.push(Line::from(Span::styled(
+                truncate_tail(&left, area.width as usize),
+                dim,
+            )));
+        }
+        if let Some(warning) = warning.filter(|_| area.height >= 2 || !has_left) {
+            lines.push(Line::from(Span::styled(
+                truncate_tail(&format!("  {warning}"), area.width as usize),
+                dim,
+            )));
+        }
+        return Paragraph::new(lines);
+    }
+
+    let right_padding = 2usize.min(area.width as usize);
+    let warning = warning.map(|warning| {
+        truncate_tail(
+            &warning,
+            (area.width as usize).saturating_sub(right_padding),
+        )
+    });
+    let warning_width = warning.as_deref().map(display_width).unwrap_or_default();
+    let left = left
+        .map(|left| {
+            truncate_tail(
+                &left,
+                (area.width as usize)
+                    .saturating_sub(warning_width)
+                    .saturating_sub(right_padding),
+            )
+        })
+        .unwrap_or_default();
+    let left_width = display_width(&left);
+    let padding = (area.width as usize)
+        .saturating_sub(left_width)
+        .saturating_sub(warning_width)
+        .saturating_sub(right_padding);
+    let mut spans = vec![Span::styled(left, dim), Span::raw(" ".repeat(padding))];
+    if let Some(warning) = warning {
+        spans.push(Span::styled(warning, dim));
+    }
+    spans.push(Span::raw(" ".repeat(right_padding)));
+    Paragraph::new(Line::from(spans))
 }
 
 fn draw_completion(frame: &mut Frame, app: &App, footer_area: Rect) {
@@ -3918,23 +4042,92 @@ fn model_context_label(model: &Model) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+fn status_detail_lines(app: &App) -> Vec<Line<'static>> {
+    let session_id = app.session_id.as_deref().unwrap_or("unknown");
+    let working_directory = app.working_directory.display().to_string();
+    let model = app
+        .status
+        .model
+        .as_deref()
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "auto".to_string());
+    let enabled_tools = app.toolset.len();
+    let disabled_tools = TOOL_COUNT.saturating_sub(enabled_tools);
+    let enabled_skills = app.skill_selection.len();
+    let disabled_skills = app
+        .skill_catalog
+        .skills()
+        .len()
+        .saturating_sub(enabled_skills);
+
+    vec![
+        status_property_line("Version", env!("CARGO_PKG_VERSION")),
+        status_property_line("Session ID", session_id),
+        status_property_line("cwd", &working_directory),
+        Line::default(),
+        status_property_line("Model", &model),
+        status_count_line("Tools", enabled_tools, disabled_tools, "/tools"),
+        status_count_line("Skills", enabled_skills, disabled_skills, "/skills"),
+    ]
+}
+
+fn status_property_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label}:"),
+            Style::default()
+                .fg(palette::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(sanitize_plain(value), Style::default().fg(palette::TEXT)),
+    ])
+}
+
+fn status_count_line(label: &str, enabled: usize, disabled: usize, command: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{label}:"),
+            Style::default()
+                .fg(palette::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{enabled} enabled"),
+            Style::default().fg(palette::SUCCESS),
+        ),
+        Span::raw(", "),
+        Span::styled(
+            format!("{disabled} disabled"),
+            Style::default().fg(palette::INACTIVE),
+        ),
+        Span::styled(
+            format!(" · {command}"),
+            Style::default()
+                .fg(palette::INACTIVE)
+                .add_modifier(Modifier::DIM),
+        ),
+    ])
+}
+
 fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
     let Some(metrics) = app.status.usage_metrics.as_ref() else {
-        return vec![Line::from("Usage metrics unavailable.")];
+        return vec![usage_line("Usage metrics unavailable.")];
     };
 
     let mut lines = vec![
-        Line::from(format!("Session cost: {}", format_cost(metrics))),
-        Line::from(format!(
+        usage_line(format!("Session cost: {}", format_cost(metrics))),
+        usage_line(format!(
             "Premium request cost: {:.2}",
             metrics.total_premium_request_cost
         )),
-        Line::from(format!("Requests: {}", metrics.total_user_requests)),
-        Line::from(format!("API time: {} ms", metrics.total_api_duration_ms)),
+        usage_line(format!("Requests: {}", metrics.total_user_requests)),
+        usage_line(format!("API time: {} ms", metrics.total_api_duration_ms)),
     ];
 
     if let Some(usage) = app.status.usage.as_ref() {
-        lines.push(Line::from(format!(
+        lines.push(usage_line(format!(
             "Context window: {} / {} tokens",
             format_count(usage.current_tokens),
             format_count(usage.token_limit)
@@ -3942,7 +4135,7 @@ fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
     }
 
     if let Some(context) = app.status.context_attribution.as_ref() {
-        lines.push(Line::from(format!(
+        lines.push(usage_line(format!(
             "Attribution: {} / {} tokens ({})",
             format_count(context.total_tokens),
             format_count(context.prompt_token_limit),
@@ -3954,18 +4147,27 @@ fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
             } else {
                 0.0
             };
-            lines.push(Line::from(format!(
+            lines.push(usage_line(format!(
                 "  {}: {} ({percentage:.1}%)",
                 sanitize_plain(&category.label),
                 format_count(category.tokens)
             )));
         }
-        lines.push(Line::from(format!("Compactions: {}", context.compactions)));
+        lines.push(usage_line(format!("Compactions: {}", context.compactions)));
     } else {
-        lines.push(Line::from("Context attribution unavailable."));
+        lines.push(usage_line("Context attribution unavailable."));
     }
 
     lines
+}
+
+fn usage_line(text: impl Into<String>) -> Line<'static> {
+    Line::from(Span::styled(
+        sanitize_plain(&text.into()),
+        Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(Modifier::DIM),
+    ))
 }
 
 fn format_cost(metrics: &UsageMetricsSnapshot) -> String {
@@ -4791,12 +4993,29 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
 }
 
 fn local_output_lines(lines: &[Line<'static>]) -> Vec<Line<'static>> {
+    let lines = if lines.is_empty() {
+        vec![Line::from(Span::styled(
+            "(no content)",
+            Style::default()
+                .fg(palette::INACTIVE)
+                .add_modifier(Modifier::DIM),
+        ))]
+    } else {
+        lines.to_vec()
+    };
     lines
         .iter()
         .enumerate()
         .map(|(index, line)| {
             let gutter = if index == 0 { "  ⎿  " } else { "     " };
-            let mut spans = vec![Span::raw(gutter)];
+            let gutter_style = if index == 0 {
+                Style::default()
+                    .fg(palette::INACTIVE)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                Style::default()
+            };
+            let mut spans = vec![Span::styled(gutter, gutter_style)];
             spans.extend(line.spans.clone());
             Line::from(spans)
         })
@@ -5168,10 +5387,6 @@ fn agent_suffix(agent_id: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
-fn format_tokens(current: i64, limit: i64) -> String {
-    format!("{}/{}", format_count(current), format_count(limit))
-}
-
 fn format_count(value: i64) -> String {
     let digits = value.to_string();
     let mut result = String::with_capacity(digits.len() + digits.len() / 3);
@@ -5203,13 +5418,13 @@ mod tests {
         format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
         model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
         skill_selection_for_invocation, spinner_frames, spinner_message_spans,
-        spinner_platform_for, spinner_stall_intensity, status_bar, thinking_status, App, ChatEntry,
+        spinner_platform_for, spinner_stall_intensity, thinking_status, App, ChatEntry,
         ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction, MAX_PICKER_ROWS,
         SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
-        TodoRowSnapshot, TodoSnapshot, UsageMetricsSnapshot,
+        TodoRowSnapshot, TodoSnapshot, UsageMetricsSnapshot, UsageSnapshot,
     };
     use crate::palette;
     use crate::permissions::{ApprovalCategory, ApprovalDecision, ApprovalRequest};
@@ -5856,11 +6071,11 @@ mod tests {
         app.move_input_up();
 
         let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 80, 12));
-        assert_eq!(layout.input_rows, 7);
+        assert_eq!(layout.input_rows, 8);
         assert_eq!(layout.footer_rows, 0);
         assert_eq!(
             super::cursor_scroll_start(5, 8, layout.input_rows as usize),
-            1
+            0
         );
 
         let empty = App::new(None);
@@ -5981,7 +6196,7 @@ mod tests {
 
         let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 80, 12));
         assert_eq!(layout.input_rows, 3);
-        assert_eq!(layout.footer_rows, 4);
+        assert_eq!(layout.footer_rows, 5);
 
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
         terminal
@@ -6007,7 +6222,7 @@ mod tests {
             .map(|(index, _)| index)
             .expect("prompt bottom rule should be visible");
         let completion_rows = &rows[bottom_rule + 1..];
-        assert_eq!(completion_rows.len(), 4);
+        assert_eq!(completion_rows.len(), 5);
         assert!(completion_rows[2].contains("/command-4"));
         assert_eq!(
             terminal.backend().buffer()[(2, (bottom_rule + 1 + 2) as u16)]
@@ -6938,32 +7153,19 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_shows_compact_model_and_reasoning_metadata() {
+    fn frame_has_no_persistent_status_row_or_status_metadata() {
         let mut app = App::new_with_working_directory(
             Some("gpt-5".to_string()),
             Path::new("C:\\dev\\picopilot"),
         );
         app.set_reasoning_effort(Some("high".to_string()));
-        let backend = TestBackend::new(100, 1);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
 
-        terminal
-            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
-            .expect("status bar renders");
-        let rendered =
-            terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .fold(String::new(), |mut text, cell| {
-                    text.push_str(cell.symbol());
-                    text
-                });
+        let rows = rendered_rows(&app, 100, 18);
 
-        assert!(rendered
-            .contains("picopilot  ·  gpt-5  ·  high reasoning  ·  autopilot ready  ·  tools 7/7"));
-        assert!(!rendered.contains("C:\\dev\\picopilot"));
+        assert!(!rows.iter().any(|row| row.contains("gpt-5")));
+        assert!(!rows.iter().any(|row| row.contains("high reasoning")));
+        assert!(!rows.iter().any(|row| row.contains("autopilot")));
+        assert!(!rows.iter().any(|row| row.contains("tools 7/7")));
     }
 
     #[test]
@@ -7386,40 +7588,23 @@ mod tests {
         let catalog = test_skill_catalog();
         app.set_skill_catalog(catalog.clone());
         app.set_skill_selection(SkillSelection::from_names(&catalog, ["rust-review"]));
-        let mut terminal = Terminal::new(TestBackend::new(140, 1)).expect("test terminal");
-        terminal
-            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
-            .expect("status bar renders");
-        let line = terminal
-            .backend()
-            .buffer()
-            .content()
+        let lines = super::status_detail_lines(&app);
+        assert!(lines
             .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(line.contains("skills 1/4"));
+            .any(|line| line.to_string().contains("Skills: 1 enabled, 3 disabled")));
 
         app.reset_for_new_conversation();
         assert!(app.skill_selection().is_empty());
     }
 
     #[test]
-    fn status_bar_displays_the_selected_tool_count() {
+    fn status_block_displays_the_selected_tool_count() {
         let mut app = App::new(None);
         app.set_toolset(Toolset::shell_only());
-        let mut terminal = Terminal::new(TestBackend::new(120, 1)).expect("test terminal");
-        terminal
-            .draw(|frame| frame.render_widget(status_bar(&app), frame.area()))
-            .expect("status bar renders");
-        let line = terminal
-            .backend()
-            .buffer()
-            .content()
+        let lines = super::status_detail_lines(&app);
+        assert!(lines
             .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(line.contains("tools 1/7"));
+            .any(|line| line.to_string().contains("Tools: 1 enabled, 6 disabled")));
     }
 
     #[test]
@@ -8032,6 +8217,249 @@ mod tests {
     }
 
     #[test]
+    fn exact_status_and_usage_commands_are_local_actions() {
+        let mut status = App::new(None);
+        for character in "/status".chars() {
+            status.push_input(character);
+        }
+        assert_eq!(
+            handle_key(&mut status, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::LoadStatus
+        );
+
+        let mut usage = App::new(None);
+        for character in "/usage".chars() {
+            usage.push_input(character);
+        }
+        assert_eq!(
+            handle_key(&mut usage, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::LoadUsageCommand
+        );
+    }
+
+    #[test]
+    fn local_commands_reject_extra_arguments_without_becoming_sdk_prompts() {
+        for (input, command) in [("/status extra", "/status"), ("/usage\tmore", "/usage")] {
+            let mut app = App::new(None);
+            for character in input.chars() {
+                app.push_input(character);
+            }
+
+            assert_eq!(
+                handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+                UiAction::LocalCommandError(format!(
+                    "{command} does not accept arguments. Use {command} without arguments."
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn status_lines_use_full_identity_and_colored_count_fields() {
+        let mut app = App::new_with_working_directory(
+            Some("gpt-5".to_string()),
+            Path::new("C:\\dev\\picopilot"),
+        );
+        app.set_session_id("session-123");
+        app.set_toolset(crate::toolset::Toolset::shell_only());
+        app.set_skill_catalog(long_skill_catalog(3));
+        app.set_skill_selection(SkillSelection::from_names(&app.skill_catalog, ["skill-0"]));
+
+        let lines = super::status_detail_lines(&app);
+        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered[0],
+            format!("Version: {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(rendered[1], "Session ID: session-123");
+        assert_eq!(rendered[2], "cwd: C:\\dev\\picopilot");
+        assert_eq!(rendered[3], "");
+        assert_eq!(rendered[4], "Model: gpt-5");
+        assert!(rendered[5].contains("Tools: "));
+        assert!(rendered[5].contains("· /tools"));
+        assert_eq!(rendered[6], "Skills: 1 enabled, 2 disabled · /skills");
+        assert!(!rendered.iter().any(|line| line.contains("reasoning")));
+        assert!(!rendered.iter().any(|line| line.contains("cost")));
+        assert!(lines[5].spans.iter().any(|span| {
+            span.content.contains("enabled") && span.style.fg == Some(palette::SUCCESS)
+        }));
+        assert!(lines[5].spans.iter().any(|span| {
+            span.content.contains("disabled") && span.style.fg == Some(palette::INACTIVE)
+        }));
+    }
+
+    #[test]
+    fn empty_local_output_keeps_the_dim_five_cell_gutter() {
+        let lines = super::local_output_lines(&[]);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].to_string(), "  ⎿  (no content)");
+        assert_eq!(lines[0].spans[0].content, "  ⎿  ");
+        assert_eq!(lines[0].spans[0].style.fg, Some(palette::INACTIVE));
+        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::DIM));
+        assert_eq!(lines[0].spans[1].style.fg, Some(palette::INACTIVE));
+    }
+
+    #[test]
+    fn context_warning_uses_the_twenty_thousand_token_threshold_and_safe_rounding() {
+        let mut app = App::new(None);
+
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 79_999,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        assert_eq!(super::context_warning_text(&app), None);
+
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 80_000,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        assert_eq!(
+            super::context_warning_text(&app).as_deref(),
+            Some("20% until auto-compact")
+        );
+
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 150_001,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        assert_eq!(
+            super::context_warning_text(&app).as_deref(),
+            Some("0% until auto-compact")
+        );
+
+        for token_limit in [0, -1] {
+            app.apply(EventUpdate::Usage(UsageSnapshot {
+                current_tokens: token_limit,
+                token_limit,
+                messages: 0,
+                conversation_tokens: None,
+                system_tokens: None,
+                tool_definitions_tokens: None,
+            }));
+            assert_eq!(super::context_warning_text(&app), None);
+        }
+    }
+
+    #[test]
+    fn compaction_suppresses_warning_until_the_next_user_turn() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 90_000,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        let context = |compactions| ContextAttributionSnapshot {
+            model_id: "gpt-5".to_string(),
+            total_tokens: 90_000,
+            prompt_token_limit: 100_000,
+            categories: Vec::new(),
+            compactions,
+        };
+        let metrics = UsageMetricsSnapshot {
+            total_nano_aiu: None,
+            total_premium_request_cost: 0.0,
+            total_user_requests: 0,
+            total_api_duration_ms: 0,
+            current_model: Some("gpt-5".to_string()),
+        };
+
+        app.set_usage_snapshot(metrics.clone(), Some(context(1)));
+        assert_eq!(
+            super::context_warning_text(&app).as_deref(),
+            Some("10% until auto-compact")
+        );
+        app.set_usage_snapshot(metrics.clone(), Some(context(2)));
+        assert_eq!(super::context_warning_text(&app), None);
+        app.set_usage_snapshot(metrics, Some(context(2)));
+        assert_eq!(super::context_warning_text(&app), None);
+
+        app.add_user_message("next turn".to_string());
+        assert_eq!(
+            super::context_warning_text(&app).as_deref(),
+            Some("10% until auto-compact")
+        );
+    }
+
+    fn app_with_context_warning() -> App {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 90_000,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        app
+    }
+
+    #[test]
+    fn context_warning_is_right_aligned_wide_and_stacked_narrow() {
+        let wide_rows = rendered_rows(&app_with_context_warning(), 100, 14);
+        let wide_warning = wide_rows
+            .iter()
+            .find(|row| row.contains("10% until auto-compact"))
+            .expect("wide warning should render");
+        assert!(wide_warning.ends_with("10% until auto-compact  "));
+        assert!(wide_warning.find("10%").unwrap_or_default() > 60);
+
+        let narrow_rows = rendered_rows(&app_with_context_warning(), 60, 14);
+        let narrow_warning_index = narrow_rows
+            .iter()
+            .position(|row| row.contains("10% until auto-compact"))
+            .expect("narrow warning should render");
+        assert!(narrow_warning_index > 0);
+        assert!(narrow_rows[narrow_warning_index - 1].contains("? for shortcuts"));
+        assert!(narrow_rows[narrow_warning_index].starts_with("  "));
+    }
+
+    #[test]
+    fn context_warning_yields_to_completion_and_picker_surfaces() {
+        let mut completion = app_with_context_warning();
+        completion.push_input('/');
+        let completion_rows = rendered_rows(&completion, 100, 14);
+        assert!(completion_rows.iter().any(|row| row.contains("/status")));
+        assert!(!completion_rows
+            .iter()
+            .any(|row| row.contains("until auto-compact")));
+
+        let mut picker = app_with_context_warning();
+        picker.open_tool_picker();
+        let picker_rows = rendered_rows(&picker, 100, 14);
+        assert!(!picker_rows
+            .iter()
+            .any(|row| row.contains("until auto-compact")));
+    }
+
+    #[test]
+    fn narrow_footer_drops_optional_warning_before_three_row_input_minimum() {
+        let app = app_with_context_warning();
+        let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 60, 8));
+
+        assert_eq!(layout.input_rows, 3);
+        assert_eq!(layout.footer_rows, 1);
+        let rows = rendered_rows(&app, 60, 8);
+        assert!(!rows.iter().any(|row| row.contains("until auto-compact")));
+    }
+
+    #[test]
     fn usage_metrics_are_static_transcript_output() {
         let mut app = App::new(None);
         app.set_usage(
@@ -8055,6 +8483,87 @@ mod tests {
         );
         assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
         assert!(!app.modal_is_open());
+    }
+
+    #[test]
+    fn usage_transcript_echoes_once_and_commits_one_immutable_output_block() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 12_345,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        app.set_usage(
+            UsageMetricsSnapshot {
+                total_nano_aiu: Some(3.5),
+                total_premium_request_cost: 2.0,
+                total_user_requests: 4,
+                total_api_duration_ms: 1250,
+                current_model: Some("gpt-5".to_string()),
+            },
+            None,
+        );
+
+        assert_eq!(app.entries().len(), 2);
+        assert_eq!(app.entries()[0], ChatEntry::User("/usage".to_string()));
+        let output = app.entries()[1].clone();
+        assert!(matches!(output, ChatEntry::LocalOutput(_)));
+
+        app.set_usage_metrics(UsageMetricsSnapshot {
+            total_nano_aiu: Some(9.0),
+            total_premium_request_cost: 4.0,
+            total_user_requests: 8,
+            total_api_duration_ms: 2500,
+            current_model: Some("gpt-5".to_string()),
+        });
+        assert_eq!(app.entries()[1], output);
+    }
+
+    #[test]
+    fn usage_body_is_dimmed_without_losing_context_attribution_fields() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 12_345,
+            token_limit: 100_000,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        app.set_usage_snapshot(
+            UsageMetricsSnapshot {
+                total_nano_aiu: Some(3.5),
+                total_premium_request_cost: 2.0,
+                total_user_requests: 4,
+                total_api_duration_ms: 1250,
+                current_model: Some("gpt-5".to_string()),
+            },
+            Some(ContextAttributionSnapshot {
+                model_id: "gpt-5".to_string(),
+                total_tokens: 12_345,
+                prompt_token_limit: 100_000,
+                categories: vec![ContextCategorySnapshot {
+                    label: "Messages".to_string(),
+                    tokens: 12_345,
+                }],
+                compactions: 0,
+            }),
+        );
+
+        let lines = super::usage_detail_lines(&app);
+        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(rendered.iter().any(|line| line.contains("Session cost:")));
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("Context window: 12,345 / 100,000 tokens")));
+        assert!(rendered.iter().any(|line| line.contains("Attribution:")));
+        assert!(rendered.iter().any(|line| line.contains("Compactions: 0")));
+        assert!(lines[0].spans[0].style.fg == Some(palette::INACTIVE));
+        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]
