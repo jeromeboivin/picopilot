@@ -1056,6 +1056,7 @@ fn test_backend_never_receives_untrusted_escape_or_control_characters() {
     });
     app.apply(EventUpdate::SubagentStarted {
         name: "worker".to_string(),
+        description: "worker task".to_string(),
         display_name: "worker".to_string(),
         tool_call_id: "subagent-controls".to_string(),
         agent_id: Some("agent \u{1b}[31m".to_string()),
@@ -1326,7 +1327,7 @@ fn live_assistant_tables_rerender_after_a_width_change() {
 }
 
 #[test]
-fn completed_assistant_tables_commit_at_the_current_width_and_keep_only_metadata() {
+fn completed_assistant_tables_commit_at_the_current_width_and_keep_canonical_payload() {
     let content = "| Header | Value |\n| --- | --- |\n| key | a value that wraps |";
     let mut screen = ScreenModel::default();
     let mut terminal = Terminal::with_options(TestBackend::new(40, 24), terminal_options())
@@ -1366,9 +1367,45 @@ fn completed_assistant_tables_commit_at_the_current_width_and_keep_only_metadata
 
     assert_eq!(screen.committed_entries()[0].height() as usize, live_rows);
     assert_eq!(screen.committed_count(), 1);
-    let metadata = format!("{:?}", screen.committed_entries());
-    assert!(!metadata.contains("Header"));
-    assert!(!metadata.contains("┌"));
+    assert!(matches!(
+        screen.committed_entries()[0].payload(),
+        TranscriptPayload::AssistantMarkdown(value) if value == content
+    ));
+}
+
+#[test]
+fn notice_severity_uses_shared_warning_and_error_palette_tiers() {
+    let warning = render_transcript_payload(
+        LiveEntryKind::Other,
+        &TranscriptPayload::Notice {
+            kind: picopilot::screen_model::NoticeKind::Warning,
+            content: "warning text".to_string(),
+        },
+        80,
+    );
+    let recoverable = render_transcript_payload(
+        LiveEntryKind::Other,
+        &TranscriptPayload::Notice {
+            kind: picopilot::screen_model::NoticeKind::Warning,
+            content: "recoverable text".to_string(),
+        },
+        80,
+    );
+    let blocking = render_transcript_payload(
+        LiveEntryKind::Other,
+        &TranscriptPayload::Notice {
+            kind: picopilot::screen_model::NoticeKind::Error,
+            content: "blocking text".to_string(),
+        },
+        80,
+    );
+
+    assert_eq!(warning[1].spans[0].style.fg, Some(palette::WARNING));
+    assert_eq!(recoverable[1].spans[0].style.fg, Some(palette::WARNING));
+    assert_eq!(blocking[1].spans[0].style.fg, Some(palette::ERROR));
+    assert!(!warning[1].to_string().contains("warning:"));
+    assert!(!recoverable[1].to_string().contains("retry:"));
+    assert!(!blocking[1].to_string().contains("error:"));
 }
 
 #[test]
@@ -1404,6 +1441,86 @@ fn completed_history_is_not_recommitted_or_rerendered_by_later_updates() {
 
     assert_eq!(screen.committed_count(), 1);
     assert_eq!(screen.committed_entries()[0].height(), committed_height);
+}
+
+#[test]
+fn committed_entry_updates_are_ignored_without_inserting_a_duplicate() {
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let collapsed = ScreenEntry::with_payload(
+        "reasoning-1",
+        LiveEntryKind::Other,
+        TranscriptPayload::PreRendered(vec![Line::from("✻ Thinking…")]),
+        true,
+    );
+    screen
+        .apply_change(&mut terminal, ScreenChange::Upsert(collapsed))
+        .expect("collapsed entry should commit");
+
+    let late_update = ScreenEntry::with_payload(
+        "reasoning-1",
+        LiveEntryKind::Other,
+        TranscriptPayload::PreRendered(vec![Line::from("  full reasoning")]),
+        true,
+    );
+    screen
+        .apply_change(&mut terminal, ScreenChange::Upsert(late_update))
+        .expect("late committed update should be ignored");
+
+    assert_eq!(screen.committed_count(), 1);
+    assert_eq!(screen.committed_entries()[0].id(), "reasoning-1");
+    assert!(matches!(
+        screen.committed_entries()[0].payload(),
+        TranscriptPayload::PreRendered(lines) if lines == &[Line::from("✻ Thinking…")]
+    ));
+}
+
+#[test]
+fn verbose_mode_invalidates_cached_tool_result_rendering() {
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+    let content = (1..=11)
+        .map(|line| format!("error line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "tool-result",
+                LiveEntryKind::Tool,
+                TranscriptPayload::ToolResult(test_tool_result(
+                    "custom_tool",
+                    &content,
+                    ToolResultState::Error,
+                    None,
+                )),
+                false,
+            )),
+        )
+        .expect("tool result should be live");
+
+    let collapsed = screen
+        .live_lines_at_width(Platform::default(), 80)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(collapsed
+        .iter()
+        .any(|line| line.contains("ctrl+o to see all")));
+
+    screen.set_verbose(true);
+    let expanded = screen
+        .live_lines_at_width(Platform::default(), 80)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert!(expanded.iter().any(|line| line.contains("error line 11")));
+    assert!(!expanded
+        .iter()
+        .any(|line| line.contains("ctrl+o to see all")));
 }
 
 fn updated_entry_id(change: &ScreenChange) -> Option<picopilot::screen_model::TranscriptEntryId> {
@@ -1626,6 +1743,7 @@ fn same_display_name_subagents_keep_separate_screen_entries() {
         app.apply(EventUpdate::SubagentStarted {
             name: "worker".to_string(),
             tool_call_id: format!("tool-{agent_id}"),
+            description: format!("task for {agent_id}"),
             display_name: "Worker".to_string(),
             agent_id: Some(agent_id.to_string()),
         });
@@ -1634,13 +1752,22 @@ fn same_display_name_subagents_keep_separate_screen_entries() {
         app.apply(EventUpdate::SubagentCompleted {
             name: "worker".to_string(),
             tool_call_id: format!("tool-{agent_id}"),
+            cancelled: false,
+            duration_ms: None,
+            total_tool_calls: None,
+            total_tokens: None,
             agent_id: Some(agent_id.to_string()),
         });
     }
     apply_pending_changes(&mut app, &mut screen, &mut terminal);
 
     assert_eq!(screen.committed_count(), 2);
-    assert!(terminal_text(&terminal).matches("Worker").count() >= 2);
+    assert!(
+        terminal_text(&terminal)
+            .matches("Task(task for agent-")
+            .count()
+            >= 2
+    );
 }
 
 #[test]

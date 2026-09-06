@@ -38,12 +38,13 @@ use crate::runtime::{
     recovery_backoff, AppRuntime, RecoveryError, ResumeError, MAX_RECOVERY_ATTEMPTS,
 };
 use crate::screen_model::{
-    enter_main_screen, render_transcript_payload, restore_main_screen, terminal_options,
-    LiveEntryKind, Platform, ScreenChange, ScreenEntry, ScreenModel, ToolCallState,
-    ToolHeaderPayload, ToolProgressKind, ToolProgressPayload, ToolResultPayload, ToolResultState,
-    TranscriptPayload,
+    enter_main_screen, render_transcript_payload_with_options, restore_main_screen,
+    terminal_options, LiveEntryKind, NoticeKind, Platform, ScreenChange, ScreenEntry, ScreenModel,
+    SubagentPayload, ToolCallState, ToolHeaderPayload, ToolProgressKind, ToolProgressPayload,
+    ToolResultPayload, ToolResultState, TranscriptPayload,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
+use crate::tool_rendering::tool_user_facing_name;
 use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,9 +159,11 @@ pub enum ChatEntry {
     Subagent {
         name: String,
         tool_call_id: String,
+        description: String,
         display_name: String,
         status: SubagentStatus,
         error: Option<String>,
+        metrics: Option<SubagentMetrics>,
         agent_id: Option<String>,
     },
     Banner {
@@ -182,7 +185,15 @@ pub enum ChatEntry {
 pub enum SubagentStatus {
     Running,
     Completed,
+    Cancelled,
     Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentMetrics {
+    pub duration_ms: Option<i64>,
+    pub total_tool_calls: Option<i64>,
+    pub total_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +230,7 @@ struct CompletionState {
 
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/fleet", "run work through Fleet"),
+    ("/resume", "open a session to resume"),
     ("/status", "show session and configuration status"),
     ("/usage", "show session usage and context attribution"),
 ];
@@ -503,6 +515,7 @@ pub struct App {
     reconnecting: bool,
     blocked: bool,
     show_internals: bool,
+    transcript_expanded: bool,
     assistant_live_ids: HashSet<String>,
     reasoning_live_ids: HashSet<String>,
     ansi_streams: HashMap<AnsiStreamId, AnsiSanitizer>,
@@ -823,7 +836,7 @@ impl App {
             ChatEntry::LocalOutput(_) => (LiveEntryKind::Other, true),
             ChatEntry::Completed => return None,
         };
-        let payload = entry_payload(entry, self.show_internals)?;
+        let payload = entry_payload(entry, self.show_internals, self.transcript_expanded)?;
         Some(ScreenEntry::with_payload(
             self.entry_ids[index].clone(),
             kind,
@@ -855,6 +868,10 @@ impl App {
 
     pub fn input(&self) -> &str {
         self.input.text()
+    }
+
+    pub fn transcript_expanded(&self) -> bool {
+        self.transcript_expanded
     }
 
     fn input_cursor_byte_offset(&self) -> usize {
@@ -1458,6 +1475,7 @@ impl App {
         self.todo_refresh_requested = false;
         self.reconnecting = false;
         self.blocked = false;
+        self.transcript_expanded = false;
         self.assistant_live_ids.clear();
         self.reasoning_live_ids.clear();
     }
@@ -1690,26 +1708,45 @@ impl App {
             } => self.complete_tool(tool_call_id, false, message, None, true),
             EventUpdate::SubagentStarted {
                 name,
+                description,
                 display_name,
                 tool_call_id,
                 agent_id,
             } => self.push_entry(ChatEntry::Subagent {
                 name,
                 tool_call_id,
+                description: sanitize_plain(&description),
                 display_name: sanitize_plain(&display_name),
                 status: SubagentStatus::Running,
                 error: None,
+                metrics: None,
                 agent_id,
             }),
             EventUpdate::SubagentCompleted {
                 name,
                 tool_call_id,
+                cancelled,
+                duration_ms,
+                total_tool_calls,
+                total_tokens,
                 agent_id,
             } => {
                 if let Some(index) = self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
                 {
-                    if let ChatEntry::Subagent { status, .. } = &mut self.entries[index] {
-                        *status = SubagentStatus::Completed;
+                    if let ChatEntry::Subagent {
+                        status, metrics, ..
+                    } = &mut self.entries[index]
+                    {
+                        *status = if cancelled {
+                            SubagentStatus::Cancelled
+                        } else {
+                            SubagentStatus::Completed
+                        };
+                        *metrics = Some(SubagentMetrics {
+                            duration_ms,
+                            total_tool_calls,
+                            total_tokens,
+                        });
                     }
                     self.queue_screen_change(index);
                 }
@@ -1718,6 +1755,9 @@ impl App {
                 name,
                 tool_call_id,
                 error,
+                duration_ms,
+                total_tool_calls,
+                total_tokens,
                 agent_id,
             } => {
                 if let Some(index) = self.subagent_index(&name, &tool_call_id, agent_id.as_deref())
@@ -1725,11 +1765,17 @@ impl App {
                     if let ChatEntry::Subagent {
                         status,
                         error: current_error,
+                        metrics,
                         ..
                     } = &mut self.entries[index]
                     {
                         *status = SubagentStatus::Failed;
                         *current_error = Some(sanitize_plain(&error));
+                        *metrics = Some(SubagentMetrics {
+                            duration_ms,
+                            total_tool_calls,
+                            total_tokens,
+                        });
                     }
                     self.queue_screen_change(index);
                 }
@@ -2226,6 +2272,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return handle_picker_key(app, key);
     }
 
+    if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
+        app.transcript_expanded = !app.transcript_expanded;
+        app.queue_all_screen_changes();
+        return UiAction::None;
+    }
+    if key.code == KeyCode::Esc && app.transcript_expanded {
+        app.transcript_expanded = false;
+        app.queue_all_screen_changes();
+        return UiAction::None;
+    }
+
     if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
         if !app.blocked {
             return UiAction::LoadTools;
@@ -2283,7 +2340,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL && !app.status.busy => {
             UiAction::NewConversation
         }
-        KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadSessions,
         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadModels,
         KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadUsage,
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL && app.fleet_active => {
@@ -2340,7 +2396,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 UiAction::LoadStatus
             } else if input == "/usage" {
                 UiAction::LoadUsageCommand
-            } else if matches!(input.split_whitespace().next(), Some("/status" | "/usage")) {
+            } else if input == "/resume" {
+                UiAction::LoadSessions
+            } else if matches!(
+                input.split_whitespace().next(),
+                Some("/status" | "/usage" | "/resume")
+            ) {
                 let command = input.split_whitespace().next().unwrap_or_default();
                 UiAction::LocalCommandError(format!(
                     "{command} does not accept arguments. Use {command} without arguments."
@@ -2623,6 +2684,7 @@ async fn run_loop(
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !app.should_quit() {
+        screen_model.set_verbose(app.transcript_expanded());
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
@@ -3696,24 +3758,44 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
             format!("Select skills ({} of {}):", position, item_count)
         }
         PickerKind::Skills => "Select skills:".to_string(),
-        PickerKind::Approval => {
-            let request = app.pending_approval();
-            let category = request
-                .map(|request| sanitize_plain(request.category.label()))
-                .unwrap_or_else(|| "Tool".to_string());
-            let tool_name = request
-                .map(|request| sanitize_plain(&request.tool_name))
-                .unwrap_or_else(|| "request".to_string());
-            format!("{category} approval required for {tool_name}")
-        }
+        PickerKind::Approval => String::new(),
     };
 
-    let mut lines = vec![Line::from(Span::styled(
-        title,
-        Style::default()
-            .fg(palette::TEXT)
-            .add_modifier(Modifier::BOLD),
-    ))];
+    let mut lines = if let PickerKind::Approval = picker {
+        if let Some(request) = app.pending_approval() {
+            let tool_name = tool_user_facing_name(&sanitize_plain(&request.tool_name));
+            let details = sanitize_plain(&request.details).replace(['\r', '\n'], " ");
+            vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", crate::screen_model::ToolPlatform::current().dot()),
+                        Style::default().fg(palette::PERMISSION),
+                    ),
+                    Span::styled(
+                        format!("{tool_name}({details})"),
+                        Style::default().fg(palette::TEXT),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    format!("  ⎿  {details}"),
+                    Style::default().fg(palette::INACTIVE),
+                )),
+                Line::from(Span::styled(
+                    "  Allow this tool call?",
+                    Style::default().fg(palette::TEXT),
+                )),
+            ]
+        } else {
+            Vec::new()
+        }
+    } else {
+        vec![Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(palette::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ))]
+    };
     if matches!(picker, PickerKind::Sessions) {
         let prefix_width = 6 + item_count.max(1).to_string().len();
         lines.push(Line::from(vec![
@@ -3725,19 +3807,6 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Session Title", Style::default().fg(palette::INACTIVE)),
         ]));
     }
-    if let PickerKind::Approval = picker {
-        if let Some(request) = app.pending_approval() {
-            lines.push(Line::from(Span::styled(
-                format!("  ⎿  {}", sanitize_plain(&request.details)),
-                Style::default().fg(palette::INACTIVE),
-            )));
-            lines.push(Line::from(Span::styled(
-                "  Allow this tool call?",
-                Style::default().fg(palette::TEXT),
-            )));
-        }
-    }
-
     let visible_count = item_count.clamp(1, MAX_PICKER_ROWS);
     let first_visible = app
         .picker_window_start
@@ -4249,10 +4318,18 @@ fn chat_lines_at_width_with_clock(
             }
             _ => LiveEntryKind::Other,
         };
-        let Some(payload) = entry_payload(entry, app.show_internals) else {
+        let Some(payload) = entry_payload(entry, app.show_internals, app.transcript_expanded)
+        else {
             continue;
         };
-        lines.extend(render_transcript_payload(kind, &payload, width));
+        lines.extend(render_transcript_payload_with_options(
+            kind,
+            &payload,
+            width,
+            crate::screen_model::ToolPlatform::current(),
+            animation_elapsed_ms,
+            app.transcript_expanded,
+        ));
     }
     if app.spinner_visible() {
         lines.push(Line::default());
@@ -4798,11 +4875,24 @@ fn format_timeout(milliseconds: u64) -> String {
     parts.join(" ")
 }
 
-fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPayload> {
+fn entry_payload(
+    entry: &ChatEntry,
+    show_internals: bool,
+    transcript_expanded: bool,
+) -> Option<TranscriptPayload> {
     match entry {
         ChatEntry::Assistant { content, .. } => {
             Some(TranscriptPayload::AssistantMarkdown(content.clone()))
         }
+        ChatEntry::Reasoning { content, .. } => Some(TranscriptPayload::Reasoning {
+            content: content.clone(),
+            expanded: transcript_expanded,
+        }),
+        ChatEntry::Diagnostic(message) if show_internals => Some(TranscriptPayload::Notice {
+            kind: NoticeKind::Diagnostic,
+            content: message.clone(),
+        }),
+        ChatEntry::Diagnostic(_) => None,
         ChatEntry::Tool {
             tool_call_id,
             tool_name,
@@ -4872,97 +4962,50 @@ fn entry_payload(entry: &ChatEntry, show_internals: bool) -> Option<TranscriptPa
             agent_id: agent_id.clone(),
             cwd: cwd.clone(),
         })),
-        _ => {
-            let lines = entry_lines(entry, show_internals);
-            (!lines.is_empty()).then_some(TranscriptPayload::PreRendered(lines))
-        }
-    }
-}
-
-fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
-    match entry {
-        ChatEntry::User(content) => {
-            let content = truncate_user_content(content);
-            markdown_lines(&content, Style::default().fg(palette::TEXT))
-        }
-        ChatEntry::Diagnostic(message) if show_internals => labeled_lines(
-            "debug",
-            message,
-            Style::default().fg(Color::Rgb(165, 174, 187)),
-        ),
-        ChatEntry::Diagnostic(_) => Vec::new(),
-        ChatEntry::Assistant { content, .. } => {
-            assistant_markdown_lines(content, Style::default().fg(palette::TEXT))
-        }
-        ChatEntry::Reasoning {
-            content, agent_id, ..
-        } => markdown_prefixed_lines(
-            &speaker_prefix("  ", agent_id.as_deref()),
-            content,
-            Style::default().fg(Color::DarkGray),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        ),
         ChatEntry::Subagent {
-            display_name,
+            name: _,
+            tool_call_id,
+            description,
+            display_name: _,
             status,
             error,
+            metrics,
             agent_id,
-            ..
-        } => {
-            let state = match status {
-                SubagentStatus::Running => "running",
-                SubagentStatus::Completed => "done",
-                SubagentStatus::Failed => "failed",
-            };
-            let content = error.as_deref().unwrap_or("");
-            let label = format!(
-                "agent {} [{}]{}",
-                display_name,
-                state,
-                agent_suffix(agent_id.as_deref())
-            );
-            let mut lines = labeled_lines(
-                &label,
-                content,
-                Style::default().fg(Color::Rgb(204, 166, 255)),
-            );
-            if content.is_empty() {
-                lines.truncate(1);
-            }
-            lines
-        }
+        } => Some(TranscriptPayload::Subagent(SubagentPayload {
+            tool_call_id: tool_call_id.clone(),
+            description: description.clone(),
+            state: match status {
+                SubagentStatus::Running => ToolCallState::Running,
+                SubagentStatus::Completed => ToolCallState::Success,
+                SubagentStatus::Cancelled => ToolCallState::Cancelled,
+                SubagentStatus::Failed => ToolCallState::Error,
+            },
+            error: error.clone(),
+            duration_ms: metrics.as_ref().and_then(|metrics| metrics.duration_ms),
+            total_tool_calls: metrics
+                .as_ref()
+                .and_then(|metrics| metrics.total_tool_calls),
+            total_tokens: metrics.as_ref().and_then(|metrics| metrics.total_tokens),
+            agent_id: agent_id.clone(),
+        })),
         ChatEntry::Banner {
             severity,
             message,
             url,
         } => {
-            let (label, style) = match severity {
-                BannerSeverity::Warning => (
-                    "warn",
-                    Style::default()
-                        .fg(Color::Rgb(242, 204, 96))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                BannerSeverity::RecoverableError => (
-                    "retry",
-                    Style::default()
-                        .fg(Color::Rgb(255, 169, 122))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                BannerSeverity::BlockingError => (
-                    "error",
-                    Style::default()
-                        .fg(Color::Rgb(255, 117, 117))
-                        .add_modifier(Modifier::BOLD),
-                ),
-            };
             let content = match url {
                 Some(url) => format!("{message} ({url})"),
                 None => message.clone(),
             };
-            labeled_lines(label, &content, style)
+            Some(TranscriptPayload::Notice {
+                kind: match severity {
+                    BannerSeverity::Warning | BannerSeverity::RecoverableError => {
+                        NoticeKind::Warning
+                    }
+                    BannerSeverity::BlockingError => NoticeKind::Error,
+                },
+                content,
+            })
         }
         ChatEntry::Approval {
             category,
@@ -4972,21 +5015,43 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         } => {
             let state = match status {
                 ApprovalStatus::Pending => "pending",
-                ApprovalStatus::ApprovedOnce => "approved once",
+                ApprovalStatus::ApprovedOnce => "allowed once",
                 ApprovalStatus::Denied => "denied",
                 ApprovalStatus::Trusted => "trusted",
             };
-            labeled_lines(
-                &format!("approve [{state}]"),
-                &format!("{category} ({tool_name}): {details}"),
-                Style::default()
-                    .fg(Color::Rgb(255, 219, 129))
-                    .add_modifier(Modifier::BOLD),
-            )
+            Some(TranscriptPayload::Notice {
+                kind: NoticeKind::Approval,
+                content: format!("{} ({tool_name}) {state}: {details}", category),
+            })
         }
-        ChatEntry::Tool { .. } | ChatEntry::ToolProgress { .. } | ChatEntry::ToolResult { .. } => {
-            Vec::new()
+        _ => {
+            let lines = entry_lines(entry, show_internals, transcript_expanded);
+            (!lines.is_empty()).then_some(TranscriptPayload::PreRendered(lines))
         }
+    }
+}
+
+fn entry_lines(
+    entry: &ChatEntry,
+    _show_internals: bool,
+    _transcript_expanded: bool,
+) -> Vec<Line<'static>> {
+    match entry {
+        ChatEntry::User(content) => {
+            let content = truncate_user_content(content);
+            markdown_lines(&content, Style::default().fg(palette::TEXT))
+        }
+        ChatEntry::Assistant { content, .. } => {
+            assistant_markdown_lines(content, Style::default().fg(palette::TEXT))
+        }
+        ChatEntry::Diagnostic(_)
+        | ChatEntry::Reasoning { .. }
+        | ChatEntry::Subagent { .. }
+        | ChatEntry::Banner { .. }
+        | ChatEntry::Approval { .. }
+        | ChatEntry::Tool { .. }
+        | ChatEntry::ToolProgress { .. }
+        | ChatEntry::ToolResult { .. } => Vec::new(),
         ChatEntry::LocalOutput(lines) => local_output_lines(lines),
         ChatEntry::Completed => Vec::new(),
     }
@@ -5017,49 +5082,6 @@ fn local_output_lines(lines: &[Line<'static>]) -> Vec<Line<'static>> {
             };
             let mut spans = vec![Span::styled(gutter, gutter_style)];
             spans.extend(line.spans.clone());
-            Line::from(spans)
-        })
-        .collect()
-}
-
-fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'static>> {
-    let mut lines = content.lines();
-    let first = lines.next().unwrap_or_default();
-    let mut rendered = vec![Line::from(vec![
-        Span::styled(format!("{label:<18} "), label_style),
-        Span::raw(first.to_string()),
-    ])];
-    rendered.extend(lines.map(|line| {
-        Line::from(vec![
-            Span::styled("                   ", label_style),
-            Span::raw(line.to_string()),
-        ])
-    }));
-    rendered
-}
-
-fn markdown_prefixed_lines(
-    prefix: &str,
-    content: &str,
-    prefix_style: Style,
-    body_style: Style,
-) -> Vec<Line<'static>> {
-    let mut body_lines = markdown_lines(content, body_style);
-    if body_lines.is_empty() {
-        body_lines.push(Line::default());
-    }
-
-    body_lines
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            let prefix = if index == 0 {
-                prefix.to_string()
-            } else {
-                "  ".to_string()
-            };
-            let mut spans = vec![Span::styled(prefix, prefix_style)];
-            spans.extend(line.spans);
             Line::from(spans)
         })
         .collect()
@@ -5374,19 +5396,6 @@ impl MarkdownRenderer {
     }
 }
 
-fn speaker_prefix(symbol: &str, agent_id: Option<&str>) -> String {
-    match agent_id {
-        Some(agent_id) => format!("{symbol} {} ", sanitize_plain(agent_id)),
-        None => format!("{symbol} "),
-    }
-}
-
-fn agent_suffix(agent_id: Option<&str>) -> String {
-    agent_id
-        .map(|id| format!(" ({})", sanitize_plain(id)))
-        .unwrap_or_default()
-}
-
 fn format_count(value: i64) -> String {
     let digits = value.to_string();
     let mut result = String::with_capacity(digits.len() + digits.len() / 3);
@@ -5542,6 +5551,151 @@ mod tests {
                 agent_id: None,
             }]
         );
+    }
+
+    #[test]
+    fn reasoning_is_collapsed_by_default_and_expands_from_the_canonical_entry() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Reasoning {
+            reasoning_id: "reasoning-render".to_string(),
+            content: "private\u{1b}[31m reasoning".to_string(),
+            agent_id: Some("agent-secret".to_string()),
+        });
+
+        let collapsed = rendered_rows(&app, 80, 12);
+        assert!(collapsed.iter().any(|row| row.contains("✻ Thinking…")));
+        assert!(!collapsed.iter().any(|row| row.contains("private")));
+        assert!(!collapsed.iter().any(|row| row.contains("agent-secret")));
+
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
+        let expanded = rendered_rows(&app, 80, 12);
+        assert!(expanded.iter().any(|row| row.contains("private reasoning")));
+        assert!(!expanded.iter().any(|row| row.contains("Thinking…")));
+        assert!(!expanded.iter().any(|row| row.contains("agent-secret")));
+    }
+
+    #[test]
+    fn subagents_render_as_task_calls_with_metrics_and_without_identity_prefixes() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::SubagentStarted {
+            name: "explore".to_string(),
+            description: "Inspect the repository".to_string(),
+            display_name: "Explore".to_string(),
+            tool_call_id: "task-1".to_string(),
+            agent_id: Some("agent-secret".to_string()),
+        });
+        let running = rendered_rows(&app, 100, 14);
+        assert!(running
+            .iter()
+            .any(|row| row.contains("Task(Inspect the repository)")));
+        assert!(!running.iter().any(|row| row.contains("Explore")));
+        assert!(!running.iter().any(|row| row.contains("agent-secret")));
+
+        app.apply(EventUpdate::SubagentCompleted {
+            name: "explore".to_string(),
+            tool_call_id: "task-1".to_string(),
+            cancelled: false,
+            duration_ms: Some(1_200),
+            total_tool_calls: Some(3),
+            total_tokens: Some(450),
+            agent_id: Some("agent-secret".to_string()),
+        });
+        let completed = rendered_rows(&app, 100, 14);
+        assert!(completed
+            .iter()
+            .any(|row| row.contains("Done (3 tool uses · 450 tokens · 1s)")));
+    }
+
+    #[test]
+    fn subagent_terminal_states_use_neutral_summaries_and_omit_missing_metrics() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::SubagentStarted {
+            name: "failed-task".to_string(),
+            description: "Fail the task".to_string(),
+            display_name: "Explore".to_string(),
+            tool_call_id: "task-failed".to_string(),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::SubagentFailed {
+            name: "failed-task".to_string(),
+            tool_call_id: "task-failed".to_string(),
+            error: "permission denied".to_string(),
+            duration_ms: None,
+            total_tool_calls: Some(1),
+            total_tokens: None,
+            agent_id: None,
+        });
+        app.apply(EventUpdate::SubagentStarted {
+            name: "cancelled-task".to_string(),
+            description: "Cancel the task".to_string(),
+            display_name: "Explore".to_string(),
+            tool_call_id: "task-cancelled".to_string(),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::SubagentCompleted {
+            name: "cancelled-task".to_string(),
+            tool_call_id: "task-cancelled".to_string(),
+            cancelled: true,
+            duration_ms: None,
+            total_tool_calls: None,
+            total_tokens: None,
+            agent_id: None,
+        });
+
+        let rows = rendered_rows(&app, 100, 16);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Failed: permission denied")));
+        assert!(rows.iter().any(|row| row.contains("Cancelled")));
+        assert!(!rows.iter().any(|row| row.contains("Explore")));
+        assert!(!rows.iter().any(|row| row.contains("agent")));
+        assert!(!rows.iter().any(|row| row.contains("tokens")));
+        assert!(!rows.iter().any(|row| row.contains("tool uses")));
+    }
+
+    #[test]
+    fn notices_use_shared_dot_rows_and_diagnostics_remain_opt_in() {
+        let mut hidden = App::new(None);
+        hidden.add_diagnostic("internal detail".to_string());
+        assert!(!rendered_rows(&hidden, 100, 14)
+            .iter()
+            .any(|row| row.contains("internal detail")));
+
+        let mut app = App::new(None);
+        app.show_internals = true;
+        app.add_diagnostic("internal detail".to_string());
+        app.apply(EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::Warning,
+            message: "needs attention".to_string(),
+            url: None,
+        });
+        app.apply(EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::RecoverableError,
+            message: "try again".to_string(),
+            url: None,
+        });
+        app.apply(EventUpdate::Banner {
+            severity: crate::events::BannerSeverity::BlockingError,
+            message: "fatal condition".to_string(),
+            url: None,
+        });
+
+        let rows = rendered_rows(&app, 100, 14);
+        for message in [
+            "internal detail",
+            "needs attention",
+            "try again",
+            "fatal condition",
+        ] {
+            assert!(
+                rows.iter().any(|row| row.contains(message)),
+                "missing {message}"
+            );
+        }
+        assert!(!rows.iter().any(|row| row.contains("debug")));
+        assert!(!rows.iter().any(|row| row.contains("warn:")));
+        assert!(!rows.iter().any(|row| row.contains("retry:")));
+        assert!(!rows.iter().any(|row| row.contains("error:")));
     }
 
     #[test]
@@ -5775,7 +5929,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(rows.iter().any(|row| row.contains("approval required")));
+        assert!(rows.iter().any(|row| row.contains("Bash(cargo test)")));
         assert!(rows.iter().any(|row| row.contains("⎿  cargo test")));
         assert!(rows.iter().any(|row| row.contains("Allow once")));
         assert!(rows.iter().any(|row| row.contains("Deny")));
@@ -6315,7 +6469,7 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_is_visible_while_tool_telemetry_requires_internals() {
+    fn reasoning_is_collapsed_and_diagnostics_require_their_visibility_controls() {
         let mut app = App::new(None);
         app.apply(EventUpdate::Reasoning {
             reasoning_id: "reasoning-1".to_string(),
@@ -6335,11 +6489,12 @@ mod tests {
             .map(ToString::to_string)
             .filter(|line| !line.is_empty())
             .collect();
-        assert!(rendered.iter().any(|line| line.contains("internal chain")));
+        assert!(!rendered.iter().any(|line| line.contains("internal chain")));
         assert!(rendered
             .iter()
             .any(|line| line.to_ascii_lowercase().contains("grep")));
         assert!(!rendered.iter().any(|line| line.contains("session resumed")));
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
         assert_eq!(
             handle_key(
                 &mut app,
@@ -6362,7 +6517,6 @@ mod tests {
         assert!(rendered
             .iter()
             .any(|line| line.to_ascii_lowercase().contains("grep")));
-        assert!(rendered.iter().any(|line| line.starts_with("debug")));
         assert!(rendered.iter().any(|line| line.contains("session resumed")));
     }
 
@@ -6383,9 +6537,9 @@ mod tests {
 
         let lines = super::chat_lines(&app);
         assert!(lines[1].to_string().starts_with("❯ Inspect this"));
-        assert_eq!(lines[3].to_string(), "   Checking the files");
+        assert_eq!(lines[3].to_string(), "✻ Thinking…");
         assert_eq!(lines[5].to_string(), "● Done");
-        assert_eq!(lines[3].spans[1].style.fg, Some(Color::DarkGray));
+        assert_eq!(lines[3].spans[0].style.fg, Some(Color::Rgb(80, 80, 80)));
         assert!(lines[7].to_string().ends_with(' '));
     }
 
@@ -6852,13 +7006,14 @@ mod tests {
 
     #[test]
     fn entry_lines_return_body_content_without_transcript_prefixes() {
-        let user = super::entry_lines(&ChatEntry::User("Inspect this".to_string()), false);
+        let user = super::entry_lines(&ChatEntry::User("Inspect this".to_string()), false, false);
         let assistant = super::entry_lines(
             &ChatEntry::Assistant {
                 message_id: "message-1".to_string(),
                 content: "Done".to_string(),
                 agent_id: None,
             },
+            false,
             false,
         );
 
@@ -7010,6 +7165,7 @@ mod tests {
                 agent_id: None,
             },
             false,
+            false,
         );
 
         assert_eq!(
@@ -7027,6 +7183,7 @@ mod tests {
     fn assistant_markdown_changes_do_not_change_user_markdown() {
         let lines = super::entry_lines(
             &ChatEntry::User("~~literal~~ and `code`".to_string()),
+            false,
             false,
         );
 
@@ -7051,6 +7208,7 @@ mod tests {
                 content: "# Nested".to_string(),
                 agent_id: Some("agent-1".to_string()),
             },
+            false,
             false,
         );
         let rendered = render_entry_lines(
@@ -7466,7 +7624,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             candidates,
-            vec!["/rust-review", "/runbook-extended", "/runbook"]
+            vec!["/resume", "/rust-review", "/runbook-extended", "/runbook"]
         );
 
         handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
@@ -8653,11 +8811,32 @@ mod tests {
             handle_key(&mut app, ctrl_key('n')),
             UiAction::NewConversation
         );
-        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::LoadSessions);
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
+        assert!(app.transcript_expanded());
         assert_eq!(handle_key(&mut app, ctrl_key('p')), UiAction::LoadModels);
         assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
         assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
         assert_eq!(app.input(), "quantumn");
+    }
+
+    #[test]
+    fn ctrl_o_toggles_transcript_expansion_and_resume_is_a_local_command() {
+        let mut app = App::new(None);
+
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
+        assert!(app.transcript_expanded());
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
+        assert!(!app.transcript_expanded());
+
+        for character in "/resume".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character), KeyEventKind::Press));
+        }
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::LoadSessions
+        );
+        assert!(app.entries().is_empty());
+        assert!(!app.spinner_visible());
     }
 
     #[test]

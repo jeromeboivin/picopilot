@@ -133,7 +133,7 @@ approval or reconnect, but applying a change waits until that work is finished.
 Press `Ctrl+N` while idle to start a new conversation immediately. The current
 model, reasoning/context choices, and tool selection are retained; the
 transcript, usage details, fleet state, and pending conversation input are
-cleared. Previous conversations remain available through `Ctrl+O`.
+cleared. Previous conversations remain available through the `/resume` command.
 
 When resuming a historical session, picopilot first reconnects with shell-only
 tools, then detects the stored model from usage metrics or model-change history.
@@ -191,6 +191,10 @@ characters are accepted for keyboard layouts that use AltGr.
 The transcript uses the terminal's native scrollback. The terminal keeps mouse
 selection and clipboard handling, so drag-select and copy using the normal
 behavior of the VS Code or Windows Terminal window.
+
+Press `Ctrl+O` to expand transcript details such as reasoning and truncated
+tool output. Press `Esc` to return to the compact transcript view. Diagnostics
+remain hidden unless `Ctrl+I` is enabled.
 
 The live context-budget regression is opt-in because it requires a running
 Copilot CLI and authentication. With a configured local provider it also

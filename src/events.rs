@@ -216,6 +216,7 @@ pub enum EventUpdate {
     },
     SubagentStarted {
         name: String,
+        description: String,
         display_name: String,
         tool_call_id: String,
         agent_id: Option<String>,
@@ -223,12 +224,19 @@ pub enum EventUpdate {
     SubagentCompleted {
         name: String,
         tool_call_id: String,
+        cancelled: bool,
+        duration_ms: Option<i64>,
+        total_tool_calls: Option<i64>,
+        total_tokens: Option<i64>,
         agent_id: Option<String>,
     },
     SubagentFailed {
         name: String,
         tool_call_id: String,
         error: String,
+        duration_ms: Option<i64>,
+        total_tool_calls: Option<i64>,
+        total_tokens: Option<i64>,
         agent_id: Option<String>,
     },
     Usage(UsageSnapshot),
@@ -391,6 +399,7 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .typed_data::<SubagentStartedData>()
                 .map(|data| EventUpdate::SubagentStarted {
                     name: data.agent_name,
+                    description: data.agent_description,
                     display_name: data.agent_display_name,
                     tool_call_id: data.tool_call_id,
                     agent_id,
@@ -402,6 +411,10 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                 .map(|data| EventUpdate::SubagentCompleted {
                     name: data.agent_name,
                     tool_call_id: data.tool_call_id,
+                    cancelled: data.cancelled.unwrap_or(false),
+                    duration_ms: data.duration_ms,
+                    total_tool_calls: data.total_tool_calls,
+                    total_tokens: data.total_tokens,
                     agent_id,
                 })
         }
@@ -412,6 +425,9 @@ pub fn event_update(event: &SessionEvent) -> Option<EventUpdate> {
                     name: data.agent_name,
                     tool_call_id: data.tool_call_id,
                     error: data.error,
+                    duration_ms: data.duration_ms,
+                    total_tool_calls: data.total_tool_calls,
+                    total_tokens: data.total_tokens,
                     agent_id,
                 })
         }
@@ -514,6 +530,62 @@ mod tests {
             Some(EventUpdate::AssistantDelta {
                 message_id: "message-1".to_string(),
                 content: "The patch is ready.".to_string(),
+                agent_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn maps_subagent_description_metrics_and_cancellation() {
+        let started = SessionEvent {
+            id: "event-subagent-start".to_string(),
+            timestamp: "2026-08-31T12:00:00Z".to_string(),
+            parent_id: None,
+            ephemeral: None,
+            agent_id: None,
+            debug_cli_received_at_ms: None,
+            debug_ws_forwarded_at_ms: None,
+            event_type: "subagent.started".to_string(),
+            data: json!({
+                "agentName": "explore",
+                "agentDisplayName": "Explore",
+                "agentDescription": "Inspect the repository",
+                "toolCallId": "task-1"
+            }),
+        };
+        let completed = SessionEvent {
+            event_type: "subagent.completed".to_string(),
+            data: json!({
+                "agentName": "explore",
+                "agentDisplayName": "Explore",
+                "toolCallId": "task-1",
+                "cancelled": true,
+                "durationMs": 1200,
+                "totalToolCalls": 3,
+                "totalTokens": 450
+            }),
+            ..started.clone()
+        };
+
+        assert_eq!(
+            event_update(&started),
+            Some(EventUpdate::SubagentStarted {
+                name: "explore".to_string(),
+                description: "Inspect the repository".to_string(),
+                display_name: "Explore".to_string(),
+                tool_call_id: "task-1".to_string(),
+                agent_id: None,
+            })
+        );
+        assert_eq!(
+            event_update(&completed),
+            Some(EventUpdate::SubagentCompleted {
+                name: "explore".to_string(),
+                tool_call_id: "task-1".to_string(),
+                cancelled: true,
+                duration_ms: Some(1200),
+                total_tool_calls: Some(3),
+                total_tokens: Some(450),
                 agent_id: None,
             })
         );

@@ -109,6 +109,8 @@ impl std::error::Error for ScreenModelError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommittedEntry {
     id: TranscriptEntryId,
+    kind: LiveEntryKind,
+    payload: TranscriptPayload,
     height: u16,
 }
 
@@ -119,6 +121,14 @@ impl CommittedEntry {
 
     pub fn height(&self) -> u16 {
         self.height
+    }
+
+    pub fn kind(&self) -> LiveEntryKind {
+        self.kind
+    }
+
+    pub fn payload(&self) -> &TranscriptPayload {
+        &self.payload
     }
 }
 
@@ -145,6 +155,9 @@ impl LiveEntry {
         match &self.payload {
             TranscriptPayload::PreRendered(lines) => lines,
             TranscriptPayload::AssistantMarkdown(_)
+            | TranscriptPayload::Reasoning { .. }
+            | TranscriptPayload::Notice { .. }
+            | TranscriptPayload::Subagent(_)
             | TranscriptPayload::ToolHeader(_)
             | TranscriptPayload::ToolProgress(_)
             | TranscriptPayload::ToolResult(_) => &[],
@@ -166,9 +179,32 @@ pub type TranscriptEntryId = String;
 pub enum TranscriptPayload {
     PreRendered(Vec<Line<'static>>),
     AssistantMarkdown(String),
+    Reasoning { content: String, expanded: bool },
+    Notice { kind: NoticeKind, content: String },
+    Subagent(SubagentPayload),
     ToolHeader(ToolHeaderPayload),
     ToolProgress(ToolProgressPayload),
     ToolResult(ToolResultPayload),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind {
+    Diagnostic,
+    Warning,
+    Error,
+    Approval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentPayload {
+    pub tool_call_id: String,
+    pub description: String,
+    pub state: ToolCallState,
+    pub error: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub total_tool_calls: Option<i64>,
+    pub total_tokens: Option<i64>,
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +212,7 @@ struct CachedRender {
     revision: u64,
     width: usize,
     animation_phase: u64,
+    verbose: bool,
     lines: Vec<Line<'static>>,
 }
 
@@ -228,6 +265,9 @@ impl ScreenEntry {
         match &self.payload {
             TranscriptPayload::PreRendered(lines) => lines,
             TranscriptPayload::AssistantMarkdown(_)
+            | TranscriptPayload::Reasoning { .. }
+            | TranscriptPayload::Notice { .. }
+            | TranscriptPayload::Subagent(_)
             | TranscriptPayload::ToolHeader(_)
             | TranscriptPayload::ToolProgress(_)
             | TranscriptPayload::ToolResult(_) => &[],
@@ -256,6 +296,7 @@ pub struct ScreenModel {
     committed: Vec<CommittedEntry>,
     committed_ids: HashSet<TranscriptEntryId>,
     live: Vec<LiveEntry>,
+    verbose: bool,
 }
 
 impl ScreenModel {
@@ -279,6 +320,14 @@ impl ScreenModel {
         self.committed.clear();
         self.committed_ids.clear();
         self.live.clear();
+    }
+
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
+    }
+
+    pub fn verbose(&self) -> bool {
+        self.verbose
     }
 
     pub fn start_live(
@@ -383,8 +432,9 @@ impl ScreenModel {
         index: usize,
     ) -> io::Result<()> {
         let width = terminal.size()?.width as usize;
+        let verbose = self.verbose;
         let lines = self.live[index]
-            .rendered_at_width(width, ToolPlatform::current(), 0)
+            .rendered_at_width(width, ToolPlatform::current(), 0, verbose)
             .to_vec();
         let height = u16::try_from(lines.len()).map_err(|_| {
             io::Error::new(
@@ -397,6 +447,8 @@ impl ScreenModel {
         self.committed_ids.insert(entry.id.clone());
         self.committed.push(CommittedEntry {
             id: entry.id,
+            kind: entry.kind,
+            payload: entry.payload,
             height,
         });
         Ok(())
@@ -448,12 +500,18 @@ impl ScreenModel {
         width: usize,
         animation_elapsed_ms: u64,
     ) -> Vec<Line<'static>> {
+        let verbose = self.verbose;
         self.live
             .iter_mut()
             .filter(|entry| live_preview_enabled(entry.kind, platform))
             .flat_map(|entry| {
                 entry
-                    .rendered_at_width(width, ToolPlatform::current(), animation_elapsed_ms)
+                    .rendered_at_width(
+                        width,
+                        ToolPlatform::current(),
+                        animation_elapsed_ms,
+                        verbose,
+                    )
                     .to_vec()
             })
             .collect()
@@ -488,25 +546,29 @@ impl LiveEntry {
         width: usize,
         platform: ToolPlatform,
         animation_elapsed_ms: u64,
+        verbose: bool,
     ) -> &[Line<'static>] {
         let animation_phase = animation_elapsed_ms / 600;
         let cache_is_current = self.cached_render.as_ref().is_some_and(|cache| {
             cache.revision == self.revision
                 && cache.width == width
                 && cache.animation_phase == animation_phase
+                && cache.verbose == verbose
         });
         if !cache_is_current {
-            let lines = render_transcript_payload_with_clock(
+            let lines = render_transcript_payload_with_options(
                 self.kind,
                 &self.payload,
                 width,
                 platform,
                 animation_elapsed_ms,
+                verbose,
             );
             self.cached_render = Some(CachedRender {
                 revision: self.revision,
                 width,
                 animation_phase,
+                verbose,
                 lines,
             });
         }
@@ -563,6 +625,11 @@ pub fn render_transcript_payload_with_options(
             );
             render_entry_lines(kind, &lines, width)
         }
+        TranscriptPayload::Reasoning { content, expanded } => {
+            render_reasoning(content, *expanded, width)
+        }
+        TranscriptPayload::Notice { kind, content } => render_notice(*kind, content, width),
+        TranscriptPayload::Subagent(subagent) => render_subagent(subagent, width, verbose),
         TranscriptPayload::ToolHeader(header) => {
             render_tool_header(kind, header, width, platform, animation_elapsed_ms, verbose)
         }
@@ -1670,6 +1737,164 @@ fn assistant_prefix_width(kind: LiveEntryKind) -> usize {
         | LiveEntryKind::ToolNested
         | LiveEntryKind::Other => 0,
     }
+}
+
+fn render_reasoning(content: &str, expanded: bool, width: usize) -> Vec<Line<'static>> {
+    let body_style = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM | ratatui::style::Modifier::ITALIC);
+    let lines = if expanded {
+        assistant_markdown_lines_for_widths(content, body_style, width.saturating_sub(2), width)
+    } else {
+        vec![Line::from(Span::styled(
+            "Thinking…",
+            Style::default().fg(palette::SUBTLE),
+        ))]
+    };
+    render_prefixed_lines(&lines, width, "✻ ", Style::default().fg(palette::SUBTLE))
+}
+
+fn render_notice(kind: NoticeKind, content: &str, width: usize) -> Vec<Line<'static>> {
+    let (style, prefix_style) = match kind {
+        NoticeKind::Diagnostic => (
+            Style::default().fg(palette::SUBTLE),
+            Style::default().fg(palette::SUBTLE),
+        ),
+        NoticeKind::Warning => (
+            Style::default().fg(palette::TEXT),
+            Style::default().fg(palette::WARNING),
+        ),
+        NoticeKind::Error => (
+            Style::default().fg(palette::TEXT),
+            Style::default().fg(palette::ERROR),
+        ),
+        NoticeKind::Approval => (
+            Style::default().fg(palette::TEXT),
+            Style::default().fg(palette::PERMISSION),
+        ),
+    };
+    let lines = vec![Line::from(Span::styled(content.to_string(), style))];
+    render_prefixed_lines(&lines, width, assistant_dot_with_space(), prefix_style)
+}
+
+fn render_prefixed_lines(
+    lines: &[Line<'static>],
+    width: usize,
+    prefix: &str,
+    prefix_style: Style,
+) -> Vec<Line<'static>> {
+    let mut rendered = vec![Line::default()];
+    rendered.extend(wrap_lines(
+        lines,
+        &WrapSpec {
+            wrap_width: width,
+            fill_width: 0,
+            first_prefix: vec![Span::styled(prefix.to_string(), prefix_style)],
+            continuation_prefix: vec![Span::raw("  ")],
+            fill_style: None,
+        },
+    ));
+    rendered
+}
+
+fn render_subagent(subagent: &SubagentPayload, width: usize, _verbose: bool) -> Vec<Line<'static>> {
+    let nested = subagent.agent_id.is_some();
+    let mut rendered = render_subagent_header(subagent, width, nested);
+    let Some(summary) = subagent_summary(subagent) else {
+        return rendered;
+    };
+    let body_width = width.saturating_sub(if nested {
+        0
+    } else {
+        UnicodeWidthStr::width(TOOL_BODY_GUTTER)
+    });
+    let summary_lines = wrap_lines(
+        &[summary],
+        &WrapSpec {
+            wrap_width: body_width,
+            fill_width: 0,
+            first_prefix: Vec::new(),
+            continuation_prefix: Vec::new(),
+            fill_style: None,
+        },
+    );
+    let gutter_style = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    for (index, line) in summary_lines.into_iter().enumerate() {
+        let prefix = if nested {
+            ""
+        } else if index == 0 {
+            TOOL_BODY_GUTTER
+        } else {
+            TOOL_BODY_CONTINUATION_GUTTER
+        };
+        let mut spans = vec![Span::styled(prefix, gutter_style)];
+        spans.extend(line.spans);
+        rendered.push(Line::from(spans));
+    }
+    rendered
+}
+
+fn render_subagent_header(
+    subagent: &SubagentPayload,
+    width: usize,
+    nested: bool,
+) -> Vec<Line<'static>> {
+    let dot_style = match subagent.state {
+        ToolCallState::Success => Style::default().fg(palette::SUCCESS),
+        ToolCallState::Error | ToolCallState::Cancelled => Style::default().fg(palette::ERROR),
+        ToolCallState::Running | ToolCallState::Queued | ToolCallState::Unknown => Style::default()
+            .fg(palette::INACTIVE)
+            .add_modifier(ratatui::style::Modifier::DIM),
+    };
+    let dot = ToolPlatform::current().dot();
+    let mut spans = tool_header_prefix(dot, dot_style, "Task");
+    if !subagent.description.is_empty() {
+        spans.push(Span::raw(format!("({})", subagent.description)));
+    }
+    let mut lines = vec![truncate_line(Line::from(spans), width)];
+    if !nested {
+        lines.insert(0, Line::default());
+    }
+    lines
+}
+
+fn subagent_summary(subagent: &SubagentPayload) -> Option<Line<'static>> {
+    let label = match subagent.state {
+        ToolCallState::Success => "Done".to_string(),
+        ToolCallState::Cancelled => "Cancelled".to_string(),
+        ToolCallState::Error => subagent
+            .error
+            .as_deref()
+            .map_or_else(|| "Failed".to_string(), |error| format!("Failed: {error}")),
+        ToolCallState::Queued | ToolCallState::Running | ToolCallState::Unknown => return None,
+    };
+    let mut details = Vec::new();
+    if let Some(tool_calls) = subagent.total_tool_calls {
+        if tool_calls >= 0 {
+            details.push(format!(
+                "{tool_calls} tool {}",
+                if tool_calls == 1 { "use" } else { "uses" }
+            ));
+        }
+    }
+    if let Some(tokens) = subagent.total_tokens {
+        if tokens >= 0 {
+            details.push(format!("{tokens} tokens"));
+        }
+    }
+    if let Some(duration_ms) = subagent.duration_ms {
+        if duration_ms >= 0 {
+            details.push(format_elapsed(duration_ms as u64));
+        }
+    }
+    let summary = if details.is_empty() {
+        label
+    } else {
+        format!("{label} ({})", details.join(" · "))
+    };
+    Some(Line::from(summary))
 }
 
 pub fn render_entry_lines(
