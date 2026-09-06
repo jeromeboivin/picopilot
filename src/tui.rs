@@ -18,7 +18,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use ratatui::Terminal;
 use unicode_segmentation::UnicodeSegmentation;
@@ -98,13 +98,12 @@ pub enum UiAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModalKind {
+enum PickerKind {
     Sessions,
     Models,
-    Usage,
-    Todos,
     Tools,
     Skills,
+    Approval,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +171,7 @@ pub enum ChatEntry {
         details: String,
         status: ApprovalStatus,
     },
+    LocalOutput(Vec<Line<'static>>),
     Completed,
 }
 
@@ -473,8 +473,8 @@ pub struct App {
     status: StatusState,
     input: InputEditor,
     pending_approvals: VecDeque<ApprovalRequest>,
-    show_approval_details: bool,
-    modal: Option<ModalKind>,
+    picker: Option<PickerKind>,
+    picker_window_start: usize,
     sessions: Vec<SessionMetadata>,
     models: Vec<Model>,
     local_model_ids: HashSet<String>,
@@ -489,6 +489,7 @@ pub struct App {
     completion: Option<CompletionState>,
     fleet_active: bool,
     todos: Option<TodoSnapshot>,
+    show_todos: bool,
     todo_refresh_requested: bool,
     reconnecting: bool,
     blocked: bool,
@@ -811,6 +812,7 @@ impl App {
                 LiveEntryKind::Other,
                 !matches!(status, ApprovalStatus::Pending),
             ),
+            ChatEntry::LocalOutput(_) => (LiveEntryKind::Other, true),
             ChatEntry::Completed => return None,
         };
         let payload = entry_payload(entry, self.show_internals)?;
@@ -856,7 +858,15 @@ impl App {
     }
 
     pub fn modal_is_open(&self) -> bool {
-        self.modal.is_some()
+        self.picker.is_some()
+    }
+
+    fn todos_visible(&self) -> bool {
+        self.show_todos
+    }
+
+    pub fn picker_is_open(&self) -> bool {
+        self.picker.is_some()
     }
 
     pub fn toolset(&self) -> Toolset {
@@ -873,11 +883,8 @@ impl App {
     }
 
     pub fn open_tool_picker(&mut self) {
-        self.show_approval_details = false;
         self.picker_toolset = self.toolset;
-        self.selected_item = 0;
-        self.completion = None;
-        self.modal = Some(ModalKind::Tools);
+        self.open_picker(PickerKind::Tools);
     }
 
     pub fn set_skill_catalog(&mut self, catalog: SkillCatalog) {
@@ -899,22 +906,26 @@ impl App {
     }
 
     pub fn open_skill_picker(&mut self) {
-        self.show_approval_details = false;
         self.picker_skill_selection = self.skill_selection.clone();
-        self.selected_item = 0;
-        self.completion = None;
-        self.modal = Some(ModalKind::Skills);
+        self.open_picker(PickerKind::Skills);
     }
 
-    fn todo_modal_is_open(&self) -> bool {
-        matches!(self.modal, Some(ModalKind::Todos))
+    fn open_picker(&mut self, picker: PickerKind) {
+        self.picker = Some(picker);
+        self.picker_window_start = 0;
+        self.selected_item = if matches!(picker, PickerKind::Models) {
+            self.selected_item
+        } else {
+            0
+        };
+        self.completion = None;
     }
 
     pub fn set_sessions(&mut self, sessions: Vec<SessionMetadata>) {
         self.sessions = sessions;
         self.selected_item = 0;
         self.completion = None;
-        self.modal = Some(ModalKind::Sessions);
+        self.open_picker(PickerKind::Sessions);
     }
 
     pub fn set_models(&mut self, models: Vec<Model>) {
@@ -927,7 +938,7 @@ impl App {
             .unwrap_or(0);
         self.reset_picker_options();
         self.completion = None;
-        self.modal = Some(ModalKind::Models);
+        self.open_picker(PickerKind::Models);
     }
 
     pub fn set_local_model_ids<I>(&mut self, model_ids: I)
@@ -944,9 +955,8 @@ impl App {
     ) {
         self.status.usage_metrics = Some(metrics);
         self.status.context_attribution = context_attribution;
-        self.selected_item = 0;
-        self.completion = None;
-        self.modal = Some(ModalKind::Usage);
+        self.push_entry(ChatEntry::User("/usage".to_string()));
+        self.push_entry(ChatEntry::LocalOutput(usage_detail_lines(self)));
     }
 
     pub fn set_usage_metrics(&mut self, metrics: UsageMetricsSnapshot) {
@@ -961,18 +971,18 @@ impl App {
         self.fleet_active = active;
         if active {
             self.todos = None;
+            self.show_todos = false;
             self.todo_refresh_requested = false;
-        } else if matches!(self.modal, Some(ModalKind::Todos)) {
-            self.close_modal();
+        } else {
+            self.show_todos = false;
         }
+        self.close_picker();
     }
 
     pub fn set_todos(&mut self, todos: TodoSnapshot) {
         self.todos = Some(todos);
+        self.show_todos = true;
         self.todo_refresh_requested = false;
-        self.selected_item = 0;
-        self.completion = None;
-        self.modal = Some(ModalKind::Todos);
     }
 
     pub fn take_todo_refresh_request(&mut self) -> bool {
@@ -1029,18 +1039,20 @@ impl App {
         }
     }
 
-    fn close_modal(&mut self) {
-        self.modal = None;
+    fn close_picker(&mut self) {
+        self.picker = None;
+        self.picker_window_start = 0;
         self.selected_item = 0;
+        self.reset_picker_options();
     }
 
     fn move_selection(&mut self, delta: isize) {
-        let item_count = match self.modal {
-            Some(ModalKind::Sessions) => self.sessions.len(),
-            Some(ModalKind::Models) => self.models.len(),
-            Some(ModalKind::Tools) => TOOL_COUNT,
-            Some(ModalKind::Skills) => self.skill_catalog.skills().len(),
-            Some(ModalKind::Usage | ModalKind::Todos) => 0,
+        let item_count = match self.picker {
+            Some(PickerKind::Sessions) => self.sessions.len(),
+            Some(PickerKind::Models) => self.models.len(),
+            Some(PickerKind::Tools) => TOOL_COUNT,
+            Some(PickerKind::Skills) => self.skill_catalog.skills().len(),
+            Some(PickerKind::Approval) => self.approval_choice_count(),
             None => 0,
         };
         if item_count == 0 {
@@ -1049,8 +1061,21 @@ impl App {
         let previous = self.selected_item;
         self.selected_item =
             (self.selected_item as isize + delta).rem_euclid(item_count as isize) as usize;
-        if matches!(self.modal, Some(ModalKind::Models)) && self.selected_item != previous {
+        self.adjust_picker_window(previous, MAX_PICKER_ROWS);
+        if matches!(self.picker, Some(PickerKind::Models)) && self.selected_item != previous {
             self.reset_picker_options();
+        }
+    }
+
+    fn adjust_picker_window(&mut self, previous: usize, visible_rows: usize) {
+        let visible_rows = visible_rows.max(1);
+        if self.selected_item < self.picker_window_start {
+            self.picker_window_start = self.selected_item;
+        } else if self.selected_item >= self.picker_window_start + visible_rows {
+            self.picker_window_start = self.selected_item + 1 - visible_rows;
+        }
+        if self.selected_item < previous && previous == 0 {
+            self.picker_window_start = 0;
         }
     }
 
@@ -1106,43 +1131,43 @@ impl App {
     }
 
     fn choose_selected(&mut self) -> UiAction {
-        let action = match self.modal {
-            Some(ModalKind::Sessions) => self
+        let action = match self.picker {
+            Some(PickerKind::Sessions) => self
                 .sessions
                 .get(self.selected_item)
                 .map(|session| UiAction::Resume(session.session_id.clone())),
-            Some(ModalKind::Models) => self.models.get(self.selected_item).map(|model| {
+            Some(PickerKind::Models) => self.models.get(self.selected_item).map(|model| {
                 UiAction::SwitchModel(ModelSelection {
                     model: model.id.clone(),
                     reasoning_effort: self.picker_reasoning_effort.clone(),
                     context_tier: self.picker_context_tier.clone(),
                 })
             }),
-            Some(ModalKind::Tools) => Some(UiAction::ApplyToolset(self.picker_toolset)),
-            Some(ModalKind::Skills) => {
+            Some(PickerKind::Tools) => Some(UiAction::ApplyToolset(self.picker_toolset)),
+            Some(PickerKind::Skills) => {
                 Some(UiAction::ApplySkills(self.picker_skill_selection.clone()))
             }
-            Some(ModalKind::Usage | ModalKind::Todos) => None,
+            Some(PickerKind::Approval) => return self.approval_action_for_selection(),
             None => None,
         };
-        self.close_modal();
+        self.close_picker();
         action.unwrap_or(UiAction::None)
     }
 
     fn toggle_selected_tool(&mut self) {
-        if matches!(self.modal, Some(ModalKind::Tools)) {
+        if matches!(self.picker, Some(PickerKind::Tools)) {
             let _ = self.picker_toolset.toggle_at(self.selected_item);
         }
     }
 
     fn choose_shell_only(&mut self) {
-        if matches!(self.modal, Some(ModalKind::Tools)) {
+        if matches!(self.picker, Some(PickerKind::Tools)) {
             self.picker_toolset = Toolset::shell_only();
         }
     }
 
     fn choose_all_tools(&mut self) {
-        if matches!(self.modal, Some(ModalKind::Tools)) {
+        if matches!(self.picker, Some(PickerKind::Tools)) {
             self.picker_toolset = Toolset::all();
         }
     }
@@ -1155,15 +1180,43 @@ impl App {
     }
 
     fn choose_no_skills(&mut self) {
-        if matches!(self.modal, Some(ModalKind::Skills)) {
+        if matches!(self.picker, Some(PickerKind::Skills)) {
             self.picker_skill_selection.clear();
         }
     }
 
     fn choose_all_skills(&mut self) {
-        if matches!(self.modal, Some(ModalKind::Skills)) {
+        if matches!(self.picker, Some(PickerKind::Skills)) {
             self.picker_skill_selection.select_all(&self.skill_catalog);
         }
+    }
+
+    fn approval_choice_count(&self) -> usize {
+        if self
+            .pending_approval()
+            .is_some_and(|request| request.category.supports_trust())
+        {
+            3
+        } else if self.pending_approval().is_some() {
+            2
+        } else {
+            0
+        }
+    }
+
+    fn approval_action_for_selection(&self) -> UiAction {
+        let decision = match self.selected_item {
+            0 => ApprovalDecision::ApproveOnce,
+            1 => ApprovalDecision::Deny,
+            2 if self
+                .pending_approval()
+                .is_some_and(|request| request.category.supports_trust()) =>
+            {
+                ApprovalDecision::Trust
+            }
+            _ => return UiAction::None,
+        };
+        UiAction::Approval(decision)
     }
 
     fn toolset_change_is_blocked(&self) -> bool {
@@ -1182,6 +1235,7 @@ impl App {
             status: ApprovalStatus::Pending,
         });
         self.pending_approvals.push_back(request);
+        self.open_picker(PickerKind::Approval);
     }
 
     fn resolve_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalRequest> {
@@ -1204,7 +1258,11 @@ impl App {
             }
             self.queue_screen_change(index);
         }
-        self.show_approval_details = false;
+        if self.pending_approvals.is_empty() {
+            self.close_picker();
+        } else {
+            self.open_picker(PickerKind::Approval);
+        }
         Some(request)
     }
 
@@ -1226,7 +1284,7 @@ impl App {
                 self.queue_screen_change(index);
             }
         }
-        self.show_approval_details = false;
+        self.close_picker();
     }
 
     pub fn push_input(&mut self, character: char) {
@@ -1298,7 +1356,7 @@ impl App {
         self.status.usage_metrics = None;
         self.status.context_attribution = None;
         self.status.busy = false;
-        self.close_modal();
+        self.close_picker();
         self.picker_reasoning_effort = None;
         self.picker_context_tier = None;
         self.picker_toolset = self.toolset;
@@ -1596,7 +1654,7 @@ impl App {
             }
             EventUpdate::ModelChanged { model } => self.status.model = Some(model),
             EventUpdate::TodosChanged => {
-                if self.fleet_active && matches!(self.modal, Some(ModalKind::Todos)) {
+                if self.fleet_active && self.show_todos {
                     self.todo_refresh_requested = true;
                 }
             }
@@ -2064,6 +2122,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return UiAction::None;
     }
 
+    if app.picker.is_some() {
+        return handle_picker_key(app, key);
+    }
+
     if key.code == KeyCode::Char('k') && key.modifiers == KeyModifiers::CONTROL {
         if !app.blocked {
             return UiAction::LoadTools;
@@ -2073,74 +2135,12 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
 
     if key.code == KeyCode::Char('s')
         && key.modifiers == KeyModifiers::CONTROL
-        && app.modal.is_none()
+        && app.picker.is_none()
     {
         if !app.blocked {
             return UiAction::LoadSkills;
         }
         return UiAction::None;
-    }
-
-    if matches!(app.modal, Some(ModalKind::Tools)) {
-        return match key.code {
-            KeyCode::Char(' ') => {
-                app.toggle_selected_tool();
-                UiAction::None
-            }
-            KeyCode::Char('s') => {
-                app.choose_shell_only();
-                UiAction::None
-            }
-            KeyCode::Char('a') => {
-                app.choose_all_tools();
-                UiAction::None
-            }
-            KeyCode::Esc => {
-                app.close_modal();
-                UiAction::None
-            }
-            KeyCode::Up => {
-                app.move_selection(-1);
-                UiAction::None
-            }
-            KeyCode::Down => {
-                app.move_selection(1);
-                UiAction::None
-            }
-            KeyCode::Enter => app.choose_selected(),
-            _ => UiAction::None,
-        };
-    }
-
-    if matches!(app.modal, Some(ModalKind::Skills)) {
-        return match key.code {
-            KeyCode::Char(' ') => {
-                app.toggle_selected_skill();
-                UiAction::None
-            }
-            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
-                app.choose_no_skills();
-                UiAction::None
-            }
-            KeyCode::Char('a') if key.modifiers == KeyModifiers::NONE => {
-                app.choose_all_skills();
-                UiAction::None
-            }
-            KeyCode::Esc => {
-                app.close_modal();
-                UiAction::None
-            }
-            KeyCode::Up => {
-                app.move_selection(-1);
-                UiAction::None
-            }
-            KeyCode::Down => {
-                app.move_selection(1);
-                UiAction::None
-            }
-            KeyCode::Enter => app.choose_selected(),
-            _ => UiAction::None,
-        };
     }
 
     if app.reconnecting {
@@ -2151,27 +2151,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         return match key.code {
             KeyCode::Char('x') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
             KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
-            _ => UiAction::None,
-        };
-    }
-
-    if app.pending_approval().is_some() {
-        return match key.code {
-            KeyCode::Char('y') => UiAction::Approval(ApprovalDecision::ApproveOnce),
-            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
-                UiAction::Approval(ApprovalDecision::Deny)
-            }
-            KeyCode::Char('a')
-                if app
-                    .pending_approval()
-                    .is_some_and(|request| request.category.supports_trust()) =>
-            {
-                UiAction::Approval(ApprovalDecision::Trust)
-            }
-            KeyCode::Char('v') => {
-                app.show_approval_details = !app.show_approval_details;
-                UiAction::None
-            }
             _ => UiAction::None,
         };
     }
@@ -2198,47 +2177,6 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         }
     }
 
-    if app.modal.is_some() {
-        return match key.code {
-            KeyCode::Char('u')
-                if key.modifiers == KeyModifiers::CONTROL
-                    && matches!(app.modal, Some(ModalKind::Usage)) =>
-            {
-                app.close_modal();
-                UiAction::None
-            }
-            KeyCode::Char('t')
-                if key.modifiers == KeyModifiers::CONTROL
-                    && matches!(app.modal, Some(ModalKind::Todos)) =>
-            {
-                app.close_modal();
-                UiAction::None
-            }
-            KeyCode::Esc => {
-                app.close_modal();
-                UiAction::None
-            }
-            KeyCode::Up => {
-                app.move_selection(-1);
-                UiAction::None
-            }
-            KeyCode::Down => {
-                app.move_selection(1);
-                UiAction::None
-            }
-            KeyCode::Char('r') => {
-                app.cycle_picker_option(true);
-                UiAction::None
-            }
-            KeyCode::Char('c') => {
-                app.cycle_picker_option(false);
-                UiAction::None
-            }
-            KeyCode::Enter => app.choose_selected(),
-            _ => UiAction::None,
-        };
-    }
-
     match key.code {
         KeyCode::Char('x') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => UiAction::Quit,
@@ -2249,7 +2187,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadModels,
         KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadUsage,
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL && app.fleet_active => {
-            UiAction::LoadTodos
+            if app.show_todos {
+                app.show_todos = false;
+                app.todo_refresh_requested = false;
+                UiAction::None
+            } else {
+                UiAction::LoadTodos
+            }
         }
         KeyCode::Char('i') if key.modifiers == KeyModifiers::CONTROL => {
             app.show_internals = !app.show_internals;
@@ -2321,6 +2265,136 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     }
 }
 
+fn handle_picker_key(app: &mut App, key: KeyEvent) -> UiAction {
+    let picker = app.picker;
+    if matches!(picker, Some(PickerKind::Approval)) {
+        match key.code {
+            KeyCode::Char('y') => return UiAction::Approval(ApprovalDecision::ApproveOnce),
+            KeyCode::Char('n') if key.modifiers == KeyModifiers::NONE => {
+                return UiAction::Approval(ApprovalDecision::Deny)
+            }
+            KeyCode::Char('a')
+                if app
+                    .pending_approval()
+                    .is_some_and(|request| request.category.supports_trust()) =>
+            {
+                return UiAction::Approval(ApprovalDecision::Trust);
+            }
+            KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
+                return UiAction::LoadTools;
+            }
+            _ => {}
+        }
+    }
+    match key.code {
+        KeyCode::Esc => {
+            app.close_picker();
+            UiAction::None
+        }
+        KeyCode::Up => {
+            app.move_selection(-1);
+            UiAction::None
+        }
+        KeyCode::Char('k') | KeyCode::Char('j') if key.modifiers == KeyModifiers::NONE => {
+            app.move_selection(if matches!(key.code, KeyCode::Char('k')) {
+                -1
+            } else {
+                1
+            });
+            UiAction::None
+        }
+        KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => {
+            app.move_selection(-1);
+            UiAction::None
+        }
+        KeyCode::Down => {
+            app.move_selection(1);
+            UiAction::None
+        }
+        KeyCode::Char('n') if key.modifiers == KeyModifiers::CONTROL => {
+            app.move_selection(1);
+            UiAction::None
+        }
+        KeyCode::PageUp => {
+            app.move_selection(-(MAX_PICKER_ROWS as isize));
+            UiAction::None
+        }
+        KeyCode::PageDown => {
+            app.move_selection(MAX_PICKER_ROWS as isize);
+            UiAction::None
+        }
+        KeyCode::Left if matches!(picker, Some(PickerKind::Models)) => {
+            app.cycle_picker_option(true);
+            UiAction::None
+        }
+        KeyCode::Right if matches!(picker, Some(PickerKind::Models)) => {
+            app.cycle_picker_option(false);
+            UiAction::None
+        }
+        KeyCode::Char('r') if matches!(picker, Some(PickerKind::Models)) => {
+            app.cycle_picker_option(true);
+            UiAction::None
+        }
+        KeyCode::Char('c') if matches!(picker, Some(PickerKind::Models)) => {
+            app.cycle_picker_option(false);
+            UiAction::None
+        }
+        KeyCode::Char(' ') if matches!(picker, Some(PickerKind::Tools)) => {
+            app.toggle_selected_tool();
+            UiAction::None
+        }
+        KeyCode::Char(' ') if matches!(picker, Some(PickerKind::Skills)) => {
+            app.toggle_selected_skill();
+            UiAction::None
+        }
+        KeyCode::Char('s') if matches!(picker, Some(PickerKind::Tools)) => {
+            app.choose_shell_only();
+            UiAction::None
+        }
+        KeyCode::Char('a') if matches!(picker, Some(PickerKind::Tools)) => {
+            app.choose_all_tools();
+            UiAction::None
+        }
+        KeyCode::Char('n')
+            if matches!(picker, Some(PickerKind::Skills))
+                && key.modifiers == KeyModifiers::NONE =>
+        {
+            app.choose_no_skills();
+            UiAction::None
+        }
+        KeyCode::Char('a')
+            if matches!(picker, Some(PickerKind::Skills))
+                && key.modifiers == KeyModifiers::NONE =>
+        {
+            app.choose_all_skills();
+            UiAction::None
+        }
+        KeyCode::Char(character) if ('1'..='9').contains(&character) => {
+            let index = character as usize - '1' as usize;
+            if index >= picker_item_count(app) {
+                return UiAction::None;
+            }
+            app.selected_item = index;
+            app.adjust_picker_window(index, MAX_PICKER_ROWS);
+            match picker {
+                Some(PickerKind::Tools) | Some(PickerKind::Skills) => {
+                    if matches!(picker, Some(PickerKind::Tools)) {
+                        app.toggle_selected_tool();
+                    } else {
+                        app.toggle_selected_skill();
+                    }
+                    UiAction::None
+                }
+                Some(PickerKind::Approval) => app.choose_selected(),
+                Some(PickerKind::Sessions) | Some(PickerKind::Models) => app.choose_selected(),
+                None => UiAction::None,
+            }
+        }
+        KeyCode::Enter => app.choose_selected(),
+        _ => UiAction::None,
+    }
+}
+
 fn is_multiline_enter(key: KeyEvent, shift_pressed: bool) -> bool {
     key.code == KeyCode::Enter && (key.modifiers.contains(KeyModifiers::SHIFT) || shift_pressed)
 }
@@ -2373,7 +2447,6 @@ fn draw_frame(
         draw_chat(frame, app, layout[1], animation_elapsed_ms);
     }
     draw_prompt(frame, app, layout[2], prompt_layout);
-    draw_modal(frame, app);
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -2530,7 +2603,7 @@ async fn process_terminal_events(
         let event = event::read()?;
         let action = match event {
             Event::Paste(pasted)
-                if app.modal.is_none()
+                if app.picker.is_none()
                     && app.pending_approval().is_none()
                     && !app.blocked
                     && !app.reconnecting =>
@@ -2932,7 +3005,7 @@ async fn refresh_todos_if_requested(
     runtime: &mut AppRuntime,
     events: &mut EventSubscription,
 ) -> io::Result<()> {
-    if !app.take_todo_refresh_request() || !app.fleet_active || !app.todo_modal_is_open() {
+    if !app.take_todo_refresh_request() || !app.fleet_active || !app.todos_visible() {
         return Ok(());
     }
     load_todos(app, runtime, events).await
@@ -3013,6 +3086,8 @@ const INPUT_CONTINUATION: &str = "  ";
 const MIN_INPUT_ROWS: usize = 3;
 const PROMPT_CHROME_ROWS: u16 = 3;
 const MAX_COMPLETION_ROWS: usize = 6;
+const MAX_PICKER_ROWS: usize = 5;
+const MAX_TODO_ROWS: usize = 5;
 
 struct WrappedInput {
     lines: Vec<Line<'static>>,
@@ -3027,6 +3102,7 @@ struct WrapState {
 
 #[derive(Debug, Clone, Copy)]
 struct PromptLayout {
+    todo_rows: u16,
     input_rows: u16,
     footer_rows: u16,
     total_height: u16,
@@ -3036,9 +3112,21 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     let prompt_budget = area.height.saturating_sub(2);
     if prompt_budget == 0 {
         return PromptLayout {
+            todo_rows: 0,
             input_rows: 0,
             footer_rows: 0,
             total_height: 0,
+        };
+    }
+
+    if app.picker.is_some() {
+        let picker_rows = picker_item_count(app).clamp(1, MAX_PICKER_ROWS) as u16;
+        let total_height = (picker_rows + 4).min(prompt_budget);
+        return PromptLayout {
+            todo_rows: 0,
+            input_rows: 0,
+            footer_rows: 0,
+            total_height,
         };
     }
 
@@ -3066,9 +3154,19 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     .len();
     let desired_input_rows = wrapped_rows.max(MIN_INPUT_ROWS) as u16;
 
-    let input_and_footer_budget = prompt_budget.saturating_sub(PROMPT_CHROME_ROWS);
+    let desired_todo_rows = todo_live_lines(app).len().min(MAX_TODO_ROWS + 1) as u16;
+    let todo_budget = prompt_budget.saturating_sub(PROMPT_CHROME_ROWS + MIN_INPUT_ROWS as u16);
+    let todo_rows = if app.show_todos {
+        desired_todo_rows.min(todo_budget)
+    } else {
+        0
+    };
+    let input_and_footer_budget = prompt_budget
+        .saturating_sub(PROMPT_CHROME_ROWS)
+        .saturating_sub(todo_rows);
     if input_and_footer_budget == 0 {
         return PromptLayout {
+            todo_rows,
             input_rows: 0,
             footer_rows: 0,
             total_height: prompt_budget,
@@ -3085,9 +3183,10 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     };
     let input_rows = desired_input_rows.min(input_budget).max(minimum_input_rows);
     PromptLayout {
+        todo_rows,
         input_rows,
         footer_rows,
-        total_height: PROMPT_CHROME_ROWS + input_rows + footer_rows,
+        total_height: todo_rows + PROMPT_CHROME_ROWS + input_rows + footer_rows,
     }
 }
 
@@ -3280,29 +3379,6 @@ fn input_box(app: &App, area: Rect) -> Paragraph<'static> {
             .wrap(Wrap { trim: false });
     }
 
-    if let Some(request) = app.pending_approval() {
-        let choices = if request.category.supports_trust() {
-            "y allow once, n deny, a trust for session, v details"
-        } else {
-            "y allow once, n deny, v details"
-        };
-        let prompt = format!(
-            "{} ({}): {} | {choices}",
-            sanitize_plain(request.category.label()),
-            sanitize_plain(&request.tool_name),
-            sanitize_plain(&request.details)
-        );
-        return Paragraph::new(prompt)
-            .style(Style::default().fg(Color::Rgb(255, 219, 129)))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(242, 177, 94)))
-                    .title("approval"),
-            )
-            .wrap(Wrap { trim: false });
-    }
-
     let wrapped = wrap_input_with_busy(
         app.input(),
         app.input_cursor_byte_offset(),
@@ -3326,11 +3402,27 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
         return;
     }
 
-    let input_y = area.y.saturating_add(1).min(area.bottom());
+    if app.picker.is_some() {
+        draw_inline_picker(frame, app, area);
+        return;
+    }
+
+    if layout.todo_rows > 0 {
+        let todo_area = Rect::new(area.x, area.y, area.width, layout.todo_rows);
+        frame.render_widget(Paragraph::new(todo_live_lines(app)), todo_area);
+    }
+    let prompt_area = Rect::new(
+        area.x,
+        area.y.saturating_add(layout.todo_rows),
+        area.width,
+        area.height.saturating_sub(layout.todo_rows),
+    );
+
+    let input_y = prompt_area.y.saturating_add(1).min(prompt_area.bottom());
     let input_height = layout
         .input_rows
         .saturating_add(2)
-        .min(area.bottom().saturating_sub(input_y));
+        .min(prompt_area.bottom().saturating_sub(input_y));
     if input_height == 0 {
         return;
     }
@@ -3340,7 +3432,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
     let footer_y = input_area.bottom();
     let footer_height = layout
         .footer_rows
-        .min(area.bottom().saturating_sub(footer_y));
+        .min(prompt_area.bottom().saturating_sub(footer_y));
     if footer_height == 0 {
         return;
     }
@@ -3354,6 +3446,279 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
     } else {
         frame.render_widget(prompt_footer(app), footer_area);
     }
+}
+
+fn todo_live_lines(app: &App) -> Vec<Line<'static>> {
+    let Some(todos) = app.todos.as_ref() else {
+        return vec![Line::from(Span::styled(
+            "Fleet todos unavailable.",
+            Style::default().fg(palette::INACTIVE),
+        ))];
+    };
+
+    let active = todos
+        .rows
+        .iter()
+        .filter(|row| !todo_status_is_finished(&row.status))
+        .collect::<Vec<_>>();
+    if active.is_empty() {
+        return vec![Line::from(Span::styled(
+            "Fleet todos: no pending work.",
+            Style::default().fg(palette::INACTIVE),
+        ))];
+    }
+
+    let mut lines = vec![Line::from(Span::styled(
+        "Fleet todos",
+        Style::default()
+            .fg(palette::TEXT)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    let visible_rows = if active.len() > MAX_TODO_ROWS {
+        MAX_TODO_ROWS.saturating_sub(1)
+    } else {
+        MAX_TODO_ROWS
+    };
+    for row in active.iter().take(visible_rows) {
+        let style = todo_status_style(&row.status);
+        lines.push(Line::from(vec![
+            Span::styled(format!("  [{}] ", sanitize_plain(&row.status)), style),
+            Span::styled(
+                sanitize_plain(&row.title),
+                Style::default().fg(palette::TEXT),
+            ),
+        ]));
+    }
+
+    if active.len() > visible_rows {
+        let hidden = &active[visible_rows..];
+        let pending = hidden
+            .iter()
+            .filter(|row| !todo_status_is_in_progress(&row.status))
+            .count();
+        let in_progress = hidden
+            .iter()
+            .filter(|row| todo_status_is_in_progress(&row.status))
+            .count();
+        lines.push(Line::from(Span::styled(
+            format!(" … +{pending} pending, {in_progress} in progress"),
+            Style::default().fg(palette::INACTIVE),
+        )));
+    }
+    lines
+}
+
+fn todo_status_is_finished(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "complete" | "done" | "cancelled" | "canceled"
+    )
+}
+
+fn todo_status_is_in_progress(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "in_progress" | "in-progress" | "in progress" | "working"
+    )
+}
+
+fn todo_status_style(status: &str) -> Style {
+    if todo_status_is_in_progress(status) {
+        Style::default().fg(palette::SUGGESTION)
+    } else {
+        Style::default().fg(palette::INACTIVE)
+    }
+}
+
+fn picker_item_count(app: &App) -> usize {
+    match app.picker {
+        Some(PickerKind::Sessions) => app.sessions.len(),
+        Some(PickerKind::Models) => app.models.len(),
+        Some(PickerKind::Tools) => TOOL_COUNT,
+        Some(PickerKind::Skills) => app.skill_catalog.skills().len(),
+        Some(PickerKind::Approval) => app.approval_choice_count(),
+        None => 0,
+    }
+}
+
+fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(picker) = app.picker else {
+        return;
+    };
+    let item_count = picker_item_count(app);
+    let position = if item_count == 0 {
+        0
+    } else {
+        app.selected_item.saturating_add(1).min(item_count)
+    };
+    let title = match picker {
+        PickerKind::Sessions => format!(
+            "Select a session to resume ({} of {}):",
+            position, item_count
+        ),
+        PickerKind::Models => format!("Select a model ({} of {}):", position, item_count),
+        PickerKind::Tools => "Select tools:".to_string(),
+        PickerKind::Skills => "Select skills:".to_string(),
+        PickerKind::Approval => {
+            let request = app.pending_approval();
+            let category = request
+                .map(|request| sanitize_plain(request.category.label()))
+                .unwrap_or_else(|| "Tool".to_string());
+            let tool_name = request
+                .map(|request| sanitize_plain(&request.tool_name))
+                .unwrap_or_else(|| "request".to_string());
+            format!("{category} approval required for {tool_name}")
+        }
+    };
+
+    let mut lines = vec![Line::from(Span::styled(
+        title,
+        Style::default()
+            .fg(palette::TEXT)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    if matches!(picker, PickerKind::Sessions) {
+        let prefix_width = 6 + item_count.max(1).to_string().len();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}Updated", " ".repeat(prefix_width)),
+                Style::default().fg(palette::INACTIVE),
+            ),
+            Span::raw("                   "),
+            Span::styled("Session Title", Style::default().fg(palette::INACTIVE)),
+        ]));
+    }
+    if let PickerKind::Approval = picker {
+        if let Some(request) = app.pending_approval() {
+            lines.push(Line::from(Span::styled(
+                format!("  ⎿ {}", sanitize_plain(&request.details)),
+                Style::default().fg(palette::INACTIVE),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Allow this tool call?",
+                Style::default().fg(palette::TEXT),
+            )));
+        }
+    }
+
+    let visible_count = item_count.clamp(1, MAX_PICKER_ROWS);
+    let first_visible = app
+        .picker_window_start
+        .min(item_count.saturating_sub(visible_count));
+    let last_visible = (first_visible + visible_count).min(item_count);
+    let index_width = item_count.max(1).to_string().len();
+    for index in first_visible..last_visible {
+        let indicator = if index == app.selected_item {
+            "❯"
+        } else if index == first_visible && first_visible > 0 {
+            "↑"
+        } else if index + 1 == last_visible && last_visible < item_count {
+            "↓"
+        } else {
+            " "
+        };
+        let indicator_style = if indicator == "❯" {
+            Style::default().fg(palette::SUGGESTION)
+        } else {
+            Style::default().fg(palette::INACTIVE)
+        };
+        let label_style = if index == app.selected_item {
+            Style::default().fg(palette::SUGGESTION)
+        } else {
+            Style::default().fg(palette::TEXT)
+        };
+        let index_prefix = format!("{:>index_width$}.", index + 1);
+        let mut spans = vec![
+            Span::styled(indicator, indicator_style),
+            Span::raw("  "),
+            Span::styled(index_prefix, Style::default().fg(palette::INACTIVE)),
+            Span::raw("  "),
+        ];
+        match picker {
+            PickerKind::Sessions => {
+                let session = &app.sessions[index];
+                let updated = truncate_tail(&sanitize_plain(&session.modified_time), 24);
+                let summary = session
+                    .summary
+                    .as_deref()
+                    .map(sanitize_plain)
+                    .unwrap_or_else(|| "untitled session".to_string());
+                spans.push(Span::styled(format!("{updated:<24}"), label_style));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(summary, label_style));
+            }
+            PickerKind::Models => {
+                let model = &app.models[index];
+                spans.push(Span::styled(
+                    model_picker_row_for(model, app.is_local_model(&model.id)),
+                    label_style,
+                ));
+                if app.status.model.as_deref() == Some(model.id.as_str()) {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled("✓", Style::default().fg(palette::SUCCESS)));
+                }
+            }
+            PickerKind::Tools => {
+                let selected = app.picker_toolset.contains_at(index);
+                spans.push(Span::styled(
+                    if selected { "[✓]" } else { "[ ]" },
+                    if selected {
+                        Style::default().fg(palette::SUCCESS)
+                    } else {
+                        Style::default().fg(palette::TEXT)
+                    },
+                ));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    CANONICAL_TOOLS.get(index).copied().unwrap_or_default(),
+                    label_style,
+                ));
+            }
+            PickerKind::Skills => {
+                let skill = &app.skill_catalog.skills()[index];
+                let selected = app.picker_skill_selection.contains(&skill.name);
+                spans.push(Span::styled(
+                    if selected { "[✓]" } else { "[ ]" },
+                    if selected {
+                        Style::default().fg(palette::SUCCESS)
+                    } else {
+                        Style::default().fg(palette::TEXT)
+                    },
+                ));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(sanitize_plain(&skill.name), label_style));
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(
+                    sanitize_plain(&skill.description),
+                    Style::default().fg(palette::INACTIVE),
+                ));
+            }
+            PickerKind::Approval => {
+                let label = match index {
+                    0 => "Allow once",
+                    1 => "Deny",
+                    2 => "Trust for this session",
+                    _ => "",
+                };
+                spans.push(Span::styled(label, label_style));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+
+    if item_count == 0 {
+        lines.push(Line::from(Span::styled(
+            "  No entries available.",
+            Style::default().fg(palette::INACTIVE),
+        )));
+    }
+    if area.height as usize > lines.len() {
+        lines.push(Line::from(Span::styled(
+            "  ↑/↓ to select · Enter to confirm · Esc to cancel",
+            Style::default().fg(palette::INACTIVE),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn prompt_footer(app: &App) -> Paragraph<'static> {
@@ -3450,297 +3815,6 @@ fn truncate_tail(text: &str, width: usize) -> String {
     result
 }
 
-fn draw_modal(frame: &mut Frame, app: &App) {
-    if app.show_approval_details {
-        let area = centered_rect(80, 80, frame.area());
-        frame.render_widget(ratatui::widgets::Clear, area);
-        let details = app
-            .pending_approval()
-            .map(|request| sanitize_plain(&request.details))
-            .unwrap_or_else(|| "No approval details available.".to_string());
-        frame.render_widget(
-            Paragraph::new(details)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                        .title("approval details | v to close"),
-                )
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
-
-    let Some(modal) = app.modal else {
-        return;
-    };
-    let area = modal_area(modal, frame.area());
-    frame.render_widget(ratatui::widgets::Clear, area);
-
-    if matches!(modal, ModalKind::Tools) {
-        draw_tool_picker(frame, app, area);
-        return;
-    }
-
-    if matches!(modal, ModalKind::Skills) {
-        draw_skill_picker(frame, app, area);
-        return;
-    }
-
-    if matches!(modal, ModalKind::Usage) {
-        frame.render_widget(
-            Paragraph::new(usage_detail_lines(app))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                        .title("usage and context | ^U or Esc to close"),
-                )
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
-
-    if matches!(modal, ModalKind::Todos) {
-        frame.render_widget(
-            Paragraph::new(todo_detail_lines(app))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                        .title("fleet todos | ^T or Esc to close"),
-                )
-                .wrap(Wrap { trim: false }),
-            area,
-        );
-        return;
-    }
-
-    if matches!(modal, ModalKind::Models) {
-        draw_model_picker(frame, app, area);
-        return;
-    }
-
-    let title = match modal {
-        ModalKind::Sessions => "resume session",
-        ModalKind::Models => "choose model",
-        ModalKind::Usage => "usage and context | ^U or Esc to close",
-        ModalKind::Todos => "fleet todos | ^T or Esc to close",
-        ModalKind::Tools => "tools",
-        ModalKind::Skills => "skills",
-    };
-    let items: Vec<String> = match modal {
-        ModalKind::Sessions => app
-            .sessions
-            .iter()
-            .map(|session| {
-                format!(
-                    "{} | {}",
-                    sanitize_plain(&session.modified_time),
-                    session
-                        .summary
-                        .as_deref()
-                        .map(sanitize_plain)
-                        .unwrap_or_else(|| "untitled session".to_string())
-                )
-            })
-            .collect(),
-        ModalKind::Models => Vec::new(),
-        ModalKind::Usage | ModalKind::Todos => Vec::new(),
-        ModalKind::Tools => Vec::new(),
-        ModalKind::Skills => Vec::new(),
-    };
-    let lines: Vec<Line<'static>> = if items.is_empty() {
-        vec![Line::from("No entries available.")]
-    } else {
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let style = if index == app.selected_item {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Rgb(240, 177, 94))
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                Line::from(Span::styled(format!(" {item}"), style))
-            })
-            .collect()
-    };
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-                    .title(format!("{title} | up/down, enter, esc")),
-            )
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn draw_model_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-        .title("choose model");
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    let items: Vec<ListItem<'static>> = app
-        .models
-        .iter()
-        .map(|model| ListItem::new(model_picker_row_for(model, app.is_local_model(&model.id))))
-        .collect();
-    let list = List::new(items).highlight_symbol("› ").highlight_style(
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(240, 177, 94)),
-    );
-    let mut state =
-        ListState::default().with_selected((!app.models.is_empty()).then_some(app.selected_item));
-    frame.render_stateful_widget(list, layout[0], &mut state);
-
-    frame.render_widget(
-        Paragraph::new(model_picker_detail_lines(app))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
-                    .title("selected model"),
-            )
-            .wrap(Wrap { trim: false }),
-        layout[1],
-    );
-    frame.render_widget(
-        Paragraph::new("↑/↓ choose   r reasoning   c context   Enter apply   Esc cancel")
-            .style(Style::default().fg(Color::Rgb(165, 174, 187))),
-        layout[2],
-    );
-}
-
-fn draw_tool_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-        .title("choose tools | Space toggle, s shell only, a all, Enter apply, Esc cancel");
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let items: Vec<ListItem<'static>> = CANONICAL_TOOLS
-        .iter()
-        .enumerate()
-        .map(|(index, tool)| {
-            let checkbox = if app.picker_toolset.contains_at(index) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            ListItem::new(format!(" {checkbox} {tool}"))
-        })
-        .collect();
-    let list = List::new(items).highlight_symbol("› ").highlight_style(
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(240, 177, 94)),
-    );
-    let mut state = ListState::default().with_selected(Some(app.selected_item));
-    frame.render_stateful_widget(list, inner, &mut state);
-}
-
-fn draw_skill_picker(frame: &mut Frame, app: &App, area: Rect) {
-    let outer = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(240, 177, 94)))
-        .title("choose skills | Space toggle, a all, n none, Enter apply, Esc cancel");
-    let inner = outer.inner(area);
-    frame.render_widget(outer, area);
-
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-    let items = app
-        .skill_catalog
-        .skills()
-        .iter()
-        .map(|skill| {
-            let checkbox = if app.picker_skill_selection.contains(&skill.name) {
-                "[x]"
-            } else {
-                "[ ]"
-            };
-            ListItem::new(format!(" {checkbox} {}", sanitize_plain(&skill.name)))
-        })
-        .collect::<Vec<_>>();
-    let list = List::new(items).highlight_symbol("› ").highlight_style(
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Rgb(240, 177, 94)),
-    );
-    let selected = (!app.skill_catalog.skills().is_empty()).then_some(app.selected_item);
-    let mut state = ListState::default().with_selected(selected);
-    frame.render_stateful_widget(list, layout[0], &mut state);
-
-    frame.render_widget(
-        Paragraph::new(skill_picker_detail_lines(app))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(Color::Rgb(70, 88, 104)))
-                    .title("selected skill"),
-            )
-            .wrap(Wrap { trim: false }),
-        layout[1],
-    );
-    frame.render_widget(
-        Paragraph::new("↑/↓ choose   Space toggle   a all   n none   Enter apply   Esc cancel")
-            .style(Style::default().fg(Color::Rgb(165, 174, 187))),
-        layout[2],
-    );
-}
-
-fn skill_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(skill) = app.skill_catalog.skills().get(app.selected_item) else {
-        return vec![Line::from("No skills discovered.")];
-    };
-    vec![
-        Line::from(Span::styled(
-            sanitize_plain(&skill.name),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!(
-            "Description: {}",
-            sanitize_plain(&skill.description)
-        )),
-        Line::from(format!(
-            "Source: {} | {}",
-            sanitize_plain(&skill.root.source.to_string()),
-            sanitize_plain(&skill.root.path.display().to_string())
-        )),
-        Line::from(format!(
-            "Directory: {}",
-            sanitize_plain(&skill.directory.display().to_string())
-        )),
-    ]
-}
-
 fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
         "{:<28}  {:<9}  {} tokens",
@@ -3748,75 +3822,6 @@ fn model_picker_row_for(model: &Model, is_local: bool) -> String {
         model_cost_label_for(model, is_local),
         model_context_label(model)
     )
-}
-
-fn model_picker_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(model) = app.models.get(app.selected_item) else {
-        return vec![Line::from("No models available.")];
-    };
-    let is_local = app.is_local_model(&model.id);
-    let reasoning = app
-        .picker_reasoning_effort
-        .as_deref()
-        .map(sanitize_plain)
-        .unwrap_or_else(|| "model default".to_string());
-    let reasoning_values = model
-        .supported_reasoning_efforts
-        .as_ref()
-        .filter(|values| !values.is_empty())
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| sanitize_plain(value))
-                .collect::<Vec<_>>()
-                .join(" · ")
-        })
-        .unwrap_or_else(|| "unavailable".to_string());
-    let context = app
-        .picker_context_tier
-        .as_deref()
-        .map(sanitize_plain)
-        .unwrap_or_else(|| "model default".to_string());
-    let context_values = crate::config::supported_context_tiers(model);
-    let context_values = if context_values.is_empty() {
-        "unavailable".to_string()
-    } else {
-        context_values
-            .iter()
-            .map(|value| sanitize_plain(value))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    };
-
-    let mut lines = vec![
-        Line::from(Span::styled(
-            format!(
-                "{}  ({})",
-                sanitize_plain(&model.name),
-                sanitize_plain(&model.id)
-            ),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!(
-            "Reasoning: {reasoning}   Available: {reasoning_values}"
-        )),
-        Line::from(format!(
-            "Context:   {context}   Available: {context_values}"
-        )),
-    ];
-    if is_local {
-        lines.push(Line::from("Billing:   local inference (provider-tracked)"));
-    }
-    lines
-}
-
-fn modal_area(modal: ModalKind, terminal_area: Rect) -> Rect {
-    match modal {
-        ModalKind::Sessions | ModalKind::Models | ModalKind::Tools | ModalKind::Skills => {
-            terminal_area
-        }
-        ModalKind::Usage | ModalKind::Todos => centered_rect(70, 70, terminal_area),
-    }
 }
 
 fn model_cost_label_for(model: &Model, is_local: bool) -> String {
@@ -3850,46 +3855,6 @@ fn model_context_label(model: &Model) -> String {
         .and_then(|limits| limits.max_context_window_tokens)
         .map(format_count)
         .unwrap_or_else(|| "unknown".to_string())
-}
-
-fn todo_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(todos) = app.todos.as_ref() else {
-        return vec![Line::from("Fleet todo data unavailable.")];
-    };
-    if todos.rows.is_empty() {
-        return vec![Line::from("No Fleet todos available.")];
-    }
-
-    todos
-        .rows
-        .iter()
-        .map(|row| {
-            let blocked_by: Vec<String> = todos
-                .dependencies
-                .iter()
-                .filter(|dependency| dependency.todo_id == row.id)
-                .map(|dependency| {
-                    todos
-                        .rows
-                        .iter()
-                        .find(|candidate| candidate.id == dependency.depends_on)
-                        .map(|candidate| sanitize_plain(&candidate.title))
-                        .unwrap_or_else(|| sanitize_plain(&dependency.depends_on))
-                })
-                .collect();
-            let dependency_label = if blocked_by.is_empty() {
-                String::new()
-            } else {
-                format!(" | blocked by: {}", blocked_by.join(", "))
-            };
-            Line::from(format!(
-                "[{}] {}{}",
-                sanitize_plain(&row.status),
-                sanitize_plain(&row.title),
-                dependency_label
-            ))
-        })
-        .collect()
 }
 
 fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
@@ -3947,17 +3912,6 @@ fn format_cost(metrics: &UsageMetricsSnapshot) -> String {
         Some(cost) => format!("{:.3} AIU", cost / 1_000_000_000.0),
         None => format!("{:.1} premium", metrics.total_premium_request_cost),
     }
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let width = area.width * percent_x / 100;
-    let height = area.height * percent_y / 100;
-    Rect::new(
-        area.x + area.width.saturating_sub(width) / 2,
-        area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    )
 }
 
 fn draw_live_chat(
@@ -4770,8 +4724,22 @@ fn entry_lines(entry: &ChatEntry, show_internals: bool) -> Vec<Line<'static>> {
         ChatEntry::Tool { .. } | ChatEntry::ToolProgress { .. } | ChatEntry::ToolResult { .. } => {
             Vec::new()
         }
+        ChatEntry::LocalOutput(lines) => local_output_lines(lines),
         ChatEntry::Completed => Vec::new(),
     }
+}
+
+fn local_output_lines(lines: &[Line<'static>]) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let gutter = if index == 0 { "  ⎿  " } else { "     " };
+            let mut spans = vec![Span::raw(gutter)];
+            spans.extend(line.spans.clone());
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn labeled_lines(label: &str, content: &str, label_style: Style) -> Vec<Line<'static>> {
@@ -5170,14 +5138,12 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::{
-        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_live_chat, draw_model_picker,
-        draw_skill_picker, draw_tool_picker, format_elapsed, format_spinner_tokens, handle_key,
-        modal_area, model_context_label, model_cost_label_for, model_picker_detail_lines,
+        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_live_chat, format_elapsed,
+        format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
         model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
         skill_selection_for_invocation, spinner_frames, spinner_message_spans,
-        spinner_platform_for, spinner_stall_intensity, status_bar, thinking_status,
-        todo_detail_lines, App, ChatEntry, ModalKind, ModelSelection, SendPath, SpinnerMode,
-        SpinnerPlatform, UiAction, SPINNER_STATUS_AFTER_MS,
+        spinner_platform_for, spinner_stall_intensity, status_bar, thinking_status, App, ChatEntry,
+        ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction, SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -5312,6 +5278,143 @@ mod tests {
         assert!(rows[top_rule + 1].starts_with("❯ "));
         assert!(rows.iter().any(|row| row.starts_with("  ? for shortcuts")));
         assert!(!rows.iter().any(|row| row.contains("^N")));
+    }
+
+    #[test]
+    fn session_picker_replaces_prompt_without_overlay_or_history_rows() {
+        let mut app = App::new(None);
+        app.set_sessions(vec![SessionMetadata {
+            session_id: SessionId::from("session-1"),
+            start_time: "2026-08-31T12:00:00Z".to_string(),
+            modified_time: "2026-08-31T12:01:00Z".to_string(),
+            summary: Some("first session".to_string()),
+            is_remote: false,
+        }]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("picker should render");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Select a session to resume")));
+        assert!(rows.iter().any(|row| row.contains("❯")));
+        assert!(!rows.iter().any(|row| row.contains('┌')));
+        assert!(!rows.iter().any(|row| row.contains('│')));
+        assert!(!rows.iter().any(|row| row.contains("? for shortcuts")));
+        assert!(app.entries().is_empty());
+    }
+
+    #[test]
+    fn usage_is_static_transcript_output_without_a_picker_overlay() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_usage(
+            UsageMetricsSnapshot {
+                total_nano_aiu: Some(1.0),
+                total_premium_request_cost: 2.0,
+                total_user_requests: 3,
+                total_api_duration_ms: 4,
+                current_model: Some("gpt-5".to_string()),
+            },
+            None,
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("usage should render in the transcript");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("/usage")));
+        assert!(rows.iter().any(|row| row.contains("⎿")));
+        assert!(rows.iter().any(|row| row.contains("Session cost:")));
+        assert!(!rows.iter().any(|row| row.contains("usage and context")));
+        assert!(!app.picker_is_open());
+    }
+
+    #[test]
+    fn todos_are_a_capped_live_block_above_input() {
+        let mut app = App::new(None);
+        app.set_fleet_active(true);
+        app.set_todos(TodoSnapshot {
+            rows: (0..8)
+                .map(|index| TodoRowSnapshot {
+                    id: format!("todo-{index}"),
+                    title: format!("Task {index}"),
+                    description: String::new(),
+                    status: if index % 2 == 0 {
+                        "pending".to_string()
+                    } else {
+                        "in_progress".to_string()
+                    },
+                })
+                .collect(),
+            dependencies: Vec::new(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("todos should render live");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("Fleet todos")));
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("… +2 pending, 2 in progress")));
+        assert!(!rows.iter().any(|row| row.contains('┌')));
+        assert!(app.entries().is_empty());
+    }
+
+    #[test]
+    fn approval_replaces_input_with_borderless_choices() {
+        let mut app = App::new(None);
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "cargo test".to_string(),
+            respond_to,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).expect("test terminal");
+
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("approval should render inline");
+
+        let rows = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rows.iter().any(|row| row.contains("approval required")));
+        assert!(rows.iter().any(|row| row.contains("⎿ cargo test")));
+        assert!(rows.iter().any(|row| row.contains("Allow once")));
+        assert!(rows.iter().any(|row| row.contains("Deny")));
+        assert!(!rows.iter().any(|row| row.contains('┌')));
+        assert!(!rows.iter().any(|row| row.contains("y allow once")));
     }
 
     #[test]
@@ -6654,14 +6757,14 @@ mod tests {
     }
 
     #[test]
-    fn tool_picker_fills_the_terminal_and_shows_checkbox_state() {
+    fn tool_picker_renders_inline_checkbox_state() {
         let mut app = App::new(None);
         app.set_toolset(Toolset::shell_only());
         app.open_tool_picker();
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).expect("test terminal");
 
         terminal
-            .draw(|frame| draw_tool_picker(frame, &app, frame.area()))
+            .draw(|frame| draw(frame, &app))
             .expect("tool picker should render");
 
         let rendered = (0..terminal.backend().buffer().area.height)
@@ -6671,11 +6774,12 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(rendered.iter().any(|line| line.contains("[x]")));
+        assert!(rendered.iter().any(|line| line.contains("[✓]")));
         assert!(rendered.iter().any(|line| line.contains("[ ]")));
         assert!(rendered
             .iter()
             .any(|line| line.contains("powershell") || line.contains("bash")));
+        assert!(!rendered.iter().any(|line| line.contains('┌')));
     }
 
     #[test]
@@ -6742,14 +6846,14 @@ mod tests {
     }
 
     #[test]
-    fn skill_picker_renders_description_and_discovery_source() {
+    fn skill_picker_renders_inline_description() {
         let mut app = App::new(None);
         app.set_skill_catalog(test_skill_catalog());
         app.open_skill_picker();
         let mut terminal = Terminal::new(TestBackend::new(100, 16)).expect("test terminal");
 
         terminal
-            .draw(|frame| draw_skill_picker(frame, &app, frame.area()))
+            .draw(|frame| draw(frame, &app))
             .expect("skill picker should render");
 
         let rendered = (0..terminal.backend().buffer().area.height)
@@ -6764,9 +6868,7 @@ mod tests {
         assert!(rendered
             .iter()
             .any(|line| line.contains("Review Rust code")));
-        assert!(rendered
-            .iter()
-            .any(|line| line.contains("project") && line.contains(".agents")));
+        assert!(!rendered.iter().any(|line| line.contains('┌')));
     }
 
     #[test]
@@ -7057,7 +7159,7 @@ mod tests {
 
         app.open_tool_picker();
         assert_eq!(handle_key(&mut app, ctrl_key('n')), UiAction::None);
-        app.close_modal();
+        app.close_picker();
 
         let (respond_to, _response) = tokio::sync::oneshot::channel();
         app.enqueue_approval(crate::permissions::ApprovalRequest {
@@ -7196,50 +7298,6 @@ mod tests {
     }
 
     #[test]
-    fn approval_details_toggle_while_the_input_is_hijacked() {
-        let mut app = App::new(None);
-        let (respond_to, _response) = tokio::sync::oneshot::channel();
-        app.enqueue_approval(crate::permissions::ApprovalRequest {
-            category: crate::permissions::ApprovalCategory::Shell,
-            tool_name: "bash".to_string(),
-            details: "cargo test --all-targets".to_string(),
-            respond_to,
-        });
-
-        assert!(matches!(
-            app.entries().last(),
-            Some(ChatEntry::Approval {
-                status: super::ApprovalStatus::Pending,
-                details,
-                ..
-            }) if details == "cargo test --all-targets"
-        ));
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('v'), KeyEventKind::Press)),
-            UiAction::None
-        );
-        assert!(app.show_approval_details);
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char('v'), KeyEventKind::Press)),
-            UiAction::None
-        );
-        assert!(!app.show_approval_details);
-    }
-
-    #[test]
-    fn session_and_model_pickers_fill_the_terminal() {
-        let terminal_area = ratatui::layout::Rect::new(0, 0, 120, 40);
-
-        assert_eq!(
-            modal_area(ModalKind::Sessions, terminal_area),
-            terminal_area
-        );
-        assert_eq!(modal_area(ModalKind::Models, terminal_area), terminal_area);
-        assert_eq!(modal_area(ModalKind::Tools, terminal_area), terminal_area);
-        assert_ne!(modal_area(ModalKind::Usage, terminal_area), terminal_area);
-    }
-
-    #[test]
     fn tool_picker_can_open_while_an_approval_is_pending_but_not_apply_while_busy() {
         let mut app = App::new(None);
         let (respond_to, _response) = tokio::sync::oneshot::channel();
@@ -7281,7 +7339,7 @@ mod tests {
     }
 
     #[test]
-    fn session_navigation_stays_local_and_modal_selection_emits_actions() {
+    fn session_navigation_stays_local_and_picker_selection_emits_actions() {
         let mut app = App::new(None);
         app.set_sessions(vec![
             SessionMetadata {
@@ -7402,14 +7460,21 @@ mod tests {
         assert_eq!(model_cost_label_for(&model, true), "local");
         assert_eq!(model_context_label(&model), "unknown");
         assert!(model_picker_row_for(&model, true).contains("local"));
-        let details: Vec<String> = model_picker_detail_lines(&app)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert!(details.iter().any(|line| line.contains("local inference")));
-        assert!(details
-            .iter()
-            .any(|line| line.contains("Context:   model default   Available: unavailable")));
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("model picker should render");
+        let rendered = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("local")));
+        assert!(rendered.iter().any(|line| line.contains("unknown tokens")));
+        assert!(!rendered.iter().any(|line| line.contains('┌')));
 
         handle_key(&mut app, key(KeyCode::Char('r'), KeyEventKind::Press));
         handle_key(&mut app, key(KeyCode::Char('c'), KeyEventKind::Press));
@@ -7424,7 +7489,7 @@ mod tests {
     }
 
     #[test]
-    fn model_picker_opens_on_the_active_model_and_isolates_its_options() {
+    fn model_picker_opens_on_the_active_model() {
         let mut app = App::new(Some("gpt-5".to_string()));
         app.set_models(vec![
             Model {
@@ -7442,16 +7507,18 @@ mod tests {
         ]);
 
         assert_eq!(app.selected_item, 1);
-        let details: Vec<String> = model_picker_detail_lines(&app)
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(details[0], "GPT-5  (gpt-5)");
-        assert_eq!(
-            details[1],
-            "Reasoning: model default   Available: low · high"
-        );
-        assert_eq!(details[2], "Context:   model default   Available: default");
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("model picker should render");
+        let rendered = (0..terminal.backend().buffer().area.height)
+            .map(|y| {
+                (0..terminal.backend().buffer().area.width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert!(rendered.iter().any(|line| line.contains("GPT-5")));
     }
 
     #[test]
@@ -7478,7 +7545,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
 
         terminal
-            .draw(|frame| draw_model_picker(frame, &app, frame.area()))
+            .draw(|frame| draw(frame, &app))
             .expect("picker should render");
 
         let buffer = terminal.backend().buffer();
@@ -7491,31 +7558,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(rendered.iter().any(|line| line.contains("Auto")));
         assert!(rendered.iter().any(|line| line.contains("GPT-5")));
-        assert_eq!(
-            rendered
-                .iter()
-                .filter(|line| line.contains("low · high"))
-                .count(),
-            1
-        );
-        assert_eq!(
-            rendered
-                .iter()
-                .filter(|line| line.contains("Available: default"))
-                .count(),
-            1
-        );
+        assert!(rendered.iter().any(|line| line.contains("128,000 tokens")));
+        assert!(rendered.iter().any(|line| line.contains("200,000 tokens")));
+        assert!(!rendered.iter().any(|line| line.contains('┌')));
     }
 
     #[test]
-    fn usage_key_requests_the_usage_detail_modal() {
+    fn usage_key_requests_a_usage_refresh() {
         let mut app = App::new(None);
 
         assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
     }
 
     #[test]
-    fn usage_metrics_open_the_detail_modal_and_can_be_closed() {
+    fn usage_metrics_are_static_transcript_output() {
         let mut app = App::new(None);
         app.set_usage(
             crate::events::UsageMetricsSnapshot {
@@ -7528,7 +7584,7 @@ mod tests {
             None,
         );
 
-        assert!(app.modal_is_open());
+        assert!(!app.modal_is_open());
         assert_eq!(
             app.status()
                 .usage_metrics
@@ -7536,12 +7592,12 @@ mod tests {
                 .and_then(|metrics| metrics.total_nano_aiu),
             Some(3.5)
         );
-        assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::None);
+        assert_eq!(handle_key(&mut app, ctrl_key('u')), UiAction::LoadUsage);
         assert!(!app.modal_is_open());
     }
 
     #[test]
-    fn status_cost_updates_without_opening_the_usage_modal() {
+    fn status_cost_updates_without_opening_a_picker() {
         let mut app = App::new(None);
 
         app.set_usage_metrics(crate::events::UsageMetricsSnapshot {
@@ -7576,7 +7632,7 @@ mod tests {
     }
 
     #[test]
-    fn todo_modal_is_only_available_for_an_active_fleet() {
+    fn todo_visibility_is_only_available_for_an_active_fleet() {
         let mut app = App::new(None);
 
         assert_eq!(handle_key(&mut app, ctrl_key('t')), UiAction::None);
@@ -7597,14 +7653,14 @@ mod tests {
                 depends_on: "todo-0".to_string(),
             }],
         });
-        assert!(app.modal_is_open());
+        assert!(!app.modal_is_open());
 
         app.apply(EventUpdate::TodosChanged);
         assert!(app.take_todo_refresh_request());
         assert!(!app.take_todo_refresh_request());
 
         assert_eq!(handle_key(&mut app, ctrl_key('t')), UiAction::None);
-        assert!(!app.modal_is_open());
+        assert!(!app.show_todos);
     }
 
     #[test]
@@ -7793,47 +7849,6 @@ mod tests {
             UiAction::None
         );
         assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
-    }
-
-    #[test]
-    fn todo_modal_renders_dependency_titles() {
-        let mut app = App::new(None);
-        app.set_fleet_active(true);
-        app.set_todos(TodoSnapshot {
-            rows: vec![
-                TodoRowSnapshot {
-                    id: "todo-1".to_string(),
-                    title: "Inspect transport".to_string(),
-                    description: String::new(),
-                    status: "completed".to_string(),
-                },
-                TodoRowSnapshot {
-                    id: "todo-2".to_string(),
-                    title: "Patch transport".to_string(),
-                    description: String::new(),
-                    status: "in_progress".to_string(),
-                },
-            ],
-            dependencies: vec![TodoDependencySnapshot {
-                todo_id: "todo-2".to_string(),
-                depends_on: "todo-1".to_string(),
-            }],
-        });
-
-        let rendered: Vec<String> = todo_detail_lines(&app)
-            .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect()
-            })
-            .collect();
-
-        assert_eq!(
-            rendered[1],
-            "[in_progress] Patch transport | blocked by: Inspect transport"
-        );
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
