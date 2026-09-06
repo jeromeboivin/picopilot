@@ -911,6 +911,9 @@ impl App {
     }
 
     fn open_picker(&mut self, picker: PickerKind) {
+        if !matches!(picker, PickerKind::Approval) && self.pending_approval().is_some() {
+            return;
+        }
         self.picker = Some(picker);
         self.picker_window_start = 0;
         self.selected_item = if matches!(picker, PickerKind::Models) {
@@ -2319,9 +2322,7 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> UiAction {
             {
                 return UiAction::Approval(ApprovalDecision::Trust);
             }
-            KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
-                return UiAction::LoadTools;
-            }
+            KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => return UiAction::None,
             _ => {}
         }
         if key.code == KeyCode::Esc {
@@ -3611,7 +3612,13 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
             position, item_count
         ),
         PickerKind::Models => format!("Select a model ({} of {}):", position, item_count),
+        PickerKind::Tools if item_count > MAX_PICKER_ROWS => {
+            format!("Select tools ({} of {}):", position, item_count)
+        }
         PickerKind::Tools => "Select tools:".to_string(),
+        PickerKind::Skills if item_count > MAX_PICKER_ROWS => {
+            format!("Select skills ({} of {}):", position, item_count)
+        }
         PickerKind::Skills => "Select skills:".to_string(),
         PickerKind::Approval => {
             let request = app.pending_approval();
@@ -5197,14 +5204,15 @@ mod tests {
         model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
         skill_selection_for_invocation, spinner_frames, spinner_message_spans,
         spinner_platform_for, spinner_stall_intensity, status_bar, thinking_status, App, ChatEntry,
-        ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction, SPINNER_STATUS_AFTER_MS,
+        ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction, MAX_PICKER_ROWS,
+        SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
         TodoRowSnapshot, TodoSnapshot, UsageMetricsSnapshot,
     };
     use crate::palette;
-    use crate::permissions::{ApprovalCategory, ApprovalRequest};
+    use crate::permissions::{ApprovalCategory, ApprovalDecision, ApprovalRequest};
     use crate::screen_model::{
         render_entry_lines, render_transcript_payload, LiveEntryKind, ScreenChange, ScreenModel,
     };
@@ -5250,6 +5258,50 @@ mod tests {
             ],
             Vec::new(),
         )
+    }
+
+    fn long_skill_catalog(count: usize) -> SkillCatalog {
+        let root = SkillRoot {
+            path: PathBuf::from("C:\\project\\.agents\\skills"),
+            source: SkillRootSource::Project,
+        };
+        let skills = (0..count)
+            .map(|index| Skill {
+                name: format!("skill-{index}"),
+                description: format!("Description {index}"),
+                user_invocable: true,
+                directory: root.path.join(format!("skill-{index}")),
+                root: root.clone(),
+            })
+            .collect();
+        SkillCatalog::from_parts(vec![root], skills, Vec::new())
+    }
+
+    fn rendered_rows(app: &App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, app))
+            .expect("surface should render");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn test_sessions(count: usize) -> Vec<SessionMetadata> {
+        (0..count)
+            .map(|index| SessionMetadata {
+                session_id: SessionId::from(format!("session-{index}")),
+                start_time: "2026-08-31T12:00:00Z".to_string(),
+                modified_time: format!("2026-08-31T12:{index:02}:00Z"),
+                summary: Some(format!("session-{index}")),
+                is_remote: false,
+            })
+            .collect()
     }
 
     #[test]
@@ -5544,6 +5596,200 @@ mod tests {
         );
         assert!(app.pending_approval().is_none());
         assert!(!app.picker_is_open());
+    }
+
+    #[tokio::test]
+    async fn approval_picker_remains_authoritative_until_fifo_resolution() {
+        let mut app = App::new(None);
+        let (first_sender, first_response) = tokio::sync::oneshot::channel();
+        let (second_sender, second_response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: "first".to_string(),
+            details: "first command".to_string(),
+            respond_to: first_sender,
+        });
+        app.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: "second".to_string(),
+            details: "second command".to_string(),
+            respond_to: second_sender,
+        });
+
+        assert_eq!(handle_key(&mut app, ctrl_key('k')), UiAction::None);
+        assert!(app.picker_is_open());
+        assert_eq!(
+            app.pending_approval()
+                .expect("front approval should remain pending")
+                .tool_name,
+            "first"
+        );
+
+        let request = app
+            .resolve_approval(ApprovalDecision::ApproveOnce)
+            .expect("first approval should resolve");
+        request
+            .respond_to
+            .send(ApprovalDecision::ApproveOnce)
+            .expect("first response receiver should remain open");
+        assert!(app.picker_is_open());
+        assert_eq!(
+            app.pending_approval()
+                .expect("second approval should advance to the front")
+                .tool_name,
+            "second"
+        );
+
+        let request = app
+            .resolve_approval(ApprovalDecision::Deny)
+            .expect("second approval should resolve");
+        request
+            .respond_to
+            .send(ApprovalDecision::Deny)
+            .expect("second response receiver should remain open");
+        assert!(!app.picker_is_open());
+        assert_eq!(
+            first_response.await.expect("first response should arrive"),
+            ApprovalDecision::ApproveOnce
+        );
+        assert_eq!(
+            second_response
+                .await
+                .expect("second response should arrive"),
+            ApprovalDecision::Deny
+        );
+    }
+
+    #[test]
+    fn long_picker_titles_show_position_and_keep_five_rows() {
+        let mut tools = App::new(None);
+        tools.open_tool_picker();
+        let rows = rendered_rows(&tools, 100, 16);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains(&format!("Select tools (1 of {TOOL_COUNT}):"))));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("[✓]") || row.contains("[ ]"))
+                .count(),
+            MAX_PICKER_ROWS
+        );
+
+        let mut skills = App::new(None);
+        skills.set_skill_catalog(long_skill_catalog(6));
+        skills.open_skill_picker();
+        let rows = rendered_rows(&skills, 100, 16);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Select skills (1 of 6):")));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("[✓]") || row.contains("[ ]"))
+                .count(),
+            MAX_PICKER_ROWS
+        );
+
+        handle_key(&mut skills, key(KeyCode::Down, KeyEventKind::Press));
+        let rows = rendered_rows(&skills, 100, 16);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Select skills (2 of 6):")));
+    }
+
+    #[test]
+    fn five_hundred_sessions_cover_shared_window_navigation_and_arrows() {
+        let mut app = App::new(None);
+        app.set_sessions(test_sessions(500));
+
+        let rows = rendered_rows(&app, 120, 18);
+        assert!(rows.iter().any(|row| row.contains("(1 of 500)")));
+        let option_rows = rows
+            .iter()
+            .filter(|row| row.contains("session-"))
+            .collect::<Vec<_>>();
+        assert_eq!(option_rows.len(), MAX_PICKER_ROWS);
+        assert!(option_rows.iter().any(|row| row.contains("❯")));
+        assert!(option_rows.iter().any(|row| row.contains("↓")));
+
+        for _ in 0..6 {
+            handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        }
+        handle_key(&mut app, key(KeyCode::Up, KeyEventKind::Press));
+        let rows = rendered_rows(&app, 120, 18);
+        let option_rows = rows
+            .iter()
+            .filter(|row| row.contains("session-"))
+            .collect::<Vec<_>>();
+        assert!(option_rows.iter().any(|row| row.contains("↑")));
+        assert!(option_rows.iter().any(|row| row.contains("↓")));
+        assert!(option_rows.iter().any(|row| row.contains("❯")));
+
+        app.selected_item = 0;
+        app.picker_window_start = 0;
+        handle_key(&mut app, key(KeyCode::Up, KeyEventKind::Press));
+        assert_eq!(app.selected_item, 499);
+        assert_eq!(app.picker_window_start, 495);
+        let rows = rendered_rows(&app, 120, 18);
+        let option_rows = rows
+            .iter()
+            .filter(|row| row.contains("session-"))
+            .collect::<Vec<_>>();
+        assert!(option_rows.iter().any(|row| row.contains("❯")));
+        assert!(!option_rows.iter().any(|row| row.contains("↓")));
+
+        handle_key(&mut app, key(KeyCode::Down, KeyEventKind::Press));
+        assert_eq!(app.selected_item, 0);
+        assert_eq!(app.picker_window_start, 0);
+
+        handle_key(&mut app, key(KeyCode::PageDown, KeyEventKind::Press));
+        assert_eq!(app.selected_item, MAX_PICKER_ROWS);
+        handle_key(&mut app, key(KeyCode::PageUp, KeyEventKind::Press));
+        assert_eq!(app.selected_item, 0);
+
+        handle_key(&mut app, key(KeyCode::Char('j'), KeyEventKind::Press));
+        assert_eq!(app.selected_item, 1);
+        handle_key(&mut app, ctrl_key('p'));
+        assert_eq!(app.selected_item, 0);
+        handle_key(&mut app, ctrl_key('n'));
+        assert_eq!(app.selected_item, 1);
+        handle_key(&mut app, key(KeyCode::Char('k'), KeyEventKind::Press));
+        assert_eq!(app.selected_item, 0);
+    }
+
+    #[test]
+    fn numeric_selection_and_multi_select_toggle_are_immediate() {
+        let mut sessions = App::new(None);
+        sessions.set_sessions(test_sessions(3));
+        assert_eq!(
+            handle_key(&mut sessions, key(KeyCode::Char('2'), KeyEventKind::Press)),
+            UiAction::Resume(SessionId::from("session-1"))
+        );
+        assert!(!sessions.picker_is_open());
+
+        let mut tools = App::new(None);
+        tools.open_tool_picker();
+        assert!(tools.picker_toolset.contains_at(0));
+        assert_eq!(
+            handle_key(&mut tools, key(KeyCode::Char('1'), KeyEventKind::Press)),
+            UiAction::None
+        );
+        assert!(!tools.picker_toolset.contains_at(0));
+        assert!(tools.picker_is_open());
+    }
+
+    #[test]
+    fn picker_rendering_handles_zero_and_one_cell_viewports_without_history_rows() {
+        let mut app = App::new(None);
+        app.set_sessions(test_sessions(1));
+
+        for (width, height) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let mut terminal =
+                Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+            terminal
+                .draw(|frame| draw(frame, &app))
+                .expect("narrow picker should render");
+        }
+        assert!(app.entries().is_empty());
     }
 
     #[test]
@@ -7427,7 +7673,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_picker_can_open_while_an_approval_is_pending_but_not_apply_while_busy() {
+    fn approval_picker_blocks_tool_replacement_and_busy_tool_apply_stays_guarded() {
         let mut app = App::new(None);
         let (respond_to, _response) = tokio::sync::oneshot::channel();
         app.enqueue_approval(crate::permissions::ApprovalRequest {
@@ -7437,34 +7683,35 @@ mod tests {
             respond_to,
         });
 
-        assert_eq!(handle_key(&mut app, ctrl_key('k')), UiAction::LoadTools);
-        app.open_tool_picker();
-        assert!(app.toolset_change_is_blocked());
+        assert_eq!(handle_key(&mut app, ctrl_key('k')), UiAction::None);
+        assert!(app.picker_is_open());
         assert_eq!(
-            handle_key(&mut app, key(KeyCode::Char(' '), KeyEventKind::Press)),
-            UiAction::None
+            app.pending_approval()
+                .expect("approval should remain at the front")
+                .tool_name,
+            "bash"
         );
-        assert!(app.modal_is_open());
-        assert_eq!(
-            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
-            UiAction::None
-        );
-        assert!(!app.modal_is_open());
-
         app.open_tool_picker();
-        assert!(matches!(
+        assert_eq!(
             handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::Approval(crate::permissions::ApprovalDecision::ApproveOnce)
+        );
+        let request = app
+            .resolve_approval(crate::permissions::ApprovalDecision::ApproveOnce)
+            .expect("approval should resolve from its own picker");
+        let _ = request
+            .respond_to
+            .send(crate::permissions::ApprovalDecision::ApproveOnce);
+        assert!(!app.picker_is_open());
+
+        let mut busy = App::new(None);
+        busy.status.busy = true;
+        busy.open_tool_picker();
+        assert!(matches!(
+            handle_key(&mut busy, key(KeyCode::Enter, KeyEventKind::Press)),
             UiAction::ApplyToolset(_)
         ));
-
-        app.pending_approvals.clear();
-        app.status.busy = true;
-        app.open_tool_picker();
-        assert!(matches!(
-            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
-            UiAction::ApplyToolset(_)
-        ));
-        assert!(app.toolset_change_is_blocked());
+        assert!(busy.toolset_change_is_blocked());
     }
 
     #[test]
