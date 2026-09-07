@@ -138,6 +138,166 @@ fn startup_surface_reflows_orders_metadata_and_bounds_overflow() {
 }
 
 #[test]
+fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
+    let app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(20, 10)).expect("test terminal");
+
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("constrained startup frame should draw");
+
+    let output = terminal_text(&terminal);
+    assert!(output.contains("Version"));
+    assert!(output.contains("Model"));
+    assert!(output.contains("more in /status"), "{output:?}");
+}
+
+#[test]
+fn startup_surface_uses_display_model_label_active_counts_and_measured_layouts() {
+    let mut app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    app.preload_models(vec![github_copilot_sdk::types::Model {
+        id: "gpt-5".to_string(),
+        name: "GPT-5 for Teams".to_string(),
+        ..Default::default()
+    }]);
+    app.set_toolset(picopilot::toolset::Toolset::shell_only());
+
+    let mut wide = Terminal::new(TestBackend::new(80, 14)).expect("wide terminal");
+    wide.draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("wide startup frame should draw");
+    let wide_text = terminal_text(&wide);
+    assert!(wide_text.contains("[pi]"));
+    assert!(wide_text.contains("GPT-5 for Teams"));
+    assert!(wide_text.contains("Tools: 1"));
+
+    let mut narrow = Terminal::new(TestBackend::new(3, 14)).expect("narrow terminal");
+    narrow
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("narrow startup frame should draw");
+    let narrow_text = terminal_text(&narrow);
+    assert!(!narrow_text.contains("[pi]"));
+    assert!(narrow_text.contains("Pic"));
+}
+
+#[test]
+fn startup_surface_shows_a_fixed_nonzero_selected_skill_count() {
+    let directory =
+        std::env::temp_dir().join(format!("picopilot-startup-skills-{}", std::process::id()));
+    let skill_directory = directory
+        .join(".agents")
+        .join("skills")
+        .join("release-check");
+    std::fs::create_dir_all(&skill_directory).expect("skill directory");
+    std::fs::write(
+        skill_directory.join("SKILL.md"),
+        "---\nname: release-check\ndescription: Release validation\n---\n",
+    )
+    .expect("skill fixture");
+
+    let catalog = picopilot::skills::SkillCatalog::discover(&directory);
+    let mut app = App::new_with_working_directory(Some("gpt-5".to_string()), &directory);
+    app.set_toolset(picopilot::toolset::Toolset::shell_only());
+    app.set_skill_catalog(catalog.clone());
+    app.set_skill_selection(picopilot::skills::SkillSelection::from_names(
+        &catalog,
+        ["release-check"],
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("test terminal");
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("startup frame should draw");
+
+    assert!(terminal_text(&terminal).contains("Skills: 1"));
+    std::fs::remove_dir_all(directory).expect("skill fixture cleanup");
+}
+
+#[test]
+fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
+    let app = App::new_with_working_directory(
+        Some("界e\u{301}👩‍💻-with-a-long-name".to_string()),
+        std::path::Path::new("/workspace/very-long-project-name"),
+    );
+    let mut terminal = Terminal::new(TestBackend::new(20, 30)).expect("test terminal");
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("narrow startup frame should draw");
+    let narrow = terminal_text(&terminal);
+    assert!(narrow.contains('界'));
+    assert!(narrow.contains('e'));
+    assert!(narrow.contains("👩‍💻"));
+
+    terminal
+        .resize(ratatui::layout::Rect::new(0, 0, 80, 18))
+        .expect("resize");
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("wide startup frame should draw");
+    let wide = terminal_text(&terminal);
+    assert!(wide.contains("[pi]"));
+    assert!(wide.contains("Model:"));
+}
+
+#[test]
+fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_history() {
+    for (input, expected) in [
+        ("/status", picopilot::tui::UiAction::LoadStatus),
+        ("/usage", picopilot::tui::UiAction::LoadUsageCommand),
+        (
+            "/fleet inspect",
+            picopilot::tui::UiAction::StartFleet("inspect".to_string()),
+        ),
+    ] {
+        let mut app = App::new(None);
+        for character in input.chars() {
+            picopilot::tui::handle_key(
+                &mut app,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(
+            picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            expected
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).expect("test terminal");
+        terminal
+            .draw(|frame| picopilot::tui::draw(frame, &app))
+            .expect("post-submit draw");
+        assert!(!terminal_text(&terminal).contains("Picopilot"));
+        assert!(app.entries().is_empty());
+    }
+
+    let mut rejected = App::new(None);
+    for character in "/usage extra".chars() {
+        picopilot::tui::handle_key(
+            &mut rejected,
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+        );
+    }
+    assert!(matches!(
+        picopilot::tui::handle_key(
+            &mut rejected,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ),
+        picopilot::tui::UiAction::LocalCommandError(_)
+    ));
+    let mut quit = App::new(None);
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut quit,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        ),
+        picopilot::tui::UiAction::Quit
+    );
+    assert!(quit.entries().is_empty());
+}
+
+#[test]
 fn startup_surface_is_not_restored_for_new_or_resumed_conversations() {
     let mut app = App::new(None);
     app.reset_for_new_conversation();

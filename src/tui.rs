@@ -3741,7 +3741,8 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
         .map(|(label, value)| display_width(label) + 2 + display_width(value))
         .max()
         .unwrap_or(0);
-    let mut lines = if width >= identity_width + metadata_width + 4 {
+    let two_column = width >= identity_width + metadata_width + 4;
+    let mut lines = if two_column {
         let rows = metadata.len().max(2);
         let mut lines = Vec::with_capacity(rows + 1);
         for index in 0..rows {
@@ -3785,9 +3786,9 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
                 .fg(palette::CLAUDE)
                 .add_modifier(Modifier::BOLD),
         )));
-        for (label, value) in metadata {
+        for (label, value) in &metadata {
             let value_width = width.saturating_sub(display_width(label) + 2).max(1);
-            for (index, chunk) in wrap_startup_value(&value, value_width).iter().enumerate() {
+            for (index, chunk) in wrap_startup_value(value, value_width).iter().enumerate() {
                 if index == 0 {
                     lines.push(startup_metadata_line(label, chunk));
                 } else {
@@ -3801,19 +3802,65 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
         lines
     };
 
-    let content_rows = available_rows;
-    if lines.len() > content_rows {
-        lines.truncate(content_rows);
-        if let Some(last) = lines.last_mut() {
-            *last = Line::from(Span::styled(
+    if lines.len() > available_rows {
+        let metadata_lines = startup_metadata_lines(&metadata, width);
+        let metadata_line_count = metadata_lines.len();
+        let identity_rows = if !two_column {
+            if display_width(wordmark) <= width {
+                2
+            } else {
+                1
+            }
+        } else {
+            0
+        };
+        let metadata_capacity = available_rows.saturating_sub(identity_rows);
+        let keep_identity = metadata_capacity >= 2;
+        let visible_metadata_rows = if keep_identity {
+            metadata_capacity.saturating_sub(1)
+        } else {
+            available_rows.saturating_sub(1)
+        };
+
+        lines = if keep_identity {
+            lines.into_iter().take(identity_rows).collect()
+        } else {
+            Vec::new()
+        };
+        lines.extend(metadata_lines.into_iter().take(visible_metadata_rows));
+        if visible_metadata_rows > 0 && visible_metadata_rows < metadata_line_count {
+            lines.push(Line::from(Span::styled(
                 "more in /status",
                 Style::default()
                     .fg(palette::SUBTLE)
                     .add_modifier(Modifier::DIM),
-            ));
+            )));
         }
     }
     lines
+}
+
+fn startup_metadata_lines(metadata: &[(&str, String)], width: usize) -> Vec<Line<'static>> {
+    metadata
+        .iter()
+        .flat_map(|(label, value)| {
+            let value_width = width.saturating_sub(display_width(label) + 2).max(1);
+            wrap_startup_value(value, value_width)
+                .into_iter()
+                .enumerate()
+                .map(|(index, chunk)| {
+                    if index == 0 {
+                        startup_metadata_line(label, &chunk)
+                    } else {
+                        Line::from(vec![
+                            Span::raw(" ".repeat(display_width(label) + 2)),
+                            Span::styled(chunk, Style::default().fg(palette::TEXT)),
+                        ])
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn startup_metadata_line(label: &str, value: &str) -> Line<'static> {
@@ -5860,6 +5907,12 @@ mod tests {
             .collect()
     }
 
+    fn post_startup_app(model: Option<String>) -> App {
+        let mut app = App::new(model);
+        app.dismiss_startup_surface();
+        app
+    }
+
     fn terminal_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
@@ -6043,7 +6096,7 @@ mod tests {
 
     #[test]
     fn reasoning_is_collapsed_by_default_and_expands_from_the_canonical_entry() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::Reasoning {
             reasoning_id: "reasoning-render".to_string(),
             content: "private\u{1b}[31m reasoning".to_string(),
@@ -6064,7 +6117,7 @@ mod tests {
 
     #[test]
     fn committed_transcript_expands_in_the_mutable_view_without_new_commits() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::Reasoning {
             reasoning_id: "reasoning-committed".to_string(),
             content: "full reasoning body".to_string(),
@@ -6166,7 +6219,7 @@ mod tests {
 
     #[test]
     fn diagnostics_toggle_in_the_mutable_view_without_committing_or_duplicating() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.add_diagnostic("internal diagnostic detail");
         let mut screen = ScreenModel::default();
         let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
@@ -6203,7 +6256,7 @@ mod tests {
 
     #[test]
     fn subagents_render_as_task_calls_with_metrics_and_without_identity_prefixes() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::SubagentStarted {
             name: "explore".to_string(),
             description: "Inspect the repository".to_string(),
@@ -6235,7 +6288,7 @@ mod tests {
 
     #[test]
     fn subagent_terminal_states_use_neutral_summaries_and_omit_missing_metrics() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::SubagentStarted {
             name: "failed-task".to_string(),
             description: "Fail the task".to_string(),
@@ -6282,13 +6335,13 @@ mod tests {
 
     #[test]
     fn notices_use_shared_dot_rows_and_diagnostics_remain_opt_in() {
-        let mut hidden = App::new(None);
+        let mut hidden = post_startup_app(None);
         hidden.add_diagnostic("internal detail".to_string());
         assert!(!rendered_rows(&hidden, 100, 14)
             .iter()
             .any(|row| row.contains("internal detail")));
 
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.show_internals = true;
         app.add_diagnostic("internal detail".to_string());
         app.apply(EventUpdate::Banner {
@@ -6417,7 +6470,7 @@ mod tests {
 
     #[test]
     fn usage_is_static_transcript_output_without_a_picker_overlay() {
-        let mut app = App::new(Some("gpt-5".to_string()));
+        let mut app = post_startup_app(Some("gpt-5".to_string()));
         app.set_usage(
             UsageMetricsSnapshot {
                 total_nano_aiu: Some(1.0),
@@ -6986,7 +7039,7 @@ mod tests {
 
     #[test]
     fn completions_are_below_the_rule_borderless_capped_and_color_selected() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.completion = Some(super::CompletionState {
             candidates: (0..8)
                 .map(|index| super::CompletionCandidate {
@@ -7935,7 +7988,7 @@ mod tests {
 
     #[test]
     fn bottom_follow_shows_the_last_word_wrapped_response_row() {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::AssistantMessage {
             message_id: "message-long".to_string(),
             content: [
@@ -8161,10 +8214,8 @@ mod tests {
 
     #[test]
     fn frame_has_no_persistent_status_row_or_status_metadata() {
-        let mut app = App::new_with_working_directory(
-            Some("gpt-5".to_string()),
-            Path::new("C:\\dev\\picopilot"),
-        );
+        let mut app = post_startup_app(Some("gpt-5".to_string()));
+        app.working_directory = PathBuf::from("C:\\dev\\picopilot");
         app.set_reasoning_effort(Some("high".to_string()));
 
         let rows = rendered_rows(&app, 100, 18);
@@ -9690,7 +9741,7 @@ mod tests {
 
     #[test]
     fn main_window_renders_a_borderless_transcript_and_prompt_footer() {
-        let app = App::new(None);
+        let app = post_startup_app(None);
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
 
         terminal
