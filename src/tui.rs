@@ -2888,7 +2888,12 @@ async fn run_loop(
             },
             terminal_event = terminal_events.next() => match terminal_event {
                 Some(Ok(terminal_event)) => {
-                    state_changed |= process_terminal_events(&mut app, &mut runtime, &mut events, Some(terminal_event)).await?;
+                    state_changed |= process_terminal_events(
+                        &mut app,
+                        Some(&mut runtime),
+                        Some(&mut events),
+                        Some(terminal_event),
+                    ).await?;
                 }
                 Some(Err(error)) => return Err(error),
                 None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal event stream closed")),
@@ -2900,6 +2905,10 @@ async fn run_loop(
         }
     }
 
+    finish_run_loop(terminal)
+}
+
+fn finish_run_loop<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     cleanup_after_quit(terminal)
 }
 
@@ -2949,8 +2958,8 @@ fn consume_terminal_event(app: &mut App, event: Event) -> Option<UiAction> {
 }
 async fn process_terminal_events(
     app: &mut App,
-    runtime: &mut AppRuntime,
-    events: &mut EventSubscription,
+    mut runtime: Option<&mut AppRuntime>,
+    mut events: Option<&mut EventSubscription>,
     first_event: Option<Event>,
 ) -> io::Result<bool> {
     let mut first_event = first_event;
@@ -2966,9 +2975,20 @@ async fn process_terminal_events(
         };
         state_changed = true;
 
+        if action == UiAction::Quit {
+            app.quit();
+            continue;
+        }
+        let runtime = runtime
+            .as_deref_mut()
+            .ok_or_else(|| io::Error::other("runtime is required for this terminal action"))?;
+        let events = events.as_deref_mut().ok_or_else(|| {
+            io::Error::other("event subscription is required for this terminal action")
+        })?;
+
         match action {
             UiAction::None => {}
-            UiAction::Quit => app.quit(),
+            UiAction::Quit => unreachable!("quit actions are handled before runtime dispatch"),
             UiAction::Approval(decision) => {
                 if let Some(request) = app.resolve_approval(decision) {
                     let _ = request.respond_to.send(decision);
@@ -3296,6 +3316,19 @@ async fn process_terminal_events(
         }
     }
     Ok(state_changed)
+}
+
+#[cfg(test)]
+async fn run_loop_for_test(
+    terminal: &mut Terminal<ratatui::backend::TestBackend>,
+    app: &mut App,
+    first_event: Event,
+) -> io::Result<()> {
+    process_terminal_events(app, None, None, Some(first_event)).await?;
+    if app.should_quit() {
+        finish_run_loop(terminal)?;
+    }
+    Ok(())
 }
 
 async fn recover_connection(
@@ -5817,12 +5850,12 @@ mod tests {
         builtin_spinner_verb, chat_lines_at_width_with_clock, clear_visible_viewport,
         consume_terminal_event, displayed_reasoning_effort, draw, draw_live_chat, format_elapsed,
         format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
-        model_picker_row_for, render_spinner_line_for_platform, run_terminal_startup,
-        send_with_fleet_fallback, skill_selection_for_invocation, spinner_frames,
-        spinner_message_spans, spinner_platform_for, spinner_stall_intensity, thinking_status, App,
-        ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode, SpinnerPlatform,
-        TerminalCapabilities, TerminalStartupOperationAdapter, UiAction, MAX_PICKER_ROWS,
-        SPINNER_STATUS_AFTER_MS,
+        model_picker_row_for, render_spinner_line_for_platform, run_loop_for_test,
+        run_terminal_startup, send_with_fleet_fallback, skill_selection_for_invocation,
+        spinner_frames, spinner_message_spans, spinner_platform_for, spinner_stall_intensity,
+        thinking_status, App, ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode,
+        SpinnerPlatform, TerminalCapabilities, TerminalStartupOperationAdapter, UiAction,
+        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -6058,6 +6091,33 @@ mod tests {
                 "restore"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_exits_the_event_loop_and_cleans_the_startup_backend_without_transcript_commits()
+    {
+        let mut app = App::new(None);
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("startup frame should draw");
+        assert!(terminal_rows(&terminal)
+            .iter()
+            .any(|row| row.contains("Picopilot")));
+
+        let screen = ScreenModel::default();
+        run_loop_for_test(&mut terminal, &mut app, Event::Key(ctrl_key('c')))
+            .await
+            .expect("Ctrl-C should exit the loop cleanly");
+
+        assert!(app.should_quit());
+        assert!(terminal_rows(&terminal)
+            .iter()
+            .all(|row| row == &" ".repeat(80)));
+        assert!(app.entries().is_empty());
+        assert!(app.take_screen_changes().is_empty());
+        assert_eq!(screen.committed_count(), 0);
+        assert!(screen.live_entries().is_empty());
     }
 
     #[test]

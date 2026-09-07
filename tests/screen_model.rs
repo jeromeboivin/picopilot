@@ -61,14 +61,32 @@ fn row_containing(terminal: &Terminal<TestBackend>, text: &str) -> u16 {
 fn cell_at_text(terminal: &Terminal<TestBackend>, text: &str) -> ratatui::buffer::Cell {
     let buffer = terminal.backend().buffer();
     for y in 0..buffer.area.height {
-        let row = (0..buffer.area.width)
-            .map(|x| buffer[(x, y)].symbol())
-            .collect::<String>();
-        if let Some(x) = row.find(text) {
-            return buffer[(x as u16, y)].clone();
+        for start in 0..buffer.area.width {
+            let mut rendered = String::new();
+            for x in start..buffer.area.width {
+                rendered.push_str(buffer[(x, y)].symbol());
+                if rendered == text {
+                    return buffer[(start, y)].clone();
+                }
+                if !text.starts_with(&rendered) {
+                    break;
+                }
+            }
         }
     }
     panic!("expected buffer cell for {text:?}");
+}
+
+fn buffer_row_display_width(terminal: &Terminal<TestBackend>, row: u16) -> usize {
+    let buffer = terminal.backend().buffer();
+    let mut width = 0;
+    let mut column = 0;
+    while column < buffer.area.width {
+        let cell_width = UnicodeWidthStr::width(buffer[(column, row)].symbol()).max(1);
+        width += cell_width;
+        column = column.saturating_add(cell_width as u16);
+    }
+    width
 }
 
 fn type_input(app: &mut App, input: &str) {
@@ -183,10 +201,29 @@ fn startup_surface_reflows_orders_metadata_and_bounds_overflow() {
 
 #[test]
 fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
-    let app = App::new_with_working_directory(
+    let directory =
+        std::env::temp_dir().join(format!("picopilot-startup-pressure-{}", std::process::id()));
+    let skill_directory = directory
+        .join(".agents")
+        .join("skills")
+        .join("release-check");
+    std::fs::create_dir_all(&skill_directory).expect("skill directory");
+    std::fs::write(
+        skill_directory.join("SKILL.md"),
+        "---\nname: release-check\ndescription: Release validation\n---\n",
+    )
+    .expect("skill fixture");
+    let catalog = picopilot::skills::SkillCatalog::discover(&directory);
+    let mut app = App::new_with_working_directory(
         Some("gpt-5".to_string()),
         std::path::Path::new("/workspace/picopilot"),
     );
+    app.set_toolset(picopilot::toolset::Toolset::shell_only());
+    app.set_skill_catalog(catalog.clone());
+    app.set_skill_selection(picopilot::skills::SkillSelection::from_names(
+        &catalog,
+        ["release-check"],
+    ));
     let terminal = draw_startup(&app, 20, 10);
 
     assert!(terminal_text(&terminal).contains("Version"));
@@ -198,14 +235,21 @@ fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
     assert!(row_containing(&terminal, "Version:") < row_containing(&terminal, "Model:"));
     assert!(row_containing(&terminal, "Model:") < row_containing(&terminal, "more in /status"));
     let rows = buffer_rows(&terminal);
+    let hint_row = row_containing(&terminal, "more in /status") as usize;
     assert_eq!(
-        rows[row_containing(&terminal, "more in /status") as usize + 1],
+        rows[hint_row + 1],
         " ".repeat(20),
         "exactly one blank row should separate the constrained surface from the prompt"
+    );
+    assert!(
+        rows[hint_row + 2].contains('─'),
+        "the prompt border should immediately follow the single blank row"
     );
     let overflow = cell_at_text(&terminal, "more in /status");
     assert_eq!(overflow.fg, palette::SUBTLE);
     assert!(overflow.modifier.contains(Modifier::DIM));
+
+    std::fs::remove_dir_all(directory).expect("skill fixture cleanup");
 }
 
 #[test]
@@ -396,6 +440,11 @@ fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
         .iter()
         .filter(|row| row.contains("Model:") || row.contains("e\u{301}") || row.contains("👩‍💻"))
         .collect::<Vec<_>>();
+    assert!(narrow
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.contains("Model:") || row.contains("e\u{301}") || row.contains("👩‍💻"))
+        .all(|(row, _)| buffer_row_display_width(&terminal, row as u16) <= 20));
     assert!(model_rows.iter().any(|row| row.contains("e\u{301}")));
     assert!(model_rows.iter().any(|row| row.contains("👩‍💻")));
     assert!(model_rows
@@ -409,7 +458,9 @@ fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
         .find(|row| row.contains("👩‍💻"))
         .expect("ZWJ emoji should render on a continuation row");
     assert!(continuation.starts_with("       "));
-    assert_eq!(cell_at_text(&terminal, "👩‍💻").fg, palette::TEXT);
+    let emoji_cell = cell_at_text(&terminal, "👩‍💻");
+    assert_eq!(emoji_cell.symbol(), "👩‍💻");
+    assert_eq!(emoji_cell.fg, palette::TEXT);
 
     terminal
         .resize(ratatui::layout::Rect::new(0, 0, 120, 18))
