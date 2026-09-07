@@ -17,7 +17,7 @@ use crossterm::event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures_util::StreamExt;
 use pulldown_cmark::{Alignment, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -2592,6 +2592,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_frame(frame, app, None, 0);
 }
 
+pub fn cleanup_after_quit<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
+    terminal.clear()
+}
+
 fn draw_with_screen(
     frame: &mut Frame,
     app: &App,
@@ -2896,7 +2900,7 @@ async fn run_loop(
         }
     }
 
-    Ok(())
+    cleanup_after_quit(terminal)
 }
 
 async fn refresh_status_cost(

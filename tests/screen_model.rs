@@ -9,7 +9,7 @@ use picopilot::screen_model::{
     ToolHeaderPayload, ToolPlatform, ToolProgressKind, ToolProgressPayload, ToolResultPayload,
     ToolResultState, TranscriptPayload, FIXED_LIVE_REGION_HEIGHT,
 };
-use picopilot::tui::{App, ChatEntry};
+use picopilot::tui::{cleanup_after_quit, App, ChatEntry};
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -192,7 +192,17 @@ fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
     assert!(terminal_text(&terminal).contains("Version"));
     assert!(terminal_text(&terminal).contains("Model"));
     assert!(!terminal_text(&terminal).contains("Project"));
+    assert!(!terminal_text(&terminal).contains("Tools"));
+    assert!(!terminal_text(&terminal).contains("Skills"));
     assert!(terminal_text(&terminal).contains("more in /status"));
+    assert!(row_containing(&terminal, "Version:") < row_containing(&terminal, "Model:"));
+    assert!(row_containing(&terminal, "Model:") < row_containing(&terminal, "more in /status"));
+    let rows = buffer_rows(&terminal);
+    assert_eq!(
+        rows[row_containing(&terminal, "more in /status") as usize + 1],
+        " ".repeat(20),
+        "exactly one blank row should separate the constrained surface from the prompt"
+    );
     let overflow = cell_at_text(&terminal, "more in /status");
     assert_eq!(overflow.fg, palette::SUBTLE);
     assert!(overflow.modifier.contains(Modifier::DIM));
@@ -374,7 +384,7 @@ fn startup_surface_shows_a_fixed_nonzero_selected_skill_count() {
 #[test]
 fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
     let app = App::new_with_working_directory(
-        Some("界e\u{301}👩‍💻-with-a-long-name".to_string()),
+        Some("1234567890123e\u{301}👩‍💻ZZ".to_string()),
         std::path::Path::new("/workspace/very-long-project-name"),
     );
     let mut terminal = Terminal::new(TestBackend::new(20, 30)).expect("test terminal");
@@ -382,10 +392,24 @@ fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
         .draw(|frame| picopilot::tui::draw(frame, &app))
         .expect("narrow startup frame should draw");
     let narrow = buffer_rows(&terminal);
-    assert!(narrow.iter().any(|row| row.contains('界')));
-    assert!(narrow.iter().any(|row| row.contains('e')));
-    assert!(narrow.iter().any(|row| row.contains("👩‍💻")));
-    assert!(narrow.iter().all(|row| row.is_char_boundary(row.len())));
+    let model_rows = narrow
+        .iter()
+        .filter(|row| row.contains("Model:") || row.contains("e\u{301}") || row.contains("👩‍💻"))
+        .collect::<Vec<_>>();
+    assert!(model_rows.iter().any(|row| row.contains("e\u{301}")));
+    assert!(model_rows.iter().any(|row| row.contains("👩‍💻")));
+    assert!(model_rows
+        .iter()
+        .all(|row| !row.contains('\u{301}') || row.contains("e\u{301}")));
+    assert!(model_rows
+        .iter()
+        .all(|row| !row.contains('\u{200d}') || row.contains("👩‍💻")));
+    let continuation = model_rows
+        .iter()
+        .find(|row| row.contains("👩‍💻"))
+        .expect("ZWJ emoji should render on a continuation row");
+    assert!(continuation.starts_with("       "));
+    assert_eq!(cell_at_text(&terminal, "👩‍💻").fg, palette::TEXT);
 
     terminal
         .resize(ratatui::layout::Rect::new(0, 0, 120, 18))
@@ -450,7 +474,7 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
     );
     assert!(terminal_text(&draw_startup(&empty_fleet, 80, 14)).contains("Picopilot"));
     let mut quit = App::new(None);
-    let before_quit = draw_startup(&quit, 80, 14);
+    let mut before_quit = draw_startup(&quit, 80, 14);
     assert!(terminal_text(&before_quit).contains("Picopilot"));
     assert_eq!(
         picopilot::tui::handle_key(
@@ -461,9 +485,10 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
     );
     quit.quit();
     assert!(quit.should_quit());
+    cleanup_after_quit(&mut before_quit).expect("quit cleanup should clear the live terminal");
+    assert!(!terminal_text(&before_quit).contains("Picopilot"));
     assert!(quit.entries().is_empty());
     assert!(quit.take_screen_changes().is_empty());
-    assert!(terminal_text(&draw_startup(&quit, 80, 14)).contains("Picopilot"));
 }
 
 #[test]
