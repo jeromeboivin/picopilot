@@ -2656,7 +2656,7 @@ fn clear_visible_viewport<W: io::Write>(writer: &mut W) -> io::Result<()> {
     crossterm::execute!(
         writer,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-        crossterm::cursor::MoveToColumn(0),
+        crossterm::cursor::MoveTo(0, 0),
         crossterm::style::Print("\n"),
     )
 }
@@ -5827,7 +5827,7 @@ mod tests {
 
         clear_visible_viewport(&mut output).expect("visible reset should write");
 
-        assert_eq!(output, b"\x1b[2J\x1b[1G\n");
+        assert_eq!(output, b"\x1b[2J\x1b[1;1H\n");
         assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 1);
         assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[3J"));
         assert!(!output.windows(6).any(|bytes| bytes == b"\x1b[?1049h"));
