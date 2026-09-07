@@ -4,15 +4,16 @@ use crate::events::{
     UsageMetricsSnapshot, UsageSnapshot,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::future::Future;
+use std::future::{pending, Future};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use futures_util::StreamExt;
 use pulldown_cmark::{Alignment, Event as MarkdownEvent, Options, Parser, Tag, TagEnd};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -525,6 +526,29 @@ pub struct App {
     spinner_override: Option<String>,
     reduced_motion: bool,
     should_quit: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RunLoopSchedule {
+    animation_tick: Option<Duration>,
+    redraw: bool,
+}
+
+impl RunLoopSchedule {
+    fn for_app(app: &App, state_changed: bool) -> Self {
+        let animation_tick = (!app.reduced_motion && app.spinner_visible())
+            .then_some(Duration::from_millis(SPINNER_TICK_MS));
+        Self {
+            animation_tick,
+            redraw: state_changed || animation_tick.is_some(),
+        }
+    }
+
+    async fn wait_for_animation_tick(self) {
+        match self.animation_tick {
+            Some(tick) => tokio::time::sleep(tick).await,
+            None => pending().await,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2653,21 +2677,27 @@ async fn run_loop(
     let mut permission_requests_open = true;
     let mut usage_refresh = tokio::time::interval(Duration::from_secs(2));
     usage_refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut terminal_events = EventStream::new();
+    let mut state_changed = true;
 
     while !app.should_quit() {
         screen_model.set_verbose(app.transcript_expanded());
         for change in app.take_screen_changes() {
             screen_model.apply_change(terminal, change)?;
         }
-        let animation_elapsed_ms = app.animation_elapsed_ms();
-        app.advance_spinner(animation_elapsed_ms);
-        terminal
-            .draw(|frame| draw_with_screen(frame, &app, &mut screen_model, animation_elapsed_ms))?;
-        let tick = tokio::time::sleep(Duration::from_millis(50));
-        tokio::pin!(tick);
+        let schedule = RunLoopSchedule::for_app(&app, state_changed);
+        if schedule.redraw {
+            let animation_elapsed_ms = app.animation_elapsed_ms();
+            app.advance_spinner(animation_elapsed_ms);
+            terminal.draw(|frame| {
+                draw_with_screen(frame, &app, &mut screen_model, animation_elapsed_ms)
+            })?;
+        }
+        state_changed = false;
 
         tokio::select! {
-            result = events.recv() => match result {
+            result = events.recv() => {
+                match result {
                 Ok(event) => {
                     if let Some(update) = crate::events::event_update(&event) {
                         if let EventUpdate::ModelChanged { model } = &update {
@@ -2695,18 +2725,28 @@ async fn run_loop(
                         url: None,
                     }),
                 }
+                }
+                state_changed = true;
             },
             request = runtime.permission_requests.recv(), if permission_requests_open => match request {
-                Some(request) => app.enqueue_approval(request),
+                Some(request) => { app.enqueue_approval(request); state_changed = true; }
                 None => permission_requests_open = false,
             },
             _ = usage_refresh.tick() => {
                 refresh_status_cost(&mut app, &mut runtime, &mut events).await?;
+                state_changed = true;
             },
-            _ = &mut tick => {
-                process_terminal_events(&mut app, &mut runtime, &mut events).await?;
-                refresh_todos_if_requested(&mut app, &mut runtime, &mut events).await?;
+            terminal_event = terminal_events.next() => match terminal_event {
+                Some(Ok(terminal_event)) => {
+                    state_changed |= process_terminal_events(&mut app, &mut runtime, &mut events, Some(terminal_event)).await?;
+                }
+                Some(Err(error)) => return Err(error),
+                None => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal event stream closed")),
             },
+            _ = schedule.wait_for_animation_tick() => { state_changed = true; },
+        }
+        if state_changed {
+            refresh_todos_if_requested(&mut app, &mut runtime, &mut events).await?;
         }
     }
 
@@ -2741,26 +2781,40 @@ async fn refresh_status_cost(
     Ok(())
 }
 
+fn consume_terminal_event(app: &mut App, event: Event) -> Option<UiAction> {
+    match event {
+        Event::Resize(_, _) => Some(UiAction::None),
+        Event::Paste(pasted)
+            if app.picker.is_none()
+                && app.pending_approval().is_none()
+                && !app.blocked
+                && !app.reconnecting =>
+        {
+            app.insert_paste(&pasted);
+            Some(UiAction::None)
+        }
+        Event::Key(key) if key.kind == KeyEventKind::Press => Some(handle_key(app, key)),
+        _ => None,
+    }
+}
 async fn process_terminal_events(
     app: &mut App,
     runtime: &mut AppRuntime,
     events: &mut EventSubscription,
-) -> io::Result<()> {
-    while event::poll(Duration::ZERO)? {
-        let event = event::read()?;
-        let action = match event {
-            Event::Paste(pasted)
-                if app.picker.is_none()
-                    && app.pending_approval().is_none()
-                    && !app.blocked
-                    && !app.reconnecting =>
-            {
-                app.insert_paste(&pasted);
-                continue;
-            }
-            Event::Key(key) => handle_key(app, key),
-            _ => continue,
+    first_event: Option<Event>,
+) -> io::Result<bool> {
+    let mut first_event = first_event;
+    let mut state_changed = false;
+    loop {
+        let event = match first_event.take() {
+            Some(event) => event,
+            None if event::poll(Duration::ZERO)? => event::read()?,
+            None => break,
         };
+        let Some(action) = consume_terminal_event(app, event) else {
+            continue;
+        };
+        state_changed = true;
 
         match action {
             UiAction::None => {}
@@ -3091,7 +3145,7 @@ async fn process_terminal_events(
             }
         }
     }
-    Ok(())
+    Ok(state_changed)
 }
 
 async fn recover_connection(
@@ -5405,8 +5459,9 @@ mod rendering_fixtures;
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
     use github_copilot_sdk::rpc::FleetStartResult;
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
@@ -5417,13 +5472,13 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::{
-        builtin_spinner_verb, chat_lines_at_width_with_clock, displayed_reasoning_effort, draw,
-        draw_live_chat, format_elapsed, format_spinner_tokens, handle_key, model_context_label,
-        model_cost_label_for, model_picker_row_for, render_spinner_line_for_platform,
-        send_with_fleet_fallback, skill_selection_for_invocation, spinner_frames,
-        spinner_message_spans, spinner_platform_for, spinner_stall_intensity, thinking_status, App,
-        ChatEntry, ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction,
-        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
+        builtin_spinner_verb, chat_lines_at_width_with_clock, consume_terminal_event,
+        displayed_reasoning_effort, draw, draw_live_chat, format_elapsed, format_spinner_tokens,
+        handle_key, model_context_label, model_cost_label_for, model_picker_row_for,
+        render_spinner_line_for_platform, send_with_fleet_fallback, skill_selection_for_invocation,
+        spinner_frames, spinner_message_spans, spinner_platform_for, spinner_stall_intensity,
+        thinking_status, App, ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode,
+        SpinnerPlatform, UiAction, MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -5432,8 +5487,9 @@ mod tests {
     use crate::palette;
     use crate::permissions::{ApprovalCategory, ApprovalDecision, ApprovalRequest};
     use crate::screen_model::{
-        render_entry_lines, render_transcript_payload, terminal_options, LiveEntryKind,
-        ScreenChange, ScreenModel, TranscriptPayload,
+        render_entry_lines, render_transcript_payload, render_transcript_payload_with_clock,
+        terminal_options, LiveEntryKind, ScreenChange, ScreenModel, ToolCallState,
+        ToolHeaderPayload, ToolPlatform, TranscriptPayload,
     };
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -6664,6 +6720,66 @@ mod tests {
     }
 
     #[test]
+    fn accepted_paste_mutates_input_and_requests_redraw() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            consume_terminal_event(&mut app, Event::Paste("first\r\nsecond".to_string())),
+            Some(UiAction::None)
+        );
+        assert_eq!(app.input(), "first\nsecond");
+    }
+
+    #[test]
+    fn character_press_mutates_input_and_requests_redraw() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            consume_terminal_event(
+                &mut app,
+                Event::Key(key(KeyCode::Char('x'), KeyEventKind::Press))
+            ),
+            Some(UiAction::None)
+        );
+        assert_eq!(app.input(), "x");
+    }
+
+    #[test]
+    fn cursor_movement_with_no_action_still_requests_redraw() {
+        let mut app = App::new(None);
+        app.insert_paste("ab");
+
+        assert_eq!(
+            consume_terminal_event(
+                &mut app,
+                Event::Key(key(KeyCode::Left, KeyEventKind::Press))
+            ),
+            Some(UiAction::None)
+        );
+        assert_eq!(
+            consume_terminal_event(
+                &mut app,
+                Event::Key(key(KeyCode::Char('X'), KeyEventKind::Press))
+            ),
+            Some(UiAction::None)
+        );
+        assert_eq!(app.input(), "aXb");
+    }
+
+    #[test]
+    fn non_press_key_event_is_ignored_without_requesting_redraw() {
+        let mut app = App::new(None);
+
+        assert_eq!(
+            consume_terminal_event(
+                &mut app,
+                Event::Key(key(KeyCode::Char('x'), KeyEventKind::Release))
+            ),
+            None
+        );
+        assert!(app.input().is_empty());
+    }
+    #[test]
     fn pasted_multiline_text_is_one_normalized_prompt() {
         let mut app = App::new(None);
 
@@ -7011,6 +7127,82 @@ mod tests {
             agent_id: None,
         });
         assert_eq!(app.spinner_mode(), SpinnerMode::ToolUse);
+    }
+
+    #[test]
+    fn one_sampled_clock_drives_spinner_and_tool_phases_while_idle_and_reduced_motion_stop_motion()
+    {
+        let mut app = App::new(None);
+        app.add_user_message("inspect".to_string());
+        let start = app.spinner.started_at_ms;
+        let header = TranscriptPayload::ToolHeader(ToolHeaderPayload {
+            tool_call_id: "clock-tool".to_string(),
+            tool_name: "read".to_string(),
+            arguments: Some(json!({"file_path": "README.md"})),
+            agent_id: None,
+            started_at: 0,
+            state: ToolCallState::Running,
+            cwd: PathBuf::from("/workspace"),
+        });
+
+        let before_tick = start + 599;
+        let tick = start + 600;
+        let spinner_before =
+            render_spinner_line_for_platform(&app, 80, before_tick, SpinnerPlatform::WindowsLinux);
+        let spinner_at_tick =
+            render_spinner_line_for_platform(&app, 80, tick, SpinnerPlatform::WindowsLinux);
+        let tool_before = render_transcript_payload_with_clock(
+            LiveEntryKind::Tool,
+            &header,
+            80,
+            ToolPlatform::WindowsLinux,
+            before_tick,
+        );
+        let tool_at_tick = render_transcript_payload_with_clock(
+            LiveEntryKind::Tool,
+            &header,
+            80,
+            ToolPlatform::WindowsLinux,
+            tick,
+        );
+        assert_ne!(
+            spinner_before.to_string().chars().next(),
+            spinner_at_tick.to_string().chars().next()
+        );
+        assert_eq!(tool_before[1].to_string().chars().next(), Some('●'));
+        assert_eq!(tool_at_tick[1].to_string().chars().next(), Some(' '));
+
+        app.set_reduced_motion(true);
+        let reduced_at_tick =
+            render_spinner_line_for_platform(&app, 80, tick, SpinnerPlatform::WindowsLinux);
+        assert_eq!(reduced_at_tick.to_string().chars().next(), Some('●'));
+        assert_eq!(app.spinner.last_advance_at_ms, start);
+
+        let reduced_schedule = RunLoopSchedule::for_app(&app, false);
+        assert_eq!(reduced_schedule.animation_tick, None);
+        assert!(!reduced_schedule.redraw);
+
+        app.apply(EventUpdate::Idle);
+        app.advance_spinner(tick + 50);
+        assert!(!app.spinner_visible());
+        assert_eq!(app.spinner.last_advance_at_ms, 0);
+
+        let idle_schedule = RunLoopSchedule::for_app(&app, false);
+        assert_eq!(idle_schedule.animation_tick, None);
+        assert!(!idle_schedule.redraw);
+
+        let input_schedule = RunLoopSchedule::for_app(&app, true);
+        assert_eq!(input_schedule.animation_tick, None);
+        assert!(input_schedule.redraw);
+
+        let mut active = App::new(None);
+        active.add_user_message("inspect".to_string());
+        let active_schedule = RunLoopSchedule::for_app(&active, false);
+        assert_eq!(
+            active_schedule.animation_tick,
+            Some(Duration::from_millis(50))
+        );
+        assert!(active_schedule.redraw);
     }
 
     #[test]

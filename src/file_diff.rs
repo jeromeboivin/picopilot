@@ -387,4 +387,83 @@ mod tests {
         assert_eq!(rows[1].kind, DiffRowKind::Added);
         assert_eq!(rows[1].number, 1);
     }
+
+    #[test]
+    fn changed_hunk_keeps_exactly_three_context_lines_on_each_side() {
+        let old = (1..=10)
+            .map(|number| format!("line {number}\n"))
+            .collect::<String>();
+        let new = old.replace("line 5\n", "changed 5\n");
+
+        let diff = build_file_diff_with_budget(&old, &new, Duration::from_secs(5))
+            .expect("small diff should render");
+        assert_eq!(
+            diff.hunks[0]
+                .rows
+                .iter()
+                .map(|row| row.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "line 2",
+                "line 3",
+                "line 4",
+                "line 5",
+                "changed 5",
+                "line 6",
+                "line 7",
+                "line 8",
+            ]
+        );
+    }
+
+    #[test]
+    fn replacement_rows_keep_their_respective_old_and_new_counters() {
+        let diff = build_file_diff_with_budget(
+            "one\nold\nthree\n",
+            "one\nnew\nthree\n",
+            Duration::from_secs(5),
+        )
+        .expect("small diff should render");
+        let rows = &diff.hunks[0].rows;
+
+        assert_eq!(
+            (rows[1].kind, rows[1].number, rows[1].text.as_str()),
+            (DiffRowKind::Removed, 2, "old")
+        );
+        assert_eq!(
+            (rows[2].kind, rows[2].number, rows[2].text.as_str()),
+            (DiffRowKind::Added, 2, "new")
+        );
+    }
+
+    #[test]
+    fn word_highlight_threshold_keeps_exactly_point_four_and_omits_above_it() {
+        let at_boundary = inline_segments("abc!!", "abc??", Duration::from_secs(5))
+            .expect("boundary diff should complete")
+            .expect("a changed ratio of exactly 0.4 keeps word highlighting");
+        assert!(at_boundary.0.iter().any(|segment| segment.changed));
+        assert!(at_boundary.1.iter().any(|segment| segment.changed));
+
+        assert!(inline_segments("abc!!!", "abc???", Duration::from_secs(5))
+            .expect("above-boundary diff should complete")
+            .is_none());
+    }
+
+    #[test]
+    fn large_changed_file_has_no_row_count_cap() {
+        let old = (0..512)
+            .map(|number| format!("old {number}\n"))
+            .collect::<String>();
+        let new = (0..512)
+            .map(|number| format!("new {number}\n"))
+            .collect::<String>();
+
+        let diff = build_file_diff_with_budget(&old, &new, Duration::from_secs(5))
+            .expect("bounded input should produce a diff");
+        assert_eq!((diff.removals, diff.additions), (512, 512));
+        assert_eq!(
+            diff.hunks.iter().map(|hunk| hunk.rows.len()).sum::<usize>(),
+            1_024
+        );
+    }
 }

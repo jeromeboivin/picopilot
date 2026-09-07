@@ -163,6 +163,47 @@ fn app_sanitizes_assistant_ansi_before_screen_storage() {
 }
 
 #[test]
+fn production_transcript_to_buffer_preserves_prewrapped_rows_without_extra_transformation() {
+    let payload = TranscriptPayload::AssistantMarkdown("alpha beta gamma".to_string());
+    let expected_rows = ["          ", "● alpha   ", "  beta    ", "  gamma   "];
+
+    let mut terminal = Terminal::with_options(TestBackend::new(10, 6), terminal_options())
+        .expect("inline terminal should initialize");
+    let mut screen = ScreenModel::default();
+    screen
+        .apply_change(
+            &mut terminal,
+            ScreenChange::Upsert(ScreenEntry::with_payload(
+                "prewrapped-assistant",
+                LiveEntryKind::Assistant,
+                payload,
+                false,
+            )),
+        )
+        .expect("live transcript should be accepted");
+    terminal
+        .draw(|frame| {
+            screen.draw_live(
+                frame,
+                Platform {
+                    is_windows: false,
+                    wt_session: false,
+                },
+            )
+        })
+        .expect("production live draw should succeed");
+
+    let rows = terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(10)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    assert_eq!(&rows[..expected_rows.len()], expected_rows);
+}
+
+#[test]
 fn wrapped_tool_result_keeps_sgr_style_on_every_fragment_without_escape_bytes() {
     let payload = TranscriptPayload::ToolResult(ToolResultPayload {
         tool_call_id: "tool-ansi".to_string(),
