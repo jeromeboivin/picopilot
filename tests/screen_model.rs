@@ -11,7 +11,7 @@ use picopilot::screen_model::{
 };
 use picopilot::tui::{App, ChatEntry};
 use ratatui::backend::TestBackend;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::{Terminal, Viewport};
@@ -40,35 +40,77 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
         .collect()
 }
 
+fn buffer_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .map(|y| {
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect()
+        })
+        .collect()
+}
+
+fn row_containing(terminal: &Terminal<TestBackend>, text: &str) -> u16 {
+    buffer_rows(terminal)
+        .iter()
+        .position(|row| row.contains(text))
+        .unwrap_or_else(|| panic!("expected buffer row containing {text:?}")) as u16
+}
+
+fn cell_at_text(terminal: &Terminal<TestBackend>, text: &str) -> ratatui::buffer::Cell {
+    let buffer = terminal.backend().buffer();
+    for y in 0..buffer.area.height {
+        let row = (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>();
+        if let Some(x) = row.find(text) {
+            return buffer[(x as u16, y)].clone();
+        }
+    }
+    panic!("expected buffer cell for {text:?}");
+}
+
+fn type_input(app: &mut App, input: &str) {
+    for character in input.chars() {
+        picopilot::tui::handle_key(
+            app,
+            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+        );
+    }
+}
+
+fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, app))
+        .expect("startup frame should draw");
+    terminal
+}
+
 #[test]
 fn initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries() {
     let app = App::new_with_working_directory(
         Some("gpt-5".to_string()),
         std::path::Path::new("/workspace/picopilot"),
     );
-    let mut terminal = Terminal::new(TestBackend::new(80, 14)).expect("test terminal");
+    let terminal = draw_startup(&app, 80, 14);
 
-    terminal
-        .draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("startup frame should draw");
-
-    let output = terminal_text(&terminal);
-    assert!(output.contains("Picopilot"));
-    assert!(output.contains("Version"));
-    assert!(output.contains("Model"));
-    assert!(output.contains("Project"));
+    assert!(row_containing(&terminal, "Version") < row_containing(&terminal, "Picopilot"));
+    assert_eq!(
+        row_containing(&terminal, "Picopilot"),
+        row_containing(&terminal, "Model")
+    );
+    assert!(row_containing(&terminal, "Model") < row_containing(&terminal, "Project"));
+    assert_eq!(buffer_rows(&terminal)[4], " ".repeat(80));
+    assert!(buffer_rows(&terminal)[5].contains('─'));
     assert_eq!(app.entries(), &[]);
 }
 
 #[test]
 fn accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it() {
     let mut accepted = App::new(None);
-    for character in "hello".chars() {
-        picopilot::tui::handle_key(
-            &mut accepted,
-            KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
-        );
-    }
+    type_input(&mut accepted, "hello");
     assert!(matches!(
         picopilot::tui::handle_key(
             &mut accepted,
@@ -109,32 +151,17 @@ fn startup_surface_reflows_orders_metadata_and_bounds_overflow() {
         Some("a very long unknown model label".to_string()),
         std::path::Path::new("/workspace/picopilot"),
     );
-    let mut wide = Terminal::new(TestBackend::new(120, 14)).expect("wide terminal");
-    wide.draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("wide startup frame should draw");
-    let wide_output = terminal_text(&wide);
-    let version = wide_output.find("Version").expect("version metadata");
-    let model = wide_output.find("Model").expect("model metadata");
-    let project = wide_output.find("Project").expect("project metadata");
-    let tools = wide_output.find("Tools").expect("tools metadata");
-    assert!(version < model && model < project && project < tools);
-    assert!(!wide_output.contains("Skills"));
+    let wide = draw_startup(&app, 120, 14);
+    let identity_row = row_containing(&wide, "Picopilot");
+    assert_eq!(identity_row, row_containing(&wide, "Model:"));
+    assert!(row_containing(&wide, "Version:") < identity_row);
+    assert!(row_containing(&wide, "Project:") > identity_row);
+    assert!(row_containing(&wide, "Tools:") > row_containing(&wide, "Project:"));
 
-    let mut narrow = Terminal::new(TestBackend::new(20, 14)).expect("narrow terminal");
-    narrow
-        .draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("narrow startup frame should draw");
-    let rows = terminal_text(&narrow)
-        .as_bytes()
-        .chunks(20)
-        .map(|row| String::from_utf8_lossy(row).to_string())
-        .collect::<Vec<_>>();
-    assert!(rows.iter().any(|row| row.contains("Picopilot")));
-    assert!(rows.iter().any(|row| row.contains("Model:")));
-    assert!(rows.iter().any(|row| row.contains("more in /status")));
-    assert!(rows
-        .iter()
-        .all(|row| UnicodeWidthStr::width(row.as_str()) <= 20));
+    let narrow = draw_startup(&app, 20, 14);
+    assert!(row_containing(&narrow, "Picopilot") < row_containing(&narrow, "Version:"));
+    assert!(row_containing(&narrow, "Version:") < row_containing(&narrow, "Model:"));
+    assert!(row_containing(&narrow, "Model:") < row_containing(&narrow, "more in /status"));
 }
 
 #[test]
@@ -143,16 +170,15 @@ fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
         Some("gpt-5".to_string()),
         std::path::Path::new("/workspace/picopilot"),
     );
-    let mut terminal = Terminal::new(TestBackend::new(20, 10)).expect("test terminal");
+    let terminal = draw_startup(&app, 20, 10);
 
-    terminal
-        .draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("constrained startup frame should draw");
-
-    let output = terminal_text(&terminal);
-    assert!(output.contains("Version"));
-    assert!(output.contains("Model"));
-    assert!(output.contains("more in /status"), "{output:?}");
+    assert!(terminal_text(&terminal).contains("Version"));
+    assert!(terminal_text(&terminal).contains("Model"));
+    assert!(!terminal_text(&terminal).contains("Project"));
+    assert!(terminal_text(&terminal).contains("more in /status"));
+    let overflow = cell_at_text(&terminal, "more in /status");
+    assert_eq!(overflow.fg, palette::SUBTLE);
+    assert!(overflow.modifier.contains(Modifier::DIM));
 }
 
 #[test]
@@ -168,21 +194,39 @@ fn startup_surface_uses_display_model_label_active_counts_and_measured_layouts()
     }]);
     app.set_toolset(picopilot::toolset::Toolset::shell_only());
 
-    let mut wide = Terminal::new(TestBackend::new(80, 14)).expect("wide terminal");
-    wide.draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("wide startup frame should draw");
-    let wide_text = terminal_text(&wide);
-    assert!(wide_text.contains("[pi]"));
-    assert!(wide_text.contains("GPT-5 for Teams"));
-    assert!(wide_text.contains("Tools: 1"));
+    let wide = draw_startup(&app, 80, 14);
+    assert_eq!(cell_at_text(&wide, "[pi]").fg, palette::CLAUDE);
+    assert_eq!(cell_at_text(&wide, "Picopilot").fg, palette::CLAUDE);
+    assert_eq!(cell_at_text(&wide, "Model:").fg, palette::SUBTLE);
+    assert_eq!(cell_at_text(&wide, "GPT-5 for Teams").fg, palette::TEXT);
+    assert!(terminal_text(&wide).contains("Tools: 1"));
 
-    let mut narrow = Terminal::new(TestBackend::new(3, 14)).expect("narrow terminal");
-    narrow
-        .draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("narrow startup frame should draw");
-    let narrow_text = terminal_text(&narrow);
-    assert!(!narrow_text.contains("[pi]"));
-    assert!(narrow_text.contains("Pic"));
+    let narrow = draw_startup(&app, 3, 14);
+    assert!(!terminal_text(&narrow).contains("[pi]"));
+    assert!(terminal_text(&narrow).contains("Pic"));
+}
+
+#[test]
+fn startup_surface_omits_unavailable_metadata_and_keeps_canonical_remaining_order() {
+    let mut app = App::new_with_working_directory(None, std::path::Path::new("/"));
+    app.set_toolset(picopilot::toolset::Toolset::empty());
+    let terminal = draw_startup(&app, 80, 14);
+    let output = terminal_text(&terminal);
+
+    assert!(output.contains("Version: v0.1.0"));
+    assert!(!output.contains("Model:"));
+    assert!(!output.contains("Project:"));
+    assert!(!output.contains("Tools:"));
+    assert!(!output.contains("Skills:"));
+
+    let mut app =
+        App::new_with_working_directory(None, std::path::Path::new("/workspace/picopilot"));
+    app.set_toolset(picopilot::toolset::Toolset::empty());
+    let terminal = draw_startup(&app, 80, 14);
+    assert!(row_containing(&terminal, "Version:") < row_containing(&terminal, "Project:"));
+    assert!(!terminal_text(&terminal).contains("Model:"));
+    assert!(!terminal_text(&terminal).contains("Tools:"));
+    assert!(!terminal_text(&terminal).contains("Skills:"));
 }
 
 #[test]
@@ -208,10 +252,7 @@ fn startup_surface_shows_a_fixed_nonzero_selected_skill_count() {
         &catalog,
         ["release-check"],
     ));
-    let mut terminal = Terminal::new(TestBackend::new(100, 14)).expect("test terminal");
-    terminal
-        .draw(|frame| picopilot::tui::draw(frame, &app))
-        .expect("startup frame should draw");
+    let terminal = draw_startup(&app, 100, 14);
 
     assert!(terminal_text(&terminal).contains("Skills: 1"));
     std::fs::remove_dir_all(directory).expect("skill fixture cleanup");
@@ -227,25 +268,29 @@ fn startup_surface_wraps_unicode_values_and_reflows_on_resize() {
     terminal
         .draw(|frame| picopilot::tui::draw(frame, &app))
         .expect("narrow startup frame should draw");
-    let narrow = terminal_text(&terminal);
-    assert!(narrow.contains('界'));
-    assert!(narrow.contains('e'));
-    assert!(narrow.contains("👩‍💻"));
+    let narrow = buffer_rows(&terminal);
+    assert!(narrow.iter().any(|row| row.contains('界')));
+    assert!(narrow.iter().any(|row| row.contains('e')));
+    assert!(narrow.iter().any(|row| row.contains("👩‍💻")));
+    assert!(narrow.iter().all(|row| row.is_char_boundary(row.len())));
 
     terminal
-        .resize(ratatui::layout::Rect::new(0, 0, 80, 18))
+        .resize(ratatui::layout::Rect::new(0, 0, 120, 18))
         .expect("resize");
+    terminal.backend_mut().resize(120, 18);
     terminal
         .draw(|frame| picopilot::tui::draw(frame, &app))
         .expect("wide startup frame should draw");
-    let wide = terminal_text(&terminal);
-    assert!(wide.contains("[pi]"));
-    assert!(wide.contains("Model:"));
+    assert_eq!(
+        row_containing(&terminal, "Picopilot"),
+        row_containing(&terminal, "Model:")
+    );
 }
 
 #[test]
 fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_history() {
     for (input, expected) in [
+        ("/resume", picopilot::tui::UiAction::LoadSessions),
         ("/status", picopilot::tui::UiAction::LoadStatus),
         ("/usage", picopilot::tui::UiAction::LoadUsageCommand),
         (
@@ -254,12 +299,7 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
         ),
     ] {
         let mut app = App::new(None);
-        for character in input.chars() {
-            picopilot::tui::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
-            );
-        }
+        type_input(&mut app, input);
         assert_eq!(
             picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             expected
@@ -286,7 +326,19 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
         ),
         picopilot::tui::UiAction::LocalCommandError(_)
     ));
+    let mut empty_fleet = App::new(None);
+    type_input(&mut empty_fleet, "/fleet   ");
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut empty_fleet,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ),
+        picopilot::tui::UiAction::None
+    );
+    assert!(terminal_text(&draw_startup(&empty_fleet, 80, 14)).contains("Picopilot"));
     let mut quit = App::new(None);
+    let before_quit = draw_startup(&quit, 80, 14);
+    assert!(terminal_text(&before_quit).contains("Picopilot"));
     assert_eq!(
         picopilot::tui::handle_key(
             &mut quit,
@@ -294,7 +346,11 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
         ),
         picopilot::tui::UiAction::Quit
     );
+    quit.quit();
+    assert!(quit.should_quit());
     assert!(quit.entries().is_empty());
+    assert!(quit.take_screen_changes().is_empty());
+    assert!(terminal_text(&draw_startup(&quit, 80, 14)).contains("Picopilot"));
 }
 
 #[test]
