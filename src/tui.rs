@@ -3828,7 +3828,7 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
             Vec::new()
         };
         lines.extend(metadata_lines.into_iter().take(visible_metadata_rows));
-        if visible_metadata_rows > 0 && visible_metadata_rows < metadata_line_count {
+        if visible_metadata_rows < metadata_line_count {
             lines.push(Line::from(Span::styled(
                 "more in /status",
                 Style::default()

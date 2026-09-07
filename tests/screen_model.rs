@@ -146,6 +146,23 @@ fn accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it
 }
 
 #[test]
+fn empty_enter_keeps_the_startup_surface_without_history_or_screen_changes() {
+    let mut app = App::new(None);
+    let before = draw_startup(&app, 80, 14);
+    assert!(terminal_text(&before).contains("Picopilot"));
+    assert!(app.take_screen_changes().is_empty());
+
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::None
+    );
+
+    assert!(app.entries().is_empty());
+    assert!(app.take_screen_changes().is_empty());
+    assert!(terminal_text(&draw_startup(&app, 80, 14)).contains("Picopilot"));
+}
+
+#[test]
 fn startup_surface_reflows_orders_metadata_and_bounds_overflow() {
     let app = App::new_with_working_directory(
         Some("a very long unknown model label".to_string()),
@@ -182,6 +199,24 @@ fn startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint() {
 }
 
 #[test]
+fn startup_surface_uses_the_only_available_row_for_the_overflow_hint() {
+    let app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let terminal = draw_startup(&app, 20, 5);
+    let output = terminal_text(&terminal);
+
+    assert!(output.contains("more in /status"));
+    assert!(!output.contains("Version:"));
+    assert!(!output.contains("Model:"));
+    assert!(!output.contains("Project:"));
+    let overflow = cell_at_text(&terminal, "more in /status");
+    assert_eq!(overflow.fg, palette::SUBTLE);
+    assert!(overflow.modifier.contains(Modifier::DIM));
+}
+
+#[test]
 fn startup_surface_uses_display_model_label_active_counts_and_measured_layouts() {
     let mut app = App::new_with_working_directory(
         Some("gpt-5".to_string()),
@@ -204,6 +239,84 @@ fn startup_surface_uses_display_model_label_active_counts_and_measured_layouts()
     let narrow = draw_startup(&app, 3, 14);
     assert!(!terminal_text(&narrow).contains("[pi]"));
     assert!(terminal_text(&narrow).contains("Pic"));
+}
+
+#[test]
+fn startup_surface_shows_all_available_metadata_in_canonical_order() {
+    let directory =
+        std::env::temp_dir().join(format!("picopilot-startup-metadata-{}", std::process::id()));
+    let skill_directory = directory
+        .join(".agents")
+        .join("skills")
+        .join("release-check");
+    std::fs::create_dir_all(&skill_directory).expect("skill directory");
+    std::fs::write(
+        skill_directory.join("SKILL.md"),
+        "---\nname: release-check\ndescription: Release validation\n---\n",
+    )
+    .expect("skill fixture");
+
+    let catalog = picopilot::skills::SkillCatalog::discover(&directory);
+    let mut app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    app.preload_models(vec![github_copilot_sdk::types::Model {
+        id: "gpt-5".to_string(),
+        name: "GPT-5 for Teams".to_string(),
+        ..Default::default()
+    }]);
+    app.set_toolset(picopilot::toolset::Toolset::shell_only());
+    app.set_skill_catalog(catalog.clone());
+    app.set_skill_selection(picopilot::skills::SkillSelection::from_names(
+        &catalog,
+        ["release-check"],
+    ));
+    let terminal = draw_startup(&app, 100, 14);
+
+    let expected = [
+        "Version: v0.1.0",
+        "Model: GPT-5 for Teams",
+        "Project: picopilot",
+        "Tools: 1",
+        "Skills: 1",
+    ];
+    let output = terminal_text(&terminal);
+    for value in expected {
+        assert!(
+            output.contains(value),
+            "expected startup metadata {value:?}"
+        );
+    }
+    assert!(row_containing(&terminal, "Version:") < row_containing(&terminal, "Model:"));
+    assert!(row_containing(&terminal, "Model:") < row_containing(&terminal, "Project:"));
+    assert!(row_containing(&terminal, "Project:") < row_containing(&terminal, "Tools:"));
+    assert!(row_containing(&terminal, "Tools:") < row_containing(&terminal, "Skills:"));
+
+    std::fs::remove_dir_all(directory).expect("skill fixture cleanup");
+}
+
+#[test]
+fn startup_surface_reflows_from_two_columns_based_on_metadata_width() {
+    let short = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let long = App::new_with_working_directory(
+        Some("a model label that exceeds the available two column width".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let short_terminal = draw_startup(&short, 40, 14);
+    let long_terminal = draw_startup(&long, 40, 14);
+
+    assert_eq!(
+        row_containing(&short_terminal, "Picopilot"),
+        row_containing(&short_terminal, "Model:")
+    );
+    assert!(
+        row_containing(&long_terminal, "Picopilot") < row_containing(&long_terminal, "Version:")
+    );
+    assert!(row_containing(&long_terminal, "Version:") < row_containing(&long_terminal, "Model:"));
 }
 
 #[test]
