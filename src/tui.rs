@@ -7,7 +7,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::{pending, Future};
 use std::hash::{Hash, Hasher};
 use std::io;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -2609,36 +2611,140 @@ pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
     run_with_settings(runtime, model, false).await
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalCapabilities {
+    stdin_is_terminal: bool,
+    stdout_is_terminal: bool,
+}
+
+impl TerminalCapabilities {
+    fn current() -> Self {
+        Self {
+            stdin_is_terminal: io::stdin().is_terminal(),
+            stdout_is_terminal: io::stdout().is_terminal(),
+        }
+    }
+
+    fn is_interactive(self) -> bool {
+        self.stdin_is_terminal && self.stdout_is_terminal
+    }
+}
+
+trait TerminalStartupOperationAdapter {
+    fn initialize(&mut self) -> io::Result<()>;
+    fn reset_visible_viewport(&mut self) -> io::Result<()>;
+    fn first_draw(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + '_>>;
+    fn restore(&mut self) -> io::Result<()>;
+}
+
+async fn run_terminal_startup<T: TerminalStartupOperationAdapter + ?Sized>(
+    startup: &mut T,
+    capabilities: TerminalCapabilities,
+) -> io::Result<()> {
+    if !capabilities.is_interactive() {
+        return Ok(());
+    }
+
+    startup.initialize()?;
+    let _ = startup.reset_visible_viewport();
+    let result = startup.first_draw().await;
+    let restore_result = startup.restore();
+    result.and(restore_result)
+}
+
+fn clear_visible_viewport<W: io::Write>(writer: &mut W) -> io::Result<()> {
+    crossterm::execute!(
+        writer,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveToColumn(0),
+        crossterm::style::Print("\n"),
+    )
+}
+
+struct InteractiveTerminalStartup {
+    terminal: Option<Terminal<CrosstermBackend<io::Stdout>>>,
+    runtime: Option<AppRuntime>,
+    model: Option<String>,
+    reduced_motion: bool,
+}
+
+impl InteractiveTerminalStartup {
+    fn new(runtime: AppRuntime, model: Option<String>, reduced_motion: bool) -> Self {
+        Self {
+            terminal: None,
+            runtime: Some(runtime),
+            model,
+            reduced_motion,
+        }
+    }
+}
+
+impl TerminalStartupOperationAdapter for InteractiveTerminalStartup {
+    fn initialize(&mut self) -> io::Result<()> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(error) = enter_main_screen(&mut stdout) {
+            let _ = disable_raw_mode();
+            let _ = restore_main_screen(&mut stdout);
+            return Err(error);
+        }
+
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = match Terminal::with_options(backend, terminal_options()) {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                let _ = disable_raw_mode();
+                let _ = restore_main_screen(&mut io::stdout());
+                return Err(error);
+            }
+        };
+        if let Err(error) = terminal.hide_cursor() {
+            let _ = restore_terminal(&mut terminal);
+            return Err(error);
+        }
+
+        self.terminal = Some(terminal);
+        Ok(())
+    }
+
+    fn reset_visible_viewport(&mut self) -> io::Result<()> {
+        let terminal = self
+            .terminal
+            .as_mut()
+            .ok_or_else(|| io::Error::other("terminal is not initialized"))?;
+        clear_visible_viewport(terminal.backend_mut())
+    }
+
+    fn first_draw(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + '_>> {
+        let runtime = match self.runtime.take() {
+            Some(runtime) => runtime,
+            None => return Box::pin(async { Err(io::Error::other("runtime is not initialized")) }),
+        };
+        let terminal = match self.terminal.as_mut() {
+            Some(terminal) => terminal,
+            None => {
+                return Box::pin(async { Err(io::Error::other("terminal is not initialized")) })
+            }
+        };
+        let model = self.model.take();
+        Box::pin(run_loop(terminal, runtime, model, self.reduced_motion))
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        match self.terminal.as_mut() {
+            Some(terminal) => restore_terminal(terminal),
+            None => Ok(()),
+        }
+    }
+}
+
 pub async fn run_with_settings(
     runtime: AppRuntime,
     model: Option<String>,
     reduced_motion: bool,
 ) -> io::Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    if let Err(error) = enter_main_screen(&mut stdout) {
-        let _ = disable_raw_mode();
-        let _ = restore_main_screen(&mut stdout);
-        return Err(error);
-    }
-
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = match Terminal::with_options(backend, terminal_options()) {
-        Ok(terminal) => terminal,
-        Err(error) => {
-            let _ = disable_raw_mode();
-            let _ = restore_main_screen(&mut io::stdout());
-            return Err(error);
-        }
-    };
-    if let Err(error) = terminal.hide_cursor() {
-        let _ = restore_terminal(&mut terminal);
-        return Err(error);
-    }
-
-    let result = run_loop(&mut terminal, runtime, model, reduced_motion).await;
-    let restore_result = restore_terminal(&mut terminal);
-    result.and(restore_result)
+    let mut startup = InteractiveTerminalStartup::new(runtime, model, reduced_motion);
+    run_terminal_startup(&mut startup, TerminalCapabilities::current()).await
 }
 
 async fn run_loop(
@@ -5458,7 +5564,10 @@ mod rendering_fixtures;
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::io;
     use std::path::{Path, PathBuf};
+    use std::pin::Pin;
     use std::time::Duration;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -5472,13 +5581,15 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::{
-        builtin_spinner_verb, chat_lines_at_width_with_clock, consume_terminal_event,
-        displayed_reasoning_effort, draw, draw_live_chat, format_elapsed, format_spinner_tokens,
-        handle_key, model_context_label, model_cost_label_for, model_picker_row_for,
-        render_spinner_line_for_platform, send_with_fleet_fallback, skill_selection_for_invocation,
-        spinner_frames, spinner_message_spans, spinner_platform_for, spinner_stall_intensity,
-        thinking_status, App, ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode,
-        SpinnerPlatform, UiAction, MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
+        builtin_spinner_verb, chat_lines_at_width_with_clock, clear_visible_viewport,
+        consume_terminal_event, displayed_reasoning_effort, draw, draw_live_chat, format_elapsed,
+        format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
+        model_picker_row_for, render_spinner_line_for_platform, run_terminal_startup,
+        send_with_fleet_fallback, skill_selection_for_invocation, spinner_frames,
+        spinner_message_spans, spinner_platform_for, spinner_stall_intensity, thinking_status, App,
+        ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode, SpinnerPlatform,
+        TerminalCapabilities, TerminalStartupOperationAdapter, UiAction, MAX_PICKER_ROWS,
+        SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -5600,6 +5711,127 @@ mod tests {
                 is_remote: false,
             })
             .collect()
+    }
+
+    #[derive(Default)]
+    struct StartupRecorder {
+        operations: Vec<&'static str>,
+        reset_should_fail: bool,
+    }
+
+    impl TerminalStartupOperationAdapter for StartupRecorder {
+        fn initialize(&mut self) -> io::Result<()> {
+            self.operations.push("initialize");
+            Ok(())
+        }
+
+        fn reset_visible_viewport(&mut self) -> io::Result<()> {
+            self.operations.push("reset_visible_viewport");
+            if self.reset_should_fail {
+                return Err(io::Error::other("reset failed"));
+            }
+            Ok(())
+        }
+
+        fn first_draw(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + '_>> {
+            self.operations.push("first_draw");
+            Box::pin(async { Ok(()) })
+        }
+
+        fn restore(&mut self) -> io::Result<()> {
+            self.operations.push("restore");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn interactive_startup_resets_before_the_first_draw_and_restores() {
+        let mut startup = StartupRecorder::default();
+
+        run_terminal_startup(
+            &mut startup,
+            TerminalCapabilities {
+                stdin_is_terminal: true,
+                stdout_is_terminal: true,
+            },
+        )
+        .await
+        .expect("interactive startup should complete");
+
+        assert_eq!(
+            startup.operations,
+            [
+                "initialize",
+                "reset_visible_viewport",
+                "first_draw",
+                "restore"
+            ]
+        );
+    }
+    #[tokio::test]
+    async fn redirected_startup_skips_all_operations() {
+        for capabilities in [
+            TerminalCapabilities {
+                stdin_is_terminal: false,
+                stdout_is_terminal: true,
+            },
+            TerminalCapabilities {
+                stdin_is_terminal: true,
+                stdout_is_terminal: false,
+            },
+            TerminalCapabilities {
+                stdin_is_terminal: false,
+                stdout_is_terminal: false,
+            },
+        ] {
+            let mut startup = StartupRecorder::default();
+
+            run_terminal_startup(&mut startup, capabilities)
+                .await
+                .expect("redirected startup should be a no-op");
+
+            assert!(startup.operations.is_empty());
+        }
+    }
+    #[tokio::test]
+    async fn reset_failure_does_not_skip_first_draw_or_restore() {
+        let mut startup = StartupRecorder {
+            reset_should_fail: true,
+            ..StartupRecorder::default()
+        };
+
+        run_terminal_startup(
+            &mut startup,
+            TerminalCapabilities {
+                stdin_is_terminal: true,
+                stdout_is_terminal: true,
+            },
+        )
+        .await
+        .expect("reset failure should not fail startup");
+
+        assert_eq!(
+            startup.operations,
+            [
+                "initialize",
+                "reset_visible_viewport",
+                "first_draw",
+                "restore"
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_viewport_reset_clears_only_the_current_screen() {
+        let mut output = Vec::new();
+
+        clear_visible_viewport(&mut output).expect("visible reset should write");
+
+        assert_eq!(output, b"\x1b[2J\x1b[1G\n");
+        assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 1);
+        assert!(!output.windows(4).any(|bytes| bytes == b"\x1b[3J"));
+        assert!(!output.windows(6).any(|bytes| bytes == b"\x1b[?1049h"));
+        assert!(!output.windows(6).any(|bytes| bytes == b"\x1b[?1049l"));
     }
 
     #[test]
