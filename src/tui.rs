@@ -5399,6 +5399,10 @@ fn format_count(value: i64) -> String {
 }
 
 #[cfg(test)]
+#[path = "tui_rendering_fixtures.rs"]
+mod rendering_fixtures;
+
+#[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 

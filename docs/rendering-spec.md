@@ -637,16 +637,16 @@ A later implementation session MUST run unit/property tests and visual fixtures 
 ### Structural And Automated
 
 - [ ] Verify alternate-screen sequences are absent and native scrollback remains selectable after exit.
-- [ ] Verify `insert_before` receives exactly the same line vector length that it draws; property-test widths, hard newlines, empty lines, CJK, combining marks, emoji ZWJ, tabs, and a cluster wider than width.
-- [ ] Verify committed events cannot be mutated by type/API and late changes append a new event.
-- [ ] Verify resize repaints only live rows and never recommits history.
+- [x] Verify `insert_before` receives exactly the same line vector length that it draws; test widths, hard newlines, empty lines, CJK, combining marks, emoji ZWJ, tabs, and a cluster wider than width.
+- [x] Verify committed events cannot be mutated by type/API and late changes append a new event.
+- [x] Verify resize repaints only live rows and never recommits history.
 - [ ] Verify transcript rendering has no `Paragraph::wrap`, horizontal transcript padding, or `unstable-rendered-line-info` feature.
-- [ ] Verify every one of the 69 palette keys and exact RGB values.
+- [x] Verify every one of the 69 palette keys and exact RGB values.
 - [ ] Verify the 50 ms clock drives all phases from one timestamp and stops drawing when idle.
-- [ ] Verify reduced motion freezes all motion while preserving text and state.
+- [x] Verify reduced motion freezes all motion while preserving text and state.
 - [ ] Verify ANSI sanitization fuzz cases never emit ESC/control bytes to the backend.
-- [ ] Verify SGR named/indexed/truecolor parsing, underline removal, base-style patching, malformed/truncated sequence drops, CR progress output, and chunk boundaries.
-- [ ] Verify syntax highlighting loads embedded grammars without runtime files and unsupported languages become plaintext.
+- [x] Verify SGR named/indexed/truecolor parsing, underline removal, base-style patching, malformed/truncated sequence drops, CR progress output, and chunk boundaries.
+- [x] Verify syntax highlighting loads embedded grammars without runtime files and unsupported languages become plaintext.
 - [ ] Verify diff timeout, 3-line context, two-counter numbering, wrapped repeated sigils, 0.4 word threshold, and no row cap.
 
 ### Visual Fixtures

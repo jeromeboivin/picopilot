@@ -3589,6 +3589,65 @@ fn wide_graphemes_are_retained_when_the_body_capacity_is_smaller() {
 }
 
 #[test]
+fn transcript_wrapping_covers_required_widths_and_unicode_clusters() {
+    let body = vec![
+        Line::from("first line"),
+        Line::default(),
+        Line::from("界 e\u{301} 👩‍💻\t wider-than-width"),
+    ];
+
+    for width in [1, 2, 3, 20, 40, 80, 120] {
+        for kind in [LiveEntryKind::User, LiveEntryKind::Assistant] {
+            let lines = render_entry_lines(kind, &body, width);
+            let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+            let flattened = rendered.join("");
+
+            assert!(flattened.contains('f'));
+            assert!(flattened.contains('界'));
+            assert!(flattened.contains("é"));
+            assert!(flattened.contains("👩‍💻"));
+            assert!(rendered.iter().all(|line| !line.contains('\t')));
+            assert!(rendered.iter().any(|line| line.trim().is_empty()));
+        }
+    }
+}
+
+#[test]
+fn commit_height_matches_the_rendered_vector_at_required_widths() {
+    let payload = TranscriptPayload::AssistantMarkdown(
+        "first line\n\n界 e\u{301} 👩‍💻\t wider-than-width".to_string(),
+    );
+
+    for width in [1, 2, 3, 20, 40, 80, 120] {
+        let expected = render_transcript_payload(LiveEntryKind::Assistant, &payload, width);
+        let mut screen = ScreenModel::default();
+        let mut terminal = Terminal::with_options(
+            TestBackend::new(width as u16, FIXED_LIVE_REGION_HEIGHT),
+            terminal_options(),
+        )
+        .expect("inline terminal should initialize");
+
+        screen
+            .apply_change(
+                &mut terminal,
+                ScreenChange::Upsert(ScreenEntry::with_payload(
+                    format!("assistant-{width}"),
+                    LiveEntryKind::Assistant,
+                    payload.clone(),
+                    true,
+                )),
+            )
+            .expect("completed entry should commit");
+
+        assert_eq!(
+            screen.committed_entries()[0].height() as usize,
+            expected.len(),
+            "committed height mismatch at width {width}"
+        );
+    }
+}
+
+#[test]
 fn committed_and_live_rendering_have_identical_rows_for_one_entry() {
     let width = 40;
     let body = vec![Line::from("alpha beta gamma")];
