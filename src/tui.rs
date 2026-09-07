@@ -779,7 +779,8 @@ impl App {
         let entry = self.entries.get(index)?;
         let (kind, completed) = match entry {
             ChatEntry::User(_) => (LiveEntryKind::User, true),
-            ChatEntry::Diagnostic(_) | ChatEntry::Banner { .. } => (LiveEntryKind::Other, true),
+            ChatEntry::Diagnostic(_) => return None,
+            ChatEntry::Banner { .. } => (LiveEntryKind::Other, true),
             ChatEntry::Assistant {
                 message_id,
                 agent_id,
@@ -1334,36 +1335,18 @@ impl App {
     }
 
     pub fn enqueue_approval(&mut self, request: ApprovalRequest) {
-        self.push_entry(ChatEntry::Approval {
-            category: sanitize_plain(request.category.label()),
-            tool_name: sanitize_plain(&request.tool_name),
-            details: sanitize_plain(&request.details),
-            status: ApprovalStatus::Pending,
-        });
         self.pending_approvals.push_back(request);
         self.open_picker(PickerKind::Approval);
     }
 
     fn resolve_approval(&mut self, decision: ApprovalDecision) -> Option<ApprovalRequest> {
         let request = self.pending_approvals.pop_front()?;
-        if let Some(index) = self.entries.iter().position(|entry| {
-            matches!(
-                entry,
-                ChatEntry::Approval {
-                    status: ApprovalStatus::Pending,
-                    ..
-                }
-            )
-        }) {
-            if let ChatEntry::Approval { status, .. } = &mut self.entries[index] {
-                *status = match decision {
-                    ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
-                    ApprovalDecision::Deny => ApprovalStatus::Denied,
-                    ApprovalDecision::Trust => ApprovalStatus::Trusted,
-                };
-            }
-            self.queue_screen_change(index);
-        }
+        let status = match decision {
+            ApprovalDecision::ApproveOnce => ApprovalStatus::ApprovedOnce,
+            ApprovalDecision::Deny => ApprovalStatus::Denied,
+            ApprovalDecision::Trust => ApprovalStatus::Trusted,
+        };
+        self.push_entry(approval_entry(&request, status));
         if self.pending_approvals.is_empty() {
             self.close_picker();
         } else {
@@ -1374,21 +1357,9 @@ impl App {
 
     fn reject_pending_approvals(&mut self) {
         while let Some(request) = self.pending_approvals.pop_front() {
+            let entry = approval_entry(&request, ApprovalStatus::Denied);
             let _ = request.respond_to.send(ApprovalDecision::Deny);
-        }
-        for index in 0..self.entries.len() {
-            if matches!(
-                self.entries[index],
-                ChatEntry::Approval {
-                    status: ApprovalStatus::Pending,
-                    ..
-                }
-            ) {
-                if let ChatEntry::Approval { status, .. } = &mut self.entries[index] {
-                    *status = ApprovalStatus::Denied;
-                }
-                self.queue_screen_change(index);
-            }
+            self.push_entry(entry);
         }
         self.close_picker();
     }
@@ -4253,6 +4224,16 @@ fn draw_live_chat(
     area: Rect,
     animation_elapsed_ms: u64,
 ) {
+    if app.transcript_expanded || app.show_internals {
+        let lines = chat_lines_at_width_with_clock(app, area.width as usize, animation_elapsed_ms);
+        let scroll = lines
+            .len()
+            .saturating_sub(area.height as usize)
+            .min(u16::MAX as usize) as u16;
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), area);
+        return;
+    }
+
     let spinner_visible = app.spinner_visible();
     let transcript_height = if spinner_visible {
         area.height.saturating_sub(2) as usize
@@ -5031,6 +5012,15 @@ fn entry_payload(
     }
 }
 
+fn approval_entry(request: &ApprovalRequest, status: ApprovalStatus) -> ChatEntry {
+    ChatEntry::Approval {
+        category: sanitize_plain(request.category.label()),
+        tool_name: sanitize_plain(&request.tool_name),
+        details: sanitize_plain(&request.details),
+        status,
+    }
+}
+
 fn entry_lines(
     entry: &ChatEntry,
     _show_internals: bool,
@@ -5423,13 +5413,13 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use super::{
-        builtin_spinner_verb, displayed_reasoning_effort, draw, draw_live_chat, format_elapsed,
-        format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
-        model_picker_row_for, render_spinner_line_for_platform, send_with_fleet_fallback,
-        skill_selection_for_invocation, spinner_frames, spinner_message_spans,
-        spinner_platform_for, spinner_stall_intensity, thinking_status, App, ChatEntry,
-        ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction, MAX_PICKER_ROWS,
-        SPINNER_STATUS_AFTER_MS,
+        builtin_spinner_verb, chat_lines_at_width_with_clock, displayed_reasoning_effort, draw,
+        draw_live_chat, format_elapsed, format_spinner_tokens, handle_key, model_context_label,
+        model_cost_label_for, model_picker_row_for, render_spinner_line_for_platform,
+        send_with_fleet_fallback, skill_selection_for_invocation, spinner_frames,
+        spinner_message_spans, spinner_platform_for, spinner_stall_intensity, thinking_status, App,
+        ChatEntry, ModelSelection, SendPath, SpinnerMode, SpinnerPlatform, UiAction,
+        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -5438,7 +5428,8 @@ mod tests {
     use crate::palette;
     use crate::permissions::{ApprovalCategory, ApprovalDecision, ApprovalRequest};
     use crate::screen_model::{
-        render_entry_lines, render_transcript_payload, LiveEntryKind, ScreenChange, ScreenModel,
+        render_entry_lines, render_transcript_payload, terminal_options, LiveEntryKind,
+        ScreenChange, ScreenModel, TranscriptPayload,
     };
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
@@ -5516,6 +5507,29 @@ mod tests {
             .collect()
     }
 
+    fn terminal_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn apply_pending_changes(
+        app: &mut App,
+        screen: &mut ScreenModel,
+        terminal: &mut Terminal<TestBackend>,
+    ) {
+        for change in app.take_screen_changes() {
+            screen
+                .apply_change(terminal, change)
+                .expect("screen change should apply");
+        }
+    }
+
     fn test_sessions(count: usize) -> Vec<SessionMetadata> {
         (0..count)
             .map(|index| SessionMetadata {
@@ -5572,6 +5586,145 @@ mod tests {
         assert!(expanded.iter().any(|row| row.contains("private reasoning")));
         assert!(!expanded.iter().any(|row| row.contains("Thinking…")));
         assert!(!expanded.iter().any(|row| row.contains("agent-secret")));
+    }
+
+    #[test]
+    fn committed_transcript_expands_in_the_mutable_view_without_new_commits() {
+        let mut app = App::new(None);
+        app.apply(EventUpdate::Reasoning {
+            reasoning_id: "reasoning-committed".to_string(),
+            content: "full reasoning body".to_string(),
+            agent_id: None,
+        });
+        app.apply(EventUpdate::ToolStarted {
+            tool_call_id: "tool-committed".to_string(),
+            tool_name: "custom_tool".to_string(),
+            arguments: None,
+            agent_id: None,
+        });
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "tool-committed".to_string(),
+            success: false,
+            message: Some("InputValidationError: full committed tool result".to_string()),
+            shell_completion: None,
+            agent_id: None,
+        });
+
+        let mut screen = ScreenModel::default();
+        let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+            .expect("inline terminal should initialize");
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        let committed_count = screen.committed_count();
+        let committed_ids = screen
+            .committed_entries()
+            .iter()
+            .map(|entry| entry.id().to_string())
+            .collect::<Vec<_>>();
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("compact transcript should render");
+        let compact = terminal_rows(&terminal);
+        assert!(compact
+            .iter()
+            .any(|row| row.contains("Invalid tool parameters")));
+        assert!(!compact
+            .iter()
+            .any(|row| row.contains("full committed tool result")));
+
+        assert_eq!(handle_key(&mut app, ctrl_key('o')), UiAction::None);
+        screen.set_verbose(app.transcript_expanded());
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("expanded transcript should render");
+        let expanded = terminal_rows(&terminal);
+        assert!(expanded
+            .iter()
+            .any(|row| row.contains("full reasoning body")));
+        assert!(expanded
+            .iter()
+            .any(|row| row.contains("full committed tool result")));
+        assert_eq!(screen.committed_count(), committed_count);
+        assert_eq!(
+            screen
+                .committed_entries()
+                .iter()
+                .map(|entry| entry.id())
+                .collect::<Vec<_>>(),
+            committed_ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Esc, KeyEventKind::Press)),
+            UiAction::None
+        );
+        screen.set_verbose(app.transcript_expanded());
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("compact transcript should return");
+        assert!(!app.transcript_expanded());
+        let compact_again = chat_lines_at_width_with_clock(&app, 100, 0);
+        assert!(compact_again
+            .iter()
+            .any(|line| line.to_string().contains("Thinking…")));
+        assert!(!compact_again
+            .iter()
+            .any(|line| line.to_string().contains("full reasoning body")));
+    }
+
+    #[test]
+    fn collapsed_reasoning_styles_text_dim_italic_and_glyph_subtle() {
+        let lines = render_transcript_payload(
+            LiveEntryKind::Other,
+            &TranscriptPayload::Reasoning {
+                content: "private reasoning".to_string(),
+                expanded: false,
+            },
+            80,
+        );
+        let spans = &lines[1].spans;
+        assert_eq!(spans[0].style.fg, Some(palette::SUBTLE));
+        assert_eq!(spans[1].content, "Thinking…");
+        assert!(spans[1].style.add_modifier.contains(Modifier::DIM));
+        assert!(spans[1].style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn diagnostics_toggle_in_the_mutable_view_without_committing_or_duplicating() {
+        let mut app = App::new(None);
+        app.add_diagnostic("internal diagnostic detail");
+        let mut screen = ScreenModel::default();
+        let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+            .expect("inline terminal should initialize");
+
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        assert_eq!(screen.committed_count(), 0);
+        assert_eq!(app.entries().len(), 1);
+
+        assert_eq!(handle_key(&mut app, ctrl_key('i')), UiAction::None);
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("diagnostic view should render");
+        let visible = terminal_rows(&terminal);
+        assert!(visible
+            .iter()
+            .any(|row| row.contains("internal diagnostic detail")));
+        assert_eq!(screen.committed_count(), 0);
+        assert_eq!(app.entries().len(), 1);
+
+        assert_eq!(handle_key(&mut app, ctrl_key('i')), UiAction::None);
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        assert!(!app.show_internals);
+        assert_eq!(screen.committed_count(), 0);
+        assert_eq!(app.entries().len(), 1);
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("diagnostic view should hide again");
+        assert!(!terminal_rows(&terminal)
+            .iter()
+            .any(|row| row.contains("internal diagnostic detail")));
     }
 
     #[test]
@@ -5937,6 +6090,59 @@ mod tests {
         assert!(!rows.iter().any(|row| row.contains("y allow once")));
     }
 
+    #[test]
+    fn pending_approval_stays_in_picker_until_one_outcome_is_committed() {
+        let mut app = App::new(None);
+        let (respond_to, _response) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(ApprovalRequest {
+            category: ApprovalCategory::Shell,
+            tool_name: "bash".to_string(),
+            details: "cargo test".to_string(),
+            respond_to,
+        });
+        let mut screen = ScreenModel::default();
+        let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+            .expect("inline terminal should initialize");
+
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        assert!(!app.entries().iter().any(|entry| matches!(
+            entry,
+            ChatEntry::Approval {
+                status: super::ApprovalStatus::Pending,
+                ..
+            }
+        )));
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .expect("pending approval should render through the picker");
+        let rows = terminal_rows(&terminal);
+        assert!(!rows
+            .iter()
+            .any(|row| row.contains("shell (bash) pending: cargo test")));
+        assert_eq!(screen.committed_count(), 0);
+
+        let request = app
+            .resolve_approval(ApprovalDecision::ApproveOnce)
+            .expect("approval should resolve");
+        let _ = request.respond_to.send(ApprovalDecision::ApproveOnce);
+        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+        assert_eq!(
+            app.entries()
+                .iter()
+                .filter(|entry| matches!(entry, ChatEntry::Approval { .. }))
+                .count(),
+            1
+        );
+        assert!(matches!(
+            app.entries().last(),
+            Some(ChatEntry::Approval {
+                status: super::ApprovalStatus::ApprovedOnce,
+                ..
+            })
+        ));
+        assert_eq!(screen.committed_count(), 1);
+    }
+
     #[tokio::test]
     async fn approval_escape_denies_the_pending_request() {
         let mut app = App::new(None);
@@ -6008,6 +6214,26 @@ mod tests {
                 .tool_name,
             "second"
         );
+        assert!(app.entries().iter().all(|entry| !matches!(
+            entry,
+            ChatEntry::Approval {
+                status: super::ApprovalStatus::Pending,
+                ..
+            }
+        )));
+        assert_eq!(
+            app.entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    ChatEntry::Approval {
+                        status: super::ApprovalStatus::ApprovedOnce,
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
 
         let request = app
             .resolve_approval(ApprovalDecision::Deny)
@@ -6026,6 +6252,19 @@ mod tests {
                 .await
                 .expect("second response should arrive"),
             ApprovalDecision::Deny
+        );
+        assert_eq!(
+            app.entries()
+                .iter()
+                .filter(|entry| matches!(
+                    entry,
+                    ChatEntry::Approval {
+                        status: super::ApprovalStatus::Denied,
+                        ..
+                    }
+                ))
+                .count(),
+            1
         );
     }
 

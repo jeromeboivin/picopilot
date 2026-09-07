@@ -1746,10 +1746,7 @@ fn render_reasoning(content: &str, expanded: bool, width: usize) -> Vec<Line<'st
     let lines = if expanded {
         assistant_markdown_lines_for_widths(content, body_style, width.saturating_sub(2), width)
     } else {
-        vec![Line::from(Span::styled(
-            "Thinking…",
-            Style::default().fg(palette::SUBTLE),
-        ))]
+        vec![Line::from(Span::styled("Thinking…", body_style))]
     };
     render_prefixed_lines(&lines, width, "✻ ", Style::default().fg(palette::SUBTLE))
 }
