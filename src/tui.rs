@@ -491,6 +491,7 @@ pub struct App {
     pending_screen_changes: VecDeque<ScreenChange>,
     pending_user_messages: VecDeque<String>,
     working_directory: PathBuf,
+    show_startup_surface: bool,
     session_id: Option<String>,
     status: StatusState,
     input: InputEditor,
@@ -605,6 +606,7 @@ impl App {
             ..Self::default()
         };
         app.screen_namespace = next_screen_namespace();
+        app.show_startup_surface = true;
         app
     }
 
@@ -998,6 +1000,10 @@ impl App {
         self.reset_picker_options();
         self.completion = None;
         self.open_picker(PickerKind::Models);
+    }
+
+    pub fn preload_models(&mut self, models: Vec<Model>) {
+        self.models = models;
     }
 
     pub fn set_local_model_ids<I>(&mut self, model_ids: I)
@@ -1450,7 +1456,12 @@ impl App {
         self.input.take()
     }
 
+    pub fn dismiss_startup_surface(&mut self) {
+        self.show_startup_surface = false;
+    }
+
     pub fn reset_for_new_conversation(&mut self) {
+        self.dismiss_startup_surface();
         self.reject_pending_approvals();
         self.reset_screen_lifecycle();
         self.pending_user_messages.clear();
@@ -1499,6 +1510,7 @@ impl App {
     }
 
     pub fn replace_history(&mut self, events: &[github_copilot_sdk::types::SessionEvent]) {
+        self.dismiss_startup_surface();
         self.reset_screen_lifecycle();
         self.pending_user_messages.clear();
         self.assistant_live_ids.clear();
@@ -2390,10 +2402,13 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             if input.trim().is_empty() {
                 UiAction::None
             } else if input == "/status" {
+                app.dismiss_startup_surface();
                 UiAction::LoadStatus
             } else if input == "/usage" {
+                app.dismiss_startup_surface();
                 UiAction::LoadUsageCommand
             } else if input == "/resume" {
+                app.dismiss_startup_surface();
                 UiAction::LoadSessions
             } else if matches!(
                 input.split_whitespace().next(),
@@ -2408,9 +2423,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 if prompt.is_empty() {
                     UiAction::None
                 } else {
+                    app.dismiss_startup_surface();
                     UiAction::StartFleet(prompt.to_string())
                 }
             } else {
+                app.dismiss_startup_surface();
                 UiAction::Send(input)
             }
         }
@@ -2599,12 +2616,34 @@ fn draw_frame(
         ])
         .split(frame.area());
 
-    if let Some(screen) = screen {
-        draw_live_chat(frame, app, screen, layout[0], animation_elapsed_ms);
+    let startup_lines =
+        startup_surface_lines(app, layout[0].width as usize, layout[0].height as usize);
+    let startup_height = startup_lines.len().min(layout[0].height as usize) as u16;
+    let startup_area = Rect::new(layout[0].x, layout[0].y, layout[0].width, startup_height);
+    let chat_area = if startup_height > 0 {
+        Rect::default()
     } else {
-        draw_chat(frame, app, layout[0], animation_elapsed_ms);
+        layout[0]
+    };
+    let prompt_area = if startup_height > 0 {
+        Rect::new(
+            frame.area().x,
+            frame.area().y.saturating_add(startup_height),
+            frame.area().width,
+            prompt_layout.total_height,
+        )
+    } else {
+        layout[1]
+    };
+    if startup_height > 0 {
+        frame.render_widget(Paragraph::new(startup_lines), startup_area);
     }
-    draw_prompt(frame, app, layout[1], prompt_layout);
+    if let Some(screen) = screen {
+        draw_live_chat(frame, app, screen, chat_area, animation_elapsed_ms);
+    } else {
+        draw_chat(frame, app, chat_area, animation_elapsed_ms);
+    }
+    draw_prompt(frame, app, prompt_area, prompt_layout);
 }
 
 pub async fn run(runtime: AppRuntime, model: Option<String>) -> io::Result<()> {
@@ -2765,6 +2804,7 @@ async fn run_loop(
         .unwrap_or_default();
     let mut app = App::new_with_working_directory(model, &runtime.working_directory);
     app.set_reduced_motion(reduced_motion);
+    app.preload_models(runtime.models.clone());
     app.set_local_model_ids(local_model_ids);
     app.set_toolset(runtime.active_toolset);
     app.set_skill_catalog(runtime.skill_catalog.clone());
@@ -3660,6 +3700,148 @@ fn wrapped_segment_end(text: &str, width: usize) -> usize {
 
 fn display_width(text: &str) -> usize {
     text.graphemes(true).map(input_grapheme_width).sum()
+}
+
+fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<Line<'static>> {
+    if !app.show_startup_surface || width == 0 || available_rows == 0 {
+        return Vec::new();
+    }
+
+    let model = app.status.model.as_deref().map(|id| {
+        app.models
+            .iter()
+            .find(|model| model.id == id)
+            .map(|model| sanitize_plain(&model.name))
+            .unwrap_or_else(|| sanitize_plain(id))
+    });
+    let project = app
+        .working_directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_plain)
+        .filter(|name| !name.is_empty());
+    let mut metadata = vec![("Version", format!("v{}", env!("CARGO_PKG_VERSION")))];
+    if let Some(model) = model {
+        metadata.push(("Model", model));
+    }
+    if let Some(project) = project {
+        metadata.push(("Project", project));
+    }
+    if !app.toolset.is_empty() {
+        metadata.push(("Tools", app.toolset.len().to_string()));
+    }
+    if !app.skill_selection.is_empty() {
+        metadata.push(("Skills", app.skill_selection.len().to_string()));
+    }
+
+    let wordmark = "[pi]";
+    let identity_width = display_width("Picopilot");
+    let metadata_width = metadata
+        .iter()
+        .map(|(label, value)| display_width(label) + 2 + display_width(value))
+        .max()
+        .unwrap_or(0);
+    let mut lines = if width >= identity_width + metadata_width + 4 {
+        let rows = metadata.len().max(2);
+        let mut lines = Vec::with_capacity(rows + 1);
+        for index in 0..rows {
+            let mut spans = if index == 0 {
+                vec![Span::styled(wordmark, Style::default().fg(palette::CLAUDE))]
+            } else if index == 1 {
+                vec![Span::styled(
+                    "Picopilot",
+                    Style::default()
+                        .fg(palette::CLAUDE)
+                        .add_modifier(Modifier::BOLD),
+                )]
+            } else {
+                vec![Span::raw("")]
+            };
+            let used = if index <= 1 {
+                display_width(if index == 0 { wordmark } else { "Picopilot" })
+            } else {
+                0
+            };
+            spans.push(Span::raw(
+                " ".repeat(identity_width.saturating_sub(used) + 4),
+            ));
+            if let Some((label, value)) = metadata.get(index) {
+                spans.extend(startup_metadata_line(label, value).spans);
+            }
+            lines.push(Line::from(spans));
+        }
+        lines
+    } else {
+        let mut lines = Vec::new();
+        if display_width(wordmark) <= width {
+            lines.push(Line::from(Span::styled(
+                wordmark,
+                Style::default().fg(palette::CLAUDE),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "Picopilot",
+            Style::default()
+                .fg(palette::CLAUDE)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for (label, value) in metadata {
+            let value_width = width.saturating_sub(display_width(label) + 2).max(1);
+            for (index, chunk) in wrap_startup_value(&value, value_width).iter().enumerate() {
+                if index == 0 {
+                    lines.push(startup_metadata_line(label, chunk));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw(" ".repeat(display_width(label) + 2)),
+                        Span::styled(chunk.clone(), Style::default().fg(palette::TEXT)),
+                    ]));
+                }
+            }
+        }
+        lines
+    };
+
+    let content_rows = available_rows;
+    if lines.len() > content_rows {
+        lines.truncate(content_rows);
+        if let Some(last) = lines.last_mut() {
+            *last = Line::from(Span::styled(
+                "more in /status",
+                Style::default()
+                    .fg(palette::SUBTLE)
+                    .add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+    lines
+}
+
+fn startup_metadata_line(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}:"), Style::default().fg(palette::SUBTLE)),
+        Span::raw(" "),
+        Span::styled(value.to_string(), Style::default().fg(palette::TEXT)),
+    ])
+}
+
+fn wrap_startup_value(value: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0;
+    for grapheme in value.graphemes(true) {
+        let grapheme_width = input_grapheme_width(grapheme);
+        if !line.is_empty() && line_width + grapheme_width > width {
+            lines.push(line);
+            line = String::new();
+            line_width = 0;
+        }
+        line.push_str(grapheme);
+        line_width += grapheme_width;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 fn input_grapheme_width(grapheme: &str) -> usize {

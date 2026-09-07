@@ -611,7 +611,10 @@ fn tool_result(
 }
 
 fn gallery_app() -> App {
-    App::new_with_working_directory(Some("gpt-5".to_string()), Path::new("WORKSPACE"))
+    let mut app =
+        App::new_with_working_directory(Some("gpt-5".to_string()), Path::new("WORKSPACE"));
+    app.dismiss_startup_surface();
+    app
 }
 
 fn setup_session_picker(app: &mut App) {
