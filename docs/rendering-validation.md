@@ -279,14 +279,14 @@ does not treat the earlier fallback-fixture commit as the final validation tip.
 | Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet`: 1 passed, 0 failed, exit 0. |
 | Two-run regeneration idempotence | passed | Two opt-in `regenerate_rendering_gallery` runs each passed (1 passed, 0 failed, exit 0). Both SHA-256 values were `698F93054F2CB271F99834AC261D1C37EB24A1B3B347F4E6B1A0C93616751189`; equality was `True`; the final focused comparison passed (1 passed, 0 failed, exit 0). |
 | Deliberate mismatch detection and restoration | passed | The red comparison for the newly added committed fixture produced the expected unified diff; regeneration restores a passing fixture. |
-| Focused startup structural tests | passed | `cargo test --test screen_model --quiet`: 114 passed, 0 failed, exit 0. |
+| Focused startup structural tests | passed | `cargo test --test screen_model --quiet`: exit 0. The fixed-art frame regression is `startup_artwork_keeps_the_fixed_frame_for_multiline_wide_project_names`. |
 | ANSI tests | passed | `cargo test --test ansi_sanitization --quiet`: 9 passed, 0 failed, exit 0. |
 | Focused Markdown tests | passed | `cargo test --lib markdown::tests --quiet`: 30 passed, 0 failed, exit 0. |
 | Focused file-diff tests | passed | `cargo test --lib file_diff::tests --quiet`: 10 passed, 0 failed, exit 0. |
 | Focused palette tests | passed | `cargo test --lib palette::tests --quiet`: 2 passed, 0 failed, exit 0. |
 | Focused TUI tests | passed | `cargo test --lib tui::tests --quiet`: 135 passed, 0 failed, exit 0. |
 | Library tests | passed | `cargo test --lib --quiet`: 280 passed, 0 failed, 1 ignored, exit 0. |
-| Full `cargo test --all-targets --quiet` | passed | Library: 280 passed, 1 ignored; binary target: 0 tests; ANSI integration: 9 passed; context-budget integration: 0 passed, 2 ignored; screen-model integration: 114 passed; exit 0. |
+| Full `cargo test --all-targets --quiet` | passed | Completed successfully with exit 0. Aggregate counts are intentionally omitted because they change as coverage grows. |
 | `cargo fmt --check` | passed | Completed with exit 0 and no output. |
 | Clippy with `-D warnings` | passed | `cargo clippy --all-features --all-targets -- -D warnings` completed with exit 0. |
 | `git diff --check` | passed | Completed with exit 0; its only output was Git's CRLF advisory for the unmodified gallery fixture, not a whitespace error. |

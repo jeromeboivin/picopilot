@@ -189,6 +189,48 @@ fn startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_
 }
 
 #[test]
+fn startup_artwork_keeps_the_fixed_frame_for_multiline_wide_project_names() {
+    let project = App::new_with_working_directory(
+        None,
+        std::path::Path::new(
+            "/workspace/project\n\u{754c}e\u{301}-name-that-must-be-clipped-inside-the-fixed-artwork",
+        ),
+    );
+    let terminal = draw_startup(&project, 69, 24);
+    let rows = buffer_rows(&terminal);
+    let artwork_rows = &rows[..15];
+
+    assert_eq!(artwork_rows.len(), 15);
+    for (row, rendered) in artwork_rows.iter().enumerate() {
+        assert_eq!(buffer_row_display_width(&terminal, row as u16), 69);
+        assert_eq!(
+            terminal.backend().buffer()[(0, row as u16)].symbol(),
+            if row == 0 {
+                "┌"
+            } else if row == 14 {
+                "└"
+            } else {
+                "│"
+            }
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(68, row as u16)].symbol(),
+            if row == 0 {
+                "┐"
+            } else if row == 14 {
+                "┘"
+            } else {
+                "│"
+            }
+        );
+        assert!(!rendered.contains('\n'));
+    }
+
+    assert!(artwork_rows[4].contains("Project: project \u{754c} e\u{301}"));
+    assert!(artwork_rows[4].contains("..."));
+}
+
+#[test]
 fn initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries() {
     let app = App::new_with_working_directory(
         Some("gpt-5".to_string()),

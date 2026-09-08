@@ -3902,6 +3902,7 @@ fn startup_art_lines(app: &App) -> Vec<Line<'static>> {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .map(sanitize_plain)
+                    .map(|name| normalize_startup_art_value(&name))
                     .filter(|name| !name.is_empty())
                     .unwrap_or_default();
                 startup_art_status_line(" > LOADING NEURAL MODULES... Project: ", &project)
@@ -3915,6 +3916,17 @@ fn startup_art_lines(app: &App) -> Vec<Line<'static>> {
                 startup_art_status_line(" > BYPASSING SECURITY... Tools: ", &tools)
             }
             _ => Line::from(line.to_string()),
+        })
+        .collect()
+}
+
+fn normalize_startup_art_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
         })
         .collect()
 }
