@@ -274,20 +274,24 @@ does not treat the earlier fallback-fixture commit as the final validation tip.
 
 | Check | Result | Evidence or blocker |
 | --- | --- | --- |
-| Validation provenance | pending | Run the cited commands after committing this documentation update. Record the exact tested tip SHA, commands, exit codes, and fixture hash; `3e159553f170033ae9c1771df297d0a76d35b045` is the fallback-fixture commit, not an assertion about the final documentation tip. |
-| Gallery compare | pending | Run `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet` individually and record its actual result. |
-| Gallery determinism | pending | Run `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet` individually and record its actual result. |
-| Two-run regeneration idempotence | pending | Run the documented opt-in regeneration command twice, record both SHA-256 values, assert equality, then rerun the focused comparison. |
+| Validation provenance | recorded | Tested commit: `42cc4ebcc1c54ea9d2eb871035df3d208a1a33e2` (`docs: correct startup validation evidence`). This is the committed documentation correction and validation tip; `3e159553f170033ae9c1771df297d0a76d35b045` remains only the earlier fallback-fixture commit. Every command in this log exited 0. |
+| Gallery compare | passed | `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet`: 1 passed, 0 failed, exit 0. |
+| Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet`: 1 passed, 0 failed, exit 0. |
+| Two-run regeneration idempotence | passed | Two opt-in `regenerate_rendering_gallery` runs each passed (1 passed, 0 failed, exit 0). Both SHA-256 values were `698F93054F2CB271F99834AC261D1C37EB24A1B3B347F4E6B1A0C93616751189`; equality was `True`; the final focused comparison passed (1 passed, 0 failed, exit 0). |
 | Deliberate mismatch detection and restoration | passed | The red comparison for the newly added committed fixture produced the expected unified diff; regeneration restores a passing fixture. |
-| Focused startup structural tests | pending | Run `cargo test --test screen_model startup --quiet` and record the actual result. |
-| ANSI tests | pending | Run `cargo test --test ansi_sanitization --quiet` and record the actual result. |
-| Library tests | pending | Run `cargo test --lib --quiet` and record the actual result. |
-| Full `cargo test --all-targets --quiet` | pending | Run after the focused checks and record the actual target results. |
-| `cargo fmt --check` | pending | Run after the focused checks. |
-| Clippy with `-D warnings` | pending | Run `cargo clippy --all-features --all-targets -- -D warnings` and record the actual result. |
-| `git diff --check` | pending | Run after validation and record the actual result. |
-| VS Code diagnostics | pending | Check changed-file diagnostics after the final documentation edit. |
-| Acceptance 11 worktree artifacts | pending | Run `git status --short` after all staging, commits, and validation. The condition prohibits unintended fixture, generated, or terminal-capture artifacts; it does not require a perfectly pristine worktree with no intentional plan context. |
+| Focused startup structural tests | passed | `cargo test --test screen_model --quiet`: 114 passed, 0 failed, exit 0. |
+| ANSI tests | passed | `cargo test --test ansi_sanitization --quiet`: 9 passed, 0 failed, exit 0. |
+| Focused Markdown tests | passed | `cargo test --lib markdown::tests --quiet`: 30 passed, 0 failed, exit 0. |
+| Focused file-diff tests | passed | `cargo test --lib file_diff::tests --quiet`: 10 passed, 0 failed, exit 0. |
+| Focused palette tests | passed | `cargo test --lib palette::tests --quiet`: 2 passed, 0 failed, exit 0. |
+| Focused TUI tests | passed | `cargo test --lib tui::tests --quiet`: 135 passed, 0 failed, exit 0. |
+| Library tests | passed | `cargo test --lib --quiet`: 280 passed, 0 failed, 1 ignored, exit 0. |
+| Full `cargo test --all-targets --quiet` | passed | Library: 280 passed, 1 ignored; binary target: 0 tests; ANSI integration: 9 passed; context-budget integration: 0 passed, 2 ignored; screen-model integration: 114 passed; exit 0. |
+| `cargo fmt --check` | passed | Completed with exit 0 and no output. |
+| Clippy with `-D warnings` | passed | `cargo clippy --all-features --all-targets -- -D warnings` completed with exit 0. |
+| `git diff --check` | passed | Completed with exit 0; its only output was Git's CRLF advisory for the unmodified gallery fixture, not a whitespace error. |
+| VS Code diagnostics | passed | No errors reported for `docs/rendering-validation.md`. |
+| Acceptance 11 worktree artifacts | passed | `git status --short` after the validation run returned exactly `?? .wayfinder/startup-surface/`. This intentionally untracked plan context was not staged. No unintended fixture, generated, or terminal-capture artifacts exist. Acceptance 11 requires no unintended artifacts, not a pristine worktree with no intentional untracked files. |
 | Windows Terminal | unverified | Requires interactive observation. |
 | VS Code integrated terminal | unverified | Requires interactive observation. |
 | Legacy conhost | unverified | Requires interactive observation. |
