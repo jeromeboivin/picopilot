@@ -30,7 +30,7 @@ renderer and `tui::draw` against ratatui `TestBackend` buffers. Each transcript
 row records text, display width, foreground/background color, and modifiers;
 each full-screen app fixture records every buffer row and contiguous style run.
 
-The gallery has 50 named sections:
+The gallery has 51 named sections:
 
 | Group | Sections |
 | --- | --- |
@@ -40,7 +40,7 @@ The gallery has 50 named sections:
 | Tool progress and results | `tool-progress-live-output`, `tool-result-ansi-success`, `tool-result-error`, `bash-truncation-verbose-off`, `bash-truncation-verbose-on`, `edit-diff-context-and-words` |
 | Tool header states | `tool-header-queued`, `tool-header-running`, `tool-header-success`, `tool-header-error`, plus the four `-macos` variants and `tool-result-ansi-success-macos` |
 | Spinner | `macos`, `windows-linux`, and `ghostty`, with clocks `0`, `120`, `600`, `3000`, and `30000` ms plus reduced motion |
-| Startup surface | `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission` |
+| Startup surface | `startup-two-column-and-vertical`, `startup-wordmark-fallback`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission` |
 | Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `usage`, `nested-concurrent-tasks`, `consecutive-user-messages` |
 
 The gallery is compared during ordinary test runs. Regeneration is opt-in and
@@ -133,8 +133,8 @@ the specification.
 | `insert_before` receives the exact rendered line count across wrapping inputs | `automated` | `tests/screen_model.rs`: `completing_a_live_entry_inserts_its_exact_lines_before_the_viewport`, `committed_long_lines_need_wrapped_height_before_insert`, `transcript_wrapping_covers_required_widths_and_unicode_clusters`, `commit_height_matches_the_rendered_vector_at_required_widths`; widths include `1`, `2`, `3`, `20`, `40`, `80`, and `120`. |
 | Committed events cannot be mutated and late changes do not duplicate them | `automated` | `tests/screen_model.rs`: `committed_entries_cannot_be_mutated_by_late_updates`, `committed_entry_updates_are_ignored_without_inserting_a_duplicate`, `completed_history_is_not_recommitted_or_rerendered_by_later_updates`. |
 | Resize repaints live rows without recommitting history | `automated` | `tests/screen_model.rs`: `completed_history_is_not_recommitted_or_rerendered_by_later_updates`; terminal-specific resize observation remains manual. |
-| Visible viewport reset is interactive-only, occurs after initialization before first draw, does not purge scrollback, adds one separator, and reset failure remains nonfatal | `automated` / `manual` | `src/tui.rs`: `interactive_startup_resets_before_the_first_draw_and_restores`, `redirected_startup_skips_all_operations`, `reset_failure_does_not_skip_first_draw_or_restore`, and `visible_viewport_reset_clears_only_the_current_screen`; real host scrollback remains manual. |
-| Startup surface lifecycle, responsive rendering, metadata bounds, wrapping, omission, and wordmark fallback | `automated` / `gallery` | `tests/screen_model.rs`: `initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries`, `accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it`, `startup_surface_reflows_orders_metadata_and_bounds_overflow`, `startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint`, `startup_surface_omits_unavailable_metadata_and_keeps_canonical_remaining_order`, `startup_surface_wraps_unicode_values_and_reflows_on_resize`, `startup_surface_uses_display_model_label_active_counts_and_measured_layouts`, and `startup_surface_is_not_restored_for_new_or_resumed_conversations`; gallery sections `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission`. |
+| Visible viewport reset is interactive-only, occurs after initialization before first draw, does not purge scrollback, adds one separator, and reset failure remains nonfatal | `automated` / `manual` | `src/tui.rs`: `interactive_startup_resets_before_the_first_draw_and_restores` proves reset ordering and restoration; `redirected_startup_skips_all_operations` proves the noninteractive exclusion; `reset_failure_does_not_skip_first_draw_or_restore` proves the nonfatal failure path; `visible_viewport_reset_clears_only_the_current_screen` proves the reset sequence; `ctrl_c_exits_the_event_loop_and_cleans_the_startup_backend_without_transcript_commits` proves quit cleanup. Real-host scrollback remains manual. |
+| Startup surface lifecycle, responsive rendering, metadata bounds, wrapping, omission, selected skills, and wordmark fallback | `automated` / `gallery` | `tests/screen_model.rs`: `initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries`; `empty_enter_keeps_the_startup_surface_without_history_or_screen_changes`; `accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it`; `accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_history` (accepted slash and fleet inputs, rejected input, quit-before-submit cleanup); `startup_surface_uses_the_only_available_row_for_the_overflow_hint`; `startup_surface_shows_all_available_metadata_in_canonical_order`; `startup_surface_reflows_from_two_columns_based_on_metadata_width`; `startup_surface_shows_a_fixed_nonzero_selected_skill_count`; `startup_surface_wraps_unicode_values_and_reflows_on_resize`; `startup_surface_uses_display_model_label_active_counts_and_measured_layouts` (width-3 wordmark fallback); and `startup_surface_is_not_restored_for_new_or_resumed_conversations`. Gallery sections `startup-two-column-and-vertical`, `startup-wordmark-fallback`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission` serialize fixed production-renderer inputs. |
 | Transcript rendering has no secondary `Paragraph::wrap` or horizontal transcript padding | `automated` | `tests/screen_model.rs`: `production_transcript_to_buffer_preserves_prewrapped_rows_without_extra_transformation` renders prewrapped assistant rows through `ScreenModel::draw_live` into `TestBackend` at 10 columns. It distinguishes an extra wrap or horizontal padding from the worked rows. The dependency-only `unstable-rendered-line-info` condition remains unverified. |
 | All 69 palette keys and exact RGB values | `automated` | `src/palette.rs`: `every_dark_palette_key_resolves_to_its_exact_value` and `palette_keys_are_unique_and_complete_against_the_expected_table`. |
 | One 50 ms clock drives all animation phases and idle stops drawing | `automated` | `src/tui.rs`: `one_sampled_clock_drives_spinner_and_tool_phases_while_idle_and_reduced_motion_stop_motion` proves the shared 600 ms sampled timestamp across spinner and running-tool phases, and asserts active motion selects a 50 ms redraw timer while idle and reduced motion select neither animation timer nor redraw. Production `run_loop` uses that policy with `EventStream` terminal input, so idle waits for input, runtime events, permissions, or usage refresh without animation-only redraws. |
@@ -168,7 +168,7 @@ sections but still miss at least one specification subcase.
 | Sessions, models, tools, skills, approval, and picker replacement | `partial` | `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`; long-list navigation and every cancel/outcome branch remain manual or unit-only. |
 | `/status` static transcript block | `partial` | `status` app fixture and TUI status tests; empty local output and every count state are not represented together. |
 | `/usage` cost, context, attribution, and wrapping | `gallery` | `usage` app fixture renders fixed usage, cost, context, and attribution data at all gallery widths. |
-| Startup responsive layouts, wrapped values, bounded metadata, and metadata omission | `gallery` | `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission` serialize production `tui::draw` buffers at widths `20`, `40`, `80`, and `120`. The dedicated structural test `startup_surface_uses_display_model_label_active_counts_and_measured_layouts` covers wordmark fallback at width `3`. |
+| Startup responsive layouts, wrapped values, bounded metadata, metadata omission, and wordmark fallback | `gallery` | `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission` serialize fixed production `tui::draw` buffers at widths `20`, `40`, `80`, and `120`; `startup-wordmark-fallback` serializes the production fallback at structural width `3`. `startup_surface_uses_display_model_label_active_counts_and_measured_layouts` is the corresponding focused structural test. |
 | Picopilot-only reasoning, subagents, notices, and approval | `gallery` | `reasoning-collapsed`, `reasoning-expanded`, notice sections, `subagent-task-top-level`, `subagent-task-nested`, `nested-concurrent-tasks`, `picker-approval`, and `approval-resolved`. |
 
 ## Focused Validation Matrix
@@ -270,14 +270,17 @@ not mark interactive environments passed from source inspection alone.
 
 | Check | Result | Evidence or blocker |
 | --- | --- | --- |
-| Gallery compare | passed | `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet` |
-| Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures --quiet`: 2 passed, 1 ignored. |
-| Two-run regeneration idempotence | passed | Both SHA-256 values were `B28F6901BF8F0AB14253C3336917CC3A77DEF0C90752BBF836FB8683EB3AA510`. |
-| Deliberate mismatch detection and restoration | passed | Corruption produced the expected unified diff and nonzero exit; restored fixture compare passed after cache invalidation. |
-| Focused structural/renderer tests | passed | Screen model 99, ANSI 9, Markdown 30, diff 6, palette 2, TUI 125; all passed. |
+| Validation baseline | recorded | Pinned commit: `122d1c8e30628188782a92cc6b867cae6abc886b`. Results below were run against this baseline with the focused fixture and ledger corrections applied. |
+| Gallery compare | passed | `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet`: 1 passed. |
+| Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet`: 1 passed. Ordinary `cargo test --lib tui::rendering_fixtures --quiet`: 2 passed, 1 ignored, exit 0. |
+| Two-run regeneration idempotence | passed | Both opt-in regeneration SHA-256 values were `698F93054F2CB271F99834AC261D1C37EB24A1B3B347F4E6B1A0C93616751189`; the final focused comparison passed. |
+| Deliberate mismatch detection and restoration | passed | The red comparison for the newly added committed fixture produced the expected unified diff; regeneration restores a passing fixture. |
+| Focused startup structural tests | passed | `cargo test --test screen_model startup --quiet`: 14 passed. |
+| ANSI tests | passed | `cargo test --test ansi_sanitization --quiet`: 9 passed. |
+| Library tests | passed | `cargo test --lib --quiet`: 280 passed, 1 ignored. |
+| Full `cargo test --all-targets --quiet` | passed | Library: 280 passed, 1 ignored; binary target: 0 tests; ANSI integration: 9 passed; context-budget integration: 0 passed, 2 intentionally ignored; screen-model integration: 114 passed. |
 | `cargo fmt --check` | passed | No formatting differences. |
-| Clippy with `-D warnings` | passed | `cargo clippy --all-targets -- -D warnings` completed successfully. |
-| Full `cargo test --all-targets --quiet` | passed | 266 passed, 1 ignored; integration targets passed. |
+| Clippy with `-D warnings` | passed | `cargo clippy --all-features --all-targets -- -D warnings` completed successfully. |
 | `git diff --check` | passed | No whitespace errors. |
 | VS Code diagnostics | passed | No errors reported for the changed Rust and Markdown files. |
 | Windows Terminal | unverified | Requires interactive observation. |

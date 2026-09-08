@@ -5359,6 +5359,38 @@ cell_span=0..120 text="                                                         
 row=13 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
+[startup name=startup-wordmark-fallback height=14]
+width=3 rows=14
+row=0 text="Pic"
+cell_span=0..3 text="Pic" fg=#d77757 bg=reset modifiers=BOLD/NONE
+row=1 text="Ver"
+cell_span=0..3 text="Ver" fg=#505050 bg=reset modifiers=NONE/NONE
+row=2 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="mor"
+cell_span=0..3 text="mor" fg=#505050 bg=reset modifiers=DIM/NONE
+row=7 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="───"
+cell_span=0..3 text="───" fg=#888888 bg=reset modifiers=NONE/NONE
+row=9 text="❯  "
+cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
+row=10 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="   "
+cell_span=0..3 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="───"
+cell_span=0..3 text="───" fg=#888888 bg=reset modifiers=NONE/NONE
+row=13 text="  …"
+cell_span=0..3 text="  …" fg=reset bg=reset modifiers=DIM/NONE
+
 [startup name=startup-wrapped-values height=14]
 width=20 rows=14
 row=0 text="[pi]                "

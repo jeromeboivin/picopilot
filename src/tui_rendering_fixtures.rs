@@ -191,6 +191,7 @@ fn append_spinner_fixtures(output: &mut String) {
 
 fn append_app_fixtures(output: &mut String) {
     append_startup_app_fixture(output, "startup-two-column-and-vertical", 14, |_| {});
+    append_startup_wordmark_fallback_fixture(output);
     append_startup_app_fixture(output, "startup-wrapped-values", 14, |app| {
         app.set_model(Some("gallery-model".to_string()));
         app.preload_models(vec![Model {
@@ -259,6 +260,25 @@ where
             .expect("startup gallery surface should render");
         append_buffer(output, width, height as usize, terminal.backend().buffer());
     }
+    writeln!(output).unwrap();
+}
+
+fn append_startup_wordmark_fallback_fixture(output: &mut String) {
+    const WIDTH: usize = 3;
+    const HEIGHT: u16 = 14;
+
+    writeln!(
+        output,
+        "[startup name=startup-wordmark-fallback height={HEIGHT}]"
+    )
+    .unwrap();
+    let app = startup_gallery_app();
+    let mut terminal = Terminal::new(TestBackend::new(WIDTH as u16, HEIGHT))
+        .expect("startup fallback gallery terminal should initialize");
+    terminal
+        .draw(|frame| draw(frame, &app))
+        .expect("startup fallback gallery surface should render");
+    append_buffer(output, WIDTH, HEIGHT as usize, terminal.backend().buffer());
     writeln!(output).unwrap();
 }
 
