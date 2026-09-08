@@ -335,6 +335,25 @@ fn typing_slash_dismisses_startup_surface_while_showing_command_completion() {
 }
 
 #[test]
+fn model_picker_shows_the_reasoning_effort_selected_with_left_arrow() {
+    let mut app = App::new(None);
+    app.set_models(vec![github_copilot_sdk::types::Model {
+        id: "gpt-5".to_string(),
+        name: "GPT-5".to_string(),
+        supported_context_tiers: Some(vec!["default".to_string()]),
+        supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+        ..Default::default()
+    }]);
+
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+
+    let terminal = draw_startup(&app, 80, 14);
+    let output = terminal_text(&terminal);
+    assert!(output.contains("Reasoning: low"));
+    assert!(output.contains("Left/Right to adjust"));
+}
+
+#[test]
 fn startup_artwork_uses_warm_accent_muted_structure_and_readable_dynamic_values() {
     let app = App::new_with_working_directory(
         Some("gpt-5".to_string()),

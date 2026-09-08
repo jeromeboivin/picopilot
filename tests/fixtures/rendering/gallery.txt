@@ -6668,10 +6668,11 @@ cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=7..20 text="Local Model  " fg=#ffffff bg=reset modifiers=NONE/NONE
-row=11 text="  ↑/↓ to select · En"
-cell_span=0..20 text="  ↑/↓ to select · En" fg=#999999 bg=reset modifiers=NONE/NONE
-row=12 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  Reasoning: model d"
+cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="model d" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=12 text="  Up/Down to select "
+cell_span=0..20 text="  Up/Down to select " fg=#999999 bg=reset modifiers=NONE/NONE
 row=13 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
@@ -6706,10 +6707,13 @@ cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=7..40 text="Local Model                   loc" fg=#ffffff bg=reset modifiers=NONE/NONE
-row=11 text="  ↑/↓ to select · Enter to confirm · Esc"
-cell_span=0..40 text="  ↑/↓ to select · Enter to confirm · Esc" fg=#999999 bg=reset modifiers=NONE/NONE
-row=12 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  Reasoning: model default  Context: mod"
+cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=13..26 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=26..37 text="  Context: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=37..40 text="mod" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=12 text="  Up/Down to select · Left/Right to adju"
+cell_span=0..40 text="  Up/Down to select · Left/Right to adju" fg=#999999 bg=reset modifiers=NONE/NONE
 row=13 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
@@ -6748,11 +6752,15 @@ cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=7..62 text="Local Model                   local      unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=62..80 text="                  " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                              "
-cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+row=11 text="  Reasoning: model default  Context: model default                              "
+cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=13..26 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=26..37 text="  Context: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=37..50 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=50..80 text="                              " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                                                                                "
-cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="  Up/Down to select · Left/Right to adjust · Enter to confirm · Esc to cancel   "
+cell_span=0..77 text="  Up/Down to select · Left/Right to adjust · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=77..80 text="   " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=14
@@ -6791,11 +6799,15 @@ cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=7..62 text="Local Model                   local      unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=62..120 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                                                                      "
-cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+row=11 text="  Reasoning: model default  Context: model default                                                                      "
+cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=13..26 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=26..37 text="  Context: " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=37..50 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=50..120 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                                                                                                                        "
-cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="  Up/Down to select · Left/Right to adjust · Enter to confirm · Esc to cancel                                           "
+cell_span=0..77 text="  Up/Down to select · Left/Right to adjust · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=77..120 text="                                           " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 

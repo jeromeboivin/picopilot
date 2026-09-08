@@ -1154,9 +1154,9 @@ impl App {
     fn cancel_picker(&mut self) {
         let outcome = match self.picker {
             Some(PickerKind::Sessions) => Some("Kept current session".to_string()),
-            Some(PickerKind::Models) => Some(format!(
-                "Kept model as {}",
-                self.status
+            Some(PickerKind::Models) => {
+                let model = self
+                    .status
                     .model
                     .as_deref()
                     .and_then(|model_id| {
@@ -1166,8 +1166,13 @@ impl App {
                             .map(|model| sanitize_plain(&model.name))
                     })
                     .or_else(|| self.status.model.as_deref().map(sanitize_plain))
-                    .unwrap_or_else(|| "auto".to_string())
-            )),
+                    .unwrap_or_else(|| "auto".to_string());
+                Some(model_selection_message(
+                    "Kept model as",
+                    &model,
+                    self.status.reasoning_effort.as_deref(),
+                ))
+            }
             Some(PickerKind::Tools) => Some(format!(
                 "Kept tools: {}/{} enabled",
                 self.toolset.len(),
@@ -3173,17 +3178,22 @@ async fn process_terminal_events(
                         selection.reasoning_effort.as_deref(),
                     );
                     app.set_toolset(runtime.active_toolset);
-                    app.set_reasoning_effort(displayed_reasoning);
-                    app.apply(crate::events::EventUpdate::ModelChanged {
-                        model: model.clone(),
-                    });
                     let display_model = runtime
                         .models
                         .iter()
                         .find(|candidate| candidate.id == model)
                         .map(|candidate| sanitize_plain(&candidate.name))
                         .unwrap_or_else(|| sanitize_plain(&model));
-                    app.add_local_output(format!("Set model to {display_model}"));
+                    let message = model_selection_message(
+                        "Set model to",
+                        &display_model,
+                        displayed_reasoning.as_deref(),
+                    );
+                    app.set_reasoning_effort(displayed_reasoning);
+                    app.apply(crate::events::EventUpdate::ModelChanged {
+                        model: model.clone(),
+                    });
+                    app.add_local_output(message);
                 }
             }
             UiAction::ApplyToolset(toolset) => {
@@ -3479,6 +3489,13 @@ fn displayed_reasoning_effort(
             .find(|model| model.id == model_id)
             .and_then(|model| model.default_reasoning_effort.clone())
     })
+}
+
+fn model_selection_message(prefix: &str, model: &str, reasoning_effort: Option<&str>) -> String {
+    format!(
+        "{prefix} {model} (reasoning: {})",
+        reasoning_effort.unwrap_or("model default")
+    )
 }
 
 const INPUT_PROMPT: &str = "❯ ";
@@ -3915,7 +3932,21 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
 const STARTUP_ART_WIDTH: usize = 69;
 const STARTUP_ART_ROWS: usize = 15;
 const STARTUP_ART_INTERIOR_WIDTH: usize = STARTUP_ART_WIDTH - 2;
-const STARTUP_ART: &str = include_str!("../ascii-art.txt");
+const STARTUP_ART: &str = r#"┌───────────────────────────────────────────────────────────────────┐
+│ PICOPILOT.EXE                                                     │
+│                                                                   │
+│ > INITIALIZING SYSTEM... Version: v0.1.0                          │
+│ > LOADING NEURAL MODULES... Project: picopilot                    │
+│ > BYPASSING SECURITY... Tools: 7                                  │
+│ > ACCESS GRANTED.                                                 │
+│                                                                   │
+│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│
+│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│
+│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │
+│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │
+│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │
+│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │
+└───────────────────────────────────────────────────────────────────┘"#;
 
 fn startup_art_lines(app: &App) -> Vec<Line<'static>> {
     STARTUP_ART
@@ -4490,6 +4521,23 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(spans));
     }
 
+    if matches!(picker, PickerKind::Models) {
+        let reasoning_effort = app
+            .picker_reasoning_effort
+            .as_deref()
+            .unwrap_or("model default");
+        let context_tier = app
+            .picker_context_tier
+            .as_deref()
+            .unwrap_or("model default");
+        lines.push(Line::from(vec![
+            Span::styled("  Reasoning: ", Style::default().fg(palette::INACTIVE)),
+            Span::styled(reasoning_effort, Style::default().fg(palette::TEXT)),
+            Span::styled("  Context: ", Style::default().fg(palette::INACTIVE)),
+            Span::styled(context_tier, Style::default().fg(palette::TEXT)),
+        ]));
+    }
+
     if item_count == 0 {
         lines.push(Line::from(Span::styled(
             "  No entries available.",
@@ -4497,8 +4545,13 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     if area.height as usize > lines.len() {
+        let controls = if matches!(picker, PickerKind::Models) {
+            "  Up/Down to select · Left/Right to adjust · Enter to confirm · Esc to cancel"
+        } else {
+            "  ↑/↓ to select · Enter to confirm · Esc to cancel"
+        };
         lines.push(Line::from(Span::styled(
-            "  ↑/↓ to select · Enter to confirm · Esc to cancel",
+            controls,
             Style::default().fg(palette::INACTIVE),
         )));
     }
@@ -9368,6 +9421,7 @@ mod tests {
     #[test]
     fn picker_cancellation_commits_a_truthful_local_outcome() {
         let mut app = App::new(Some("gpt-5".to_string()));
+        app.set_reasoning_effort(Some("high".to_string()));
         app.set_models(vec![Model {
             id: "gpt-5".to_string(),
             name: "GPT-5".to_string(),
@@ -9381,7 +9435,7 @@ mod tests {
         assert!(matches!(
             app.entries().last(),
             Some(ChatEntry::LocalOutput(lines))
-                if lines.iter().any(|line| line.spans.iter().any(|span| span.content.contains("Kept model as")))
+                if lines.iter().any(|line| line.spans.iter().any(|span| span.content.contains("Kept model as GPT-5 (reasoning: high)")))
         ));
     }
 

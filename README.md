@@ -38,6 +38,31 @@ The available startup options are:
 
 Use `picopilot --help` for the generated command reference.
 
+## In-app slash commands
+
+In the prompt, type `/` to open completion. It shows two different kinds of
+entries:
+
+- **Built-in commands** run locally in picopilot. They are always available
+   and do not send a prompt to the model.
+- **User-invocable skills** come from discovered `SKILL.md` files. Selecting
+   one enables that skill for the current conversation when necessary, then
+   sends the literal slash prompt to the model.
+
+Built-in commands are:
+
+| Command | What it does |
+| --- | --- |
+| `/status` | Shows the active session, model, reasoning level, context tier, tools, and skills. Takes no arguments. |
+| `/usage` | Shows session usage and context attribution. Takes no arguments. |
+| `/resume` | Opens the previous-conversation picker. Use `Up`/`Down` or `j`/`k` to select, `Enter` to load, or `Esc` to cancel. Takes no arguments. |
+| `/fleet PROMPT` | Starts a Fleet run for `PROMPT`. A non-empty prompt is required. |
+
+Use `Up`/`Down` to choose a completion, `Tab` to place it in the prompt while
+keeping any trailing arguments, `Enter` to run or send it, and `Esc` to close
+completion. Unknown slash commands and skills that are not user-invocable are
+sent as ordinary prompts.
+
 ## Local model providers (experimental)
 
 picopilot can add models from one OpenAI-compatible provider alongside the
@@ -172,13 +197,9 @@ The status bar shows the active count as `skills N/M`. Applying a selection is
 available while idle and reconnects the current session when it already has
 history.
 
-Typing `/` opens command completion for built-in commands and
-`user-invocable` skills. `Up` and `Down` navigate, `Tab` accepts the highlighted
-command while preserving trailing arguments, `Enter` accepts an incomplete
-command or submits an exact one, and `Esc` dismisses completion. An exact
-user-invocable skill command automatically activates that skill when needed,
-then sends the original literal slash prompt to the Copilot SDK. Unknown and
-non-user-invocable slash commands remain ordinary prompt text.
+See [In-app slash commands](#in-app-slash-commands) for the distinction between
+native commands and user-invocable skills, their behavior, and completion
+controls.
 
 ### Input and terminal controls
 
