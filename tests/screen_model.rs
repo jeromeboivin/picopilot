@@ -312,6 +312,52 @@ fn initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries(
 }
 
 #[test]
+fn typing_slash_dismisses_startup_surface_while_showing_command_completion() {
+    let mut app = App::new(None);
+
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)
+        ),
+        picopilot::tui::UiAction::None
+    );
+    assert_eq!(app.input(), "/");
+
+    let terminal = draw_startup(&app, 80, 14);
+    let output = terminal_text(&terminal);
+    assert!(!output.contains("PICOPILOT.EXE"));
+    assert!(!output.contains("Picopilot"));
+    assert!(output.contains("/fleet"));
+    assert!(output.contains("/resume"));
+    assert!(output.contains("/status"));
+    assert!(output.contains("/usage"));
+}
+
+#[test]
+fn startup_artwork_uses_warm_accent_muted_structure_and_readable_dynamic_values() {
+    let app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let terminal = draw_startup(&app, 69, 24);
+    let buffer = terminal.backend().buffer();
+
+    assert_eq!(buffer[(0, 0)].fg, palette::CLAUDE);
+    assert_eq!(cell_at_text(&terminal, "PICOPILOT.EXE").fg, palette::CLAUDE);
+    assert_eq!(cell_at_text(&terminal, ">").fg, palette::CLAUDE);
+    assert_eq!(
+        cell_at_text(&terminal, "INITIALIZING SYSTEM...").fg,
+        palette::INACTIVE
+    );
+    assert_eq!(cell_at_text(&terminal, "v0.1.0").fg, palette::TEXT);
+    assert_eq!(cell_at_text(&terminal, "picopilot").fg, palette::TEXT);
+    assert_eq!(cell_at_text(&terminal, "7").fg, palette::TEXT);
+    assert_eq!(buffer[(1, 2)].fg, palette::SUBTLE);
+    assert_eq!(buffer[(1, 8)].fg, palette::CLAUDE);
+}
+
+#[test]
 fn accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it() {
     let mut accepted = App::new(None);
     type_input(&mut accepted, "hello");
@@ -346,7 +392,7 @@ fn accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it
     rejected_terminal
         .draw(|frame| picopilot::tui::draw(frame, &rejected))
         .expect("rejected frame should draw");
-    assert!(terminal_text(&rejected_terminal).contains("Picopilot"));
+    assert!(!terminal_text(&rejected_terminal).contains("Picopilot"));
 }
 
 #[test]
@@ -709,7 +755,7 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
         ),
         picopilot::tui::UiAction::None
     );
-    assert!(terminal_text(&draw_startup(&empty_fleet, 80, 14)).contains("Picopilot"));
+    assert!(!terminal_text(&draw_startup(&empty_fleet, 80, 14)).contains("Picopilot"));
     let mut quit = App::new(None);
     let mut before_quit = draw_startup(&quit, 80, 14);
     assert!(terminal_text(&before_quit).contains("Picopilot"));

@@ -2445,6 +2445,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::None
         }
         KeyCode::Char(character) => {
+            if character == '/' && app.input().is_empty() {
+                app.dismiss_startup_surface();
+            }
             app.push_input(character);
             UiAction::None
         }
@@ -3943,9 +3946,44 @@ fn startup_art_lines(app: &App) -> Vec<Line<'static>> {
                 };
                 startup_art_status_line(" > BYPASSING SECURITY... Tools: ", &tools)
             }
-            _ => Line::from(line.to_string()),
+            _ if line.starts_with("│ > ACCESS GRANTED.") => {
+                startup_art_static_status_line(" > ACCESS GRANTED.")
+            }
+            _ => startup_art_static_line(line),
         })
         .collect()
+}
+
+fn startup_art_static_line(line: &str) -> Line<'static> {
+    if line.starts_with('┌') || line.starts_with('└') {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(palette::CLAUDE),
+        ));
+    }
+
+    let interior = line
+        .strip_prefix('│')
+        .and_then(|line| line.strip_suffix('│'));
+    let Some(interior) = interior else {
+        return Line::from(Span::styled(
+            line.to_string(),
+            Style::default().fg(palette::SUBTLE),
+        ));
+    };
+    let interior_style = if interior.trim().is_empty() {
+        Style::default().fg(palette::SUBTLE)
+    } else if interior.contains("PICOPILOT.EXE") || interior.contains('█') || interior.contains('╔')
+    {
+        Style::default().fg(palette::CLAUDE)
+    } else {
+        Style::default().fg(palette::INACTIVE)
+    };
+    Line::from(vec![
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+        Span::styled(interior.to_string(), interior_style),
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+    ])
 }
 
 fn normalize_startup_art_value(value: &str) -> String {
@@ -3962,7 +4000,37 @@ fn normalize_startup_art_value(value: &str) -> String {
 fn startup_art_status_line(prefix: &str, value: &str) -> Line<'static> {
     let slot_width = STARTUP_ART_INTERIOR_WIDTH.saturating_sub(display_width(prefix));
     let value = startup_art_slot_value(value, slot_width);
-    Line::from(format!("│{prefix}{value}│"))
+    Line::from(vec![
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+        Span::styled(" > ", Style::default().fg(palette::CLAUDE)),
+        Span::styled(
+            prefix[3..].to_string(),
+            Style::default().fg(palette::INACTIVE),
+        ),
+        Span::styled(
+            value.trim_end().to_string(),
+            Style::default().fg(palette::TEXT),
+        ),
+        Span::styled(
+            " ".repeat(value.len().saturating_sub(value.trim_end().len())),
+            Style::default().fg(palette::SUBTLE),
+        ),
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+    ])
+}
+
+fn startup_art_static_status_line(content: &str) -> Line<'static> {
+    let padding = STARTUP_ART_INTERIOR_WIDTH.saturating_sub(display_width(content));
+    Line::from(vec![
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+        Span::styled(" > ", Style::default().fg(palette::CLAUDE)),
+        Span::styled(
+            content[3..].to_string(),
+            Style::default().fg(palette::INACTIVE),
+        ),
+        Span::styled(" ".repeat(padding), Style::default().fg(palette::SUBTLE)),
+        Span::styled("│", Style::default().fg(palette::CLAUDE)),
+    ])
 }
 
 fn startup_art_slot_value(value: &str, width: usize) -> String {
