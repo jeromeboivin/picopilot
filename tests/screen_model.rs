@@ -106,6 +106,23 @@ fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
     terminal
 }
 
+fn draw_live_screen(terminal: &mut Terminal<TestBackend>, app: &App, screen: &mut ScreenModel) {
+    terminal
+        .draw(|frame| {
+            picopilot::tui::draw_with_screen_for_platform(
+                frame,
+                app,
+                screen,
+                Platform {
+                    is_windows: false,
+                    wt_session: false,
+                },
+                0,
+            )
+        })
+        .expect("live screen frame should draw");
+}
+
 #[test]
 fn startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_live_values() {
     let app = App::new_with_working_directory(
@@ -770,6 +787,44 @@ fn live_assistant_activity_is_rendered_before_its_current_response() {
         .expect("live assistant should render");
 
     assert!(row_containing(&terminal, "Thinking") < row_containing(&terminal, "current response"));
+}
+
+#[test]
+fn live_screen_renders_activity_before_live_assistant_and_clears_it_when_terminal() {
+    let mut app = App::new(None);
+    let mut screen = ScreenModel::default();
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+        .expect("inline terminal should initialize");
+
+    app.reset_for_new_conversation();
+    app.set_spinner_override(Some("Thinking".to_string()));
+    app.add_user_message("status ordering".to_string());
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-live".to_string(),
+        content: "current response".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    draw_live_screen(&mut terminal, &app, &mut screen);
+
+    let spinner_row = row_containing(&terminal, "Thinking");
+    let assistant_row = row_containing(&terminal, "current response");
+    assert!(spinner_row < assistant_row);
+    assert!(buffer_rows(&terminal)[spinner_row as usize + 1]
+        .trim()
+        .is_empty());
+    assert!(assistant_row < FIXED_LIVE_REGION_HEIGHT);
+
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-live".to_string(),
+        content: "final response".to_string(),
+        agent_id: None,
+    });
+    apply_pending_changes(&mut app, &mut screen, &mut terminal);
+    draw_live_screen(&mut terminal, &app, &mut screen);
+
+    assert!(terminal_text(&terminal).contains("final response"));
+    assert!(!terminal_text(&terminal).contains("Thinking"));
 }
 
 #[test]

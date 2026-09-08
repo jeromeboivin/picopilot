@@ -2592,26 +2592,44 @@ fn shift_is_pressed() -> bool {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    draw_frame(frame, app, None, 0);
+    draw_frame(frame, app, None, Platform::current(), 0);
 }
 
 pub fn cleanup_after_quit<B: Backend>(terminal: &mut Terminal<B>) -> io::Result<()> {
     terminal.clear()
 }
 
-fn draw_with_screen(
+pub fn draw_with_screen(
     frame: &mut Frame,
     app: &App,
     screen: &mut ScreenModel,
     animation_elapsed_ms: u64,
 ) {
-    draw_frame(frame, app, Some(screen), animation_elapsed_ms);
+    draw_with_screen_for_platform(
+        frame,
+        app,
+        screen,
+        Platform::current(),
+        animation_elapsed_ms,
+    );
+}
+
+#[doc(hidden)]
+pub fn draw_with_screen_for_platform(
+    frame: &mut Frame,
+    app: &App,
+    screen: &mut ScreenModel,
+    platform: Platform,
+    animation_elapsed_ms: u64,
+) {
+    draw_frame(frame, app, Some(screen), platform, animation_elapsed_ms);
 }
 
 fn draw_frame(
     frame: &mut Frame,
     app: &App,
     screen: Option<&mut ScreenModel>,
+    platform: Platform,
     animation_elapsed_ms: u64,
 ) {
     let prompt_layout = prompt_layout(app, frame.area());
@@ -2646,7 +2664,14 @@ fn draw_frame(
         frame.render_widget(Paragraph::new(startup_lines), startup_area);
     }
     if let Some(screen) = screen {
-        draw_live_chat(frame, app, screen, chat_area, animation_elapsed_ms);
+        draw_live_chat(
+            frame,
+            app,
+            screen,
+            chat_area,
+            platform,
+            animation_elapsed_ms,
+        );
     } else {
         draw_chat(frame, app, chat_area, animation_elapsed_ms);
     }
@@ -4736,6 +4761,7 @@ fn draw_live_chat(
     app: &App,
     screen: &mut ScreenModel,
     area: Rect,
+    platform: Platform,
     animation_elapsed_ms: u64,
 ) {
     if app.transcript_expanded || app.show_internals {
@@ -4749,35 +4775,38 @@ fn draw_live_chat(
     }
 
     let spinner_visible = app.spinner_visible();
-    let live_assistant = screen.live_entries().iter().any(|entry| {
-        matches!(
-            entry.kind(),
-            LiveEntryKind::Assistant | LiveEntryKind::AssistantNested
-        )
-    });
     let transcript_height = if spinner_visible {
         area.height.saturating_sub(2) as usize
     } else {
         area.height as usize
     };
+    let live_assistant_offset = screen.first_visible_assistant_line_offset_at_width_with_clock(
+        platform,
+        area.width as usize,
+        animation_elapsed_ms,
+    );
     let mut lines = screen.visible_live_lines_at_width_with_clock(
-        Platform::current(),
+        platform,
         area.width as usize,
         transcript_height,
         animation_elapsed_ms,
     );
     if spinner_visible {
-        if live_assistant && area.height >= 1 {
+        if let Some(offset) = live_assistant_offset {
+            let assistant_lines = lines.split_off(offset.min(lines.len()));
             lines.extend(spinner_lines_at_width(
                 app,
                 area.width as usize,
                 animation_elapsed_ms,
             ));
-        }
-        if area.height >= 2 {
-            lines.push(Line::default());
-        }
-        if !live_assistant && area.height >= 1 {
+            if area.height >= 2 {
+                lines.push(Line::default());
+            }
+            lines.extend(assistant_lines);
+        } else {
+            if area.height >= 2 {
+                lines.push(Line::default());
+            }
             lines.extend(spinner_lines_at_width(
                 app,
                 area.width as usize,
@@ -7585,6 +7614,7 @@ mod tests {
                     &app,
                     &mut screen,
                     frame.area(),
+                    super::Platform::default(),
                     app.spinner.started_at_ms,
                 )
             })
@@ -7618,6 +7648,7 @@ mod tests {
                         &app,
                         &mut screen,
                         frame.area(),
+                        super::Platform::default(),
                         app.spinner.started_at_ms,
                     )
                 })

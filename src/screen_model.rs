@@ -538,6 +538,37 @@ impl ScreenModel {
             .take(max_rows)
             .collect()
     }
+
+    pub fn first_visible_assistant_line_offset_at_width_with_clock(
+        &mut self,
+        platform: Platform,
+        width: usize,
+        animation_elapsed_ms: u64,
+    ) -> Option<usize> {
+        let verbose = self.verbose;
+        let mut offset = 0;
+        for entry in self
+            .live
+            .iter_mut()
+            .filter(|entry| live_preview_enabled(entry.kind, platform))
+        {
+            if matches!(
+                entry.kind,
+                LiveEntryKind::Assistant | LiveEntryKind::AssistantNested
+            ) {
+                return Some(offset);
+            }
+            offset += entry
+                .rendered_at_width(
+                    width,
+                    ToolPlatform::current(),
+                    animation_elapsed_ms,
+                    verbose,
+                )
+                .len();
+        }
+        None
+    }
 }
 
 impl LiveEntry {
