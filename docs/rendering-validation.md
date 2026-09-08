@@ -268,21 +268,26 @@ Notes:
 This section is intentionally updated after validation commands are run. Do
 not mark interactive environments passed from source inspection alone.
 
+The final provenance row is written only after the documentation commit and
+the cited commands complete. It names the exact commit that was tested; it
+does not treat the earlier fallback-fixture commit as the final validation tip.
+
 | Check | Result | Evidence or blocker |
 | --- | --- | --- |
-| Validation baseline | recorded | Pinned commit: `122d1c8e30628188782a92cc6b867cae6abc886b`. Results below were run against this baseline with the focused fixture and ledger corrections applied. |
-| Gallery compare | passed | `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet`: 1 passed. |
-| Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet`: 1 passed. Ordinary `cargo test --lib tui::rendering_fixtures --quiet`: 2 passed, 1 ignored, exit 0. |
-| Two-run regeneration idempotence | passed | Both opt-in regeneration SHA-256 values were `698F93054F2CB271F99834AC261D1C37EB24A1B3B347F4E6B1A0C93616751189`; the final focused comparison passed. |
+| Validation provenance | pending | Run the cited commands after committing this documentation update. Record the exact tested tip SHA, commands, exit codes, and fixture hash; `3e159553f170033ae9c1771df297d0a76d35b045` is the fallback-fixture commit, not an assertion about the final documentation tip. |
+| Gallery compare | pending | Run `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet` individually and record its actual result. |
+| Gallery determinism | pending | Run `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet` individually and record its actual result. |
+| Two-run regeneration idempotence | pending | Run the documented opt-in regeneration command twice, record both SHA-256 values, assert equality, then rerun the focused comparison. |
 | Deliberate mismatch detection and restoration | passed | The red comparison for the newly added committed fixture produced the expected unified diff; regeneration restores a passing fixture. |
-| Focused startup structural tests | passed | `cargo test --test screen_model startup --quiet`: 14 passed. |
-| ANSI tests | passed | `cargo test --test ansi_sanitization --quiet`: 9 passed. |
-| Library tests | passed | `cargo test --lib --quiet`: 280 passed, 1 ignored. |
-| Full `cargo test --all-targets --quiet` | passed | Library: 280 passed, 1 ignored; binary target: 0 tests; ANSI integration: 9 passed; context-budget integration: 0 passed, 2 intentionally ignored; screen-model integration: 114 passed. |
-| `cargo fmt --check` | passed | No formatting differences. |
-| Clippy with `-D warnings` | passed | `cargo clippy --all-features --all-targets -- -D warnings` completed successfully. |
-| `git diff --check` | passed | No whitespace errors. |
-| VS Code diagnostics | passed | No errors reported for the changed Rust and Markdown files. |
+| Focused startup structural tests | pending | Run `cargo test --test screen_model startup --quiet` and record the actual result. |
+| ANSI tests | pending | Run `cargo test --test ansi_sanitization --quiet` and record the actual result. |
+| Library tests | pending | Run `cargo test --lib --quiet` and record the actual result. |
+| Full `cargo test --all-targets --quiet` | pending | Run after the focused checks and record the actual target results. |
+| `cargo fmt --check` | pending | Run after the focused checks. |
+| Clippy with `-D warnings` | pending | Run `cargo clippy --all-features --all-targets -- -D warnings` and record the actual result. |
+| `git diff --check` | pending | Run after validation and record the actual result. |
+| VS Code diagnostics | pending | Check changed-file diagnostics after the final documentation edit. |
+| Acceptance 11 worktree artifacts | pending | Run `git status --short` after all staging, commits, and validation. The condition prohibits unintended fixture, generated, or terminal-capture artifacts; it does not require a perfectly pristine worktree with no intentional plan context. |
 | Windows Terminal | unverified | Requires interactive observation. |
 | VS Code integrated terminal | unverified | Requires interactive observation. |
 | Legacy conhost | unverified | Requires interactive observation. |
@@ -295,13 +300,15 @@ Task: `TASK-20260907-startup-verification`
 Commit command: `git rev-parse --short HEAD`
 Application command: `$project = (Get-Location).Path; cargo run -- --project $project`
 
-No manual terminal-host observation was supplied for this task. The following
-checklist is therefore a record of unverified work, not a successful smoke
-test. The visible-viewport reset clear result is also unverified on every host
-because no safe actual host observation was captured.
+No manual terminal-host observation was supplied for this task. The matrix
+below records every acceptance-condition-8 observation as `unverified`, not a
+successful smoke test. Do not infer any entry from automated tests or the
+gallery. For clear-failure fallback, remain `unverified` unless a safe,
+reproducible fault-injection environment is available; otherwise record it as
+`blocked` with the reason.
 
-| Host | Status | Required checklist | Record |
+| Host | Status | Required observations | Record |
 | --- | --- | --- | --- |
-| Windows Terminal | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Run the application command above in normal Windows Terminal, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |
-| VS Code integrated terminal | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Run the application command above in the integrated PowerShell terminal, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |
-| Legacy conhost | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Open `conhost.exe`, start PowerShell in the repository, run the application command, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |
+| Windows Terminal | `unverified` | Environment, host, commit, and command; preexisting visible shell output before launch; visible reset with prior output reachable in scrollback; exactly one blank separator; initial banner and layout; narrow/wide resize before first submission; rejected-input retention; accepted normal-prompt dismissal; accepted slash-input dismissal in a fresh process; accepted shell-input dismissal in a fresh process; quit-before-submit with no committed banner; clear-failure fallback if safely reproducible. | No observation captured. Run the published command in normal Windows Terminal and record each observation individually. |
+| VS Code integrated terminal | `unverified` | Environment, host, commit, and command; preexisting visible shell output before launch; visible reset with prior output reachable in scrollback; exactly one blank separator; initial banner and layout; narrow/wide resize before first submission; rejected-input retention; accepted normal-prompt dismissal; accepted slash-input dismissal in a fresh process; accepted shell-input dismissal in a fresh process; quit-before-submit with no committed banner; clear-failure fallback if safely reproducible. | No observation captured. Run the published command in the integrated PowerShell terminal and record each observation individually. |
+| Legacy conhost | `unverified` | Environment, host, commit, and command; preexisting visible shell output before launch; visible reset with prior output reachable in scrollback; exactly one blank separator; initial banner and layout; narrow/wide resize before first submission; rejected-input retention; accepted normal-prompt dismissal; accepted slash-input dismissal in a fresh process; accepted shell-input dismissal in a fresh process; quit-before-submit with no committed banner; clear-failure fallback if safely reproducible. | No observation captured. Open `conhost.exe`, start PowerShell in the repository, run the published command, and record each observation individually. |
