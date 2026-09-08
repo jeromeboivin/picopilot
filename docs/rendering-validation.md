@@ -30,7 +30,7 @@ renderer and `tui::draw` against ratatui `TestBackend` buffers. Each transcript
 row records text, display width, foreground/background color, and modifiers;
 each full-screen app fixture records every buffer row and contiguous style run.
 
-The gallery has 46 named sections:
+The gallery has 50 named sections:
 
 | Group | Sections |
 | --- | --- |
@@ -40,6 +40,7 @@ The gallery has 46 named sections:
 | Tool progress and results | `tool-progress-live-output`, `tool-result-ansi-success`, `tool-result-error`, `bash-truncation-verbose-off`, `bash-truncation-verbose-on`, `edit-diff-context-and-words` |
 | Tool header states | `tool-header-queued`, `tool-header-running`, `tool-header-success`, `tool-header-error`, plus the four `-macos` variants and `tool-result-ansi-success-macos` |
 | Spinner | `macos`, `windows-linux`, and `ghostty`, with clocks `0`, `120`, `600`, `3000`, and `30000` ms plus reduced motion |
+| Startup surface | `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission` |
 | Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `usage`, `nested-concurrent-tasks`, `consecutive-user-messages` |
 
 The gallery is compared during ordinary test runs. Regeneration is opt-in and
@@ -132,6 +133,8 @@ the specification.
 | `insert_before` receives the exact rendered line count across wrapping inputs | `automated` | `tests/screen_model.rs`: `completing_a_live_entry_inserts_its_exact_lines_before_the_viewport`, `committed_long_lines_need_wrapped_height_before_insert`, `transcript_wrapping_covers_required_widths_and_unicode_clusters`, `commit_height_matches_the_rendered_vector_at_required_widths`; widths include `1`, `2`, `3`, `20`, `40`, `80`, and `120`. |
 | Committed events cannot be mutated and late changes do not duplicate them | `automated` | `tests/screen_model.rs`: `committed_entries_cannot_be_mutated_by_late_updates`, `committed_entry_updates_are_ignored_without_inserting_a_duplicate`, `completed_history_is_not_recommitted_or_rerendered_by_later_updates`. |
 | Resize repaints live rows without recommitting history | `automated` | `tests/screen_model.rs`: `completed_history_is_not_recommitted_or_rerendered_by_later_updates`; terminal-specific resize observation remains manual. |
+| Visible viewport reset is interactive-only, occurs after initialization before first draw, does not purge scrollback, adds one separator, and reset failure remains nonfatal | `automated` / `manual` | `src/tui.rs`: `interactive_startup_resets_before_the_first_draw_and_restores`, `redirected_startup_skips_all_operations`, `reset_failure_does_not_skip_first_draw_or_restore`, and `visible_viewport_reset_clears_only_the_current_screen`; real host scrollback remains manual. |
+| Startup surface lifecycle, responsive rendering, metadata bounds, wrapping, omission, and wordmark fallback | `automated` / `gallery` | `tests/screen_model.rs`: `initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries`, `accepted_submission_dismisses_the_startup_surface_but_rejected_input_keeps_it`, `startup_surface_reflows_orders_metadata_and_bounds_overflow`, `startup_surface_keeps_highest_priority_metadata_before_the_overflow_hint`, `startup_surface_omits_unavailable_metadata_and_keeps_canonical_remaining_order`, `startup_surface_wraps_unicode_values_and_reflows_on_resize`, `startup_surface_uses_display_model_label_active_counts_and_measured_layouts`, and `startup_surface_is_not_restored_for_new_or_resumed_conversations`; gallery sections `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission`. |
 | Transcript rendering has no secondary `Paragraph::wrap` or horizontal transcript padding | `automated` | `tests/screen_model.rs`: `production_transcript_to_buffer_preserves_prewrapped_rows_without_extra_transformation` renders prewrapped assistant rows through `ScreenModel::draw_live` into `TestBackend` at 10 columns. It distinguishes an extra wrap or horizontal padding from the worked rows. The dependency-only `unstable-rendered-line-info` condition remains unverified. |
 | All 69 palette keys and exact RGB values | `automated` | `src/palette.rs`: `every_dark_palette_key_resolves_to_its_exact_value` and `palette_keys_are_unique_and_complete_against_the_expected_table`. |
 | One 50 ms clock drives all animation phases and idle stops drawing | `automated` | `src/tui.rs`: `one_sampled_clock_drives_spinner_and_tool_phases_while_idle_and_reduced_motion_stop_motion` proves the shared 600 ms sampled timestamp across spinner and running-tool phases, and asserts active motion selects a 50 ms redraw timer while idle and reduced motion select neither animation timer nor redraw. Production `run_loop` uses that policy with `EventStream` terminal input, so idle waits for input, runtime events, permissions, or usage refresh without animation-only redraws. |
@@ -165,6 +168,7 @@ sections but still miss at least one specification subcase.
 | Sessions, models, tools, skills, approval, and picker replacement | `partial` | `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`; long-list navigation and every cancel/outcome branch remain manual or unit-only. |
 | `/status` static transcript block | `partial` | `status` app fixture and TUI status tests; empty local output and every count state are not represented together. |
 | `/usage` cost, context, attribution, and wrapping | `gallery` | `usage` app fixture renders fixed usage, cost, context, and attribution data at all gallery widths. |
+| Startup responsive layouts, wrapped values, bounded metadata, and metadata omission | `gallery` | `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, and `startup-metadata-omission` serialize production `tui::draw` buffers at widths `20`, `40`, `80`, and `120`. The dedicated structural test `startup_surface_uses_display_model_label_active_counts_and_measured_layouts` covers wordmark fallback at width `3`. |
 | Picopilot-only reasoning, subagents, notices, and approval | `gallery` | `reasoning-collapsed`, `reasoning-expanded`, notice sections, `subagent-task-top-level`, `subagent-task-nested`, `nested-concurrent-tasks`, `picker-approval`, and `approval-resolved`. |
 
 ## Focused Validation Matrix
@@ -280,3 +284,21 @@ not mark interactive environments passed from source inspection alone.
 | VS Code integrated terminal | unverified | Requires interactive observation. |
 | Legacy conhost | unverified | Requires interactive observation. |
 | Comparison with real Claude Code output | unverified | No Claude Code runtime is part of this repository. |
+
+## Startup Host Validation Record
+
+Date: 2026-09-08
+Task: `TASK-20260907-startup-verification`
+Commit command: `git rev-parse --short HEAD`
+Application command: `$project = (Get-Location).Path; cargo run -- --project $project`
+
+No manual terminal-host observation was supplied for this task. The following
+checklist is therefore a record of unverified work, not a successful smoke
+test. The visible-viewport reset clear result is also unverified on every host
+because no safe actual host observation was captured.
+
+| Host | Status | Required checklist | Record |
+| --- | --- | --- | --- |
+| Windows Terminal | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Run the application command above in normal Windows Terminal, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |
+| VS Code integrated terminal | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Run the application command above in the integrated PowerShell terminal, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |
+| Legacy conhost | `unverified` | Startup surface appears; visible reset clears only the viewport; one blank row separates it from the prompt; native scrollback remains; startup metadata reflows at narrow/wide sizes; accepted input dismisses it; reset failure remains nonfatal. | Not observed. Open `conhost.exe`, start PowerShell in the repository, run the application command, execute the interaction matrix, and capture `git rev-parse --short HEAD` with the observations. |

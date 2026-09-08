@@ -190,6 +190,28 @@ fn append_spinner_fixtures(output: &mut String) {
 }
 
 fn append_app_fixtures(output: &mut String) {
+    append_startup_app_fixture(output, "startup-two-column-and-vertical", 14, |_| {});
+    append_startup_app_fixture(output, "startup-wrapped-values", 14, |app| {
+        app.set_model(Some("gallery-model".to_string()));
+        app.preload_models(vec![Model {
+            id: "gallery-model".to_string(),
+            name: "Gallery Model With A Deterministic Long Display Name".to_string(),
+            ..Model::default()
+        }]);
+    });
+    append_startup_app_fixture(output, "startup-bounded-metadata", 10, |app| {
+        app.set_model(Some("gallery-model".to_string()));
+        app.preload_models(vec![Model {
+            id: "gallery-model".to_string(),
+            name: "Gallery Model With A Deterministic Long Display Name".to_string(),
+            ..Model::default()
+        }]);
+    });
+    append_startup_app_fixture(output, "startup-metadata-omission", 14, |app| {
+        app.set_model(None);
+        app.set_toolset(crate::toolset::Toolset::empty());
+        app.set_skill_selection(SkillSelection::none());
+    });
     append_app_fixture(output, "input-typed", 14, |app| {
         for character in "Unicode input: cafe[31m e[0m 👩‍💻".chars() {
             app.push_input(character);
@@ -220,6 +242,24 @@ fn append_app_fixtures(output: &mut String) {
         14,
         setup_consecutive_users,
     );
+}
+
+fn append_startup_app_fixture<F>(output: &mut String, name: &str, height: u16, setup: F)
+where
+    F: Fn(&mut App),
+{
+    writeln!(output, "[startup name={name} height={height}]").unwrap();
+    for &width in WIDTHS {
+        let mut app = startup_gallery_app();
+        setup(&mut app);
+        let mut terminal = Terminal::new(TestBackend::new(width as u16, height))
+            .expect("startup gallery terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &app))
+            .expect("startup gallery surface should render");
+        append_buffer(output, width, height as usize, terminal.backend().buffer());
+    }
+    writeln!(output).unwrap();
 }
 
 fn append_app_fixture<F>(output: &mut String, name: &str, height: u16, setup: F)
@@ -614,6 +654,37 @@ fn gallery_app() -> App {
     let mut app =
         App::new_with_working_directory(Some("gpt-5".to_string()), Path::new("WORKSPACE"));
     app.dismiss_startup_surface();
+    app
+}
+
+fn startup_gallery_app() -> App {
+    let mut app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        Path::new("WORKSPACE/picopilot-project"),
+    );
+    app.preload_models(vec![Model {
+        id: "gpt-5".to_string(),
+        name: "GPT-5 Gallery".to_string(),
+        ..Model::default()
+    }]);
+    app.set_toolset(crate::toolset::Toolset::shell_only());
+    let root = SkillRoot {
+        path: PathBuf::from("WORKSPACE/.agents/skills"),
+        source: SkillRootSource::Project,
+    };
+    let catalog = SkillCatalog::from_parts(
+        vec![root.clone()],
+        vec![Skill {
+            name: "startup-gallery".to_string(),
+            description: "Deterministic startup fixture metadata".to_string(),
+            user_invocable: true,
+            directory: root.path.join("startup-gallery"),
+            root,
+        }],
+        Vec::new(),
+    );
+    app.set_skill_catalog(catalog.clone());
+    app.set_skill_selection(SkillSelection::from_names(&catalog, ["startup-gallery"]));
     app
 }
 

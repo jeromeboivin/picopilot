@@ -18,6 +18,14 @@ The following are out of scope:
 - Reproducing Anthropic-internal alternate-screen/fullscreen branches where the public scrollback branch differs.
 - Choosing a truecolor fallback for terminals without 24-bit color support; this remains Unverified.
 
+## Startup Surface And Visible Viewport Reset
+
+The **visible viewport reset** is the interactive-only startup operation that clears the current terminal viewport, moves the cursor to its origin, and prints exactly one blank separator row. It MUST run after terminal initialization and before the first draw. It MUST NOT enter an alternate screen, purge native scrollback, or clear history beyond the visible viewport. Reset failure is nonfatal: picopilot MUST still perform the first draw and terminal restore.
+
+The **startup surface** is the initial live-region content shown before a prompt is accepted. It is not transcript history and MUST disappear after an accepted submission, a new conversation, or a resumed conversation. Empty or rejected input MUST leave it visible. Its rendering and lifecycle are owned by the TUI startup path; the terminal host owns native scrollback.
+
+The **bounded metadata viewport** is the startup surface's available live-region area. Startup identity and metadata MUST reflow responsively between two-column and vertical layouts using measured cell widths. Metadata values MUST wrap without breaking grapheme clusters. When the area cannot show all metadata, the highest-priority rows that fit MUST remain, followed by dim `more in /status`; unavailable metadata MUST be omitted. The wordmark MAY be omitted when it does not fit. Exactly one blank row MUST separate the visible startup surface from the prompt.
+
 ## Screen Model
 
 ### Main Screen And Inline Viewport
