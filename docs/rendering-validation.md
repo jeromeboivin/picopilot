@@ -274,7 +274,7 @@ does not treat the earlier fallback-fixture commit as the final validation tip.
 
 | Check | Result | Evidence or blocker |
 | --- | --- | --- |
-| Validation provenance | recorded | Tested commit: `42cc4ebcc1c54ea9d2eb871035df3d208a1a33e2` (`docs: correct startup validation evidence`). This is the committed documentation correction and validation tip; `3e159553f170033ae9c1771df297d0a76d35b045` remains only the earlier fallback-fixture commit. Every command in this log exited 0. |
+| Validation provenance | recorded | Measured validation execution commit: `8a0c43f8bca24caeb2153066db65d441d955351d` (`docs: record startup validation results`). The complete cited command set was rerun at this tip after the evidence commit; `42cc4ebcc1c54ea9d2eb871035df3d208a1a33e2` is the earlier documentation correction and `3e159553f170033ae9c1771df297d0a76d35b045` is only the fallback-fixture commit. Every cited command exited 0. A later documentation-only commit records this self-referential provenance correction and does not alter the tested behavior or fixture. |
 | Gallery compare | passed | `cargo test --lib tui::rendering_fixtures::committed_rendering_gallery_matches_production_renderer --quiet`: 1 passed, 0 failed, exit 0. |
 | Gallery determinism | passed | `cargo test --lib tui::rendering_fixtures::rendering_gallery_generation_is_deterministic --quiet`: 1 passed, 0 failed, exit 0. |
 | Two-run regeneration idempotence | passed | Two opt-in `regenerate_rendering_gallery` runs each passed (1 passed, 0 failed, exit 0). Both SHA-256 values were `698F93054F2CB271F99834AC261D1C37EB24A1B3B347F4E6B1A0C93616751189`; equality was `True`; the final focused comparison passed (1 passed, 0 failed, exit 0). |
