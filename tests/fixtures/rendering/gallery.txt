@@ -5200,9 +5200,9 @@ row=12 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=14 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=14 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 row=15 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=16 text="                    "
@@ -5268,9 +5268,9 @@ row=9 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                        "
@@ -5340,9 +5340,9 @@ row=19 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=20 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=21 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=21 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=22 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=23 text="                                                                                "
@@ -5392,9 +5392,9 @@ row=19 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=20 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=21 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=21 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=22 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=23 text="                                                                                                                        "
@@ -5442,9 +5442,9 @@ row=11 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="[pi]         Version: v0.1.0            "
 cell_span=0..4 text="[pi]" fg=#d77757 bg=reset modifiers=NONE/NONE
@@ -5492,9 +5492,9 @@ row=9 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                        "
@@ -5546,9 +5546,9 @@ row=9 text="                                                                    
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                "
@@ -5600,9 +5600,9 @@ row=9 text="                                                                    
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                                                        "
@@ -5680,9 +5680,9 @@ row=11 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="[pi]                                    "
 cell_span=0..4 text="[pi]" fg=#d77757 bg=reset modifiers=NONE/NONE
@@ -5725,9 +5725,9 @@ row=11 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
 row=0 text="[pi]         Version: v0.1.0                                                    "
 cell_span=0..4 text="[pi]" fg=#d77757 bg=reset modifiers=NONE/NONE
@@ -5775,9 +5775,9 @@ row=9 text="                                                                    
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                "
@@ -5829,9 +5829,9 @@ row=9 text="                                                                    
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                                                                                                                        "
@@ -5865,9 +5865,9 @@ row=7 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=10
 row=0 text="Version: v0.1.0                         "
 cell_span=0..8 text="Version:" fg=#505050 bg=reset modifiers=NONE/NONE
@@ -5895,9 +5895,9 @@ row=7 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=10
 row=0 text="Version: v0.1.0                                                                 "
 cell_span=0..8 text="Version:" fg=#505050 bg=reset modifiers=NONE/NONE
@@ -5926,9 +5926,9 @@ row=7 text="                                                                    
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=10
 row=0 text="Version: v0.1.0                                                                                                         "
 cell_span=0..8 text="Version:" fg=#505050 bg=reset modifiers=NONE/NONE
@@ -5957,9 +5957,9 @@ row=7 text="                                                                    
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
 [startup name=startup-metadata-omission height=14]
 width=20 rows=14
@@ -5996,9 +5996,9 @@ row=9 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=13 text="                    "
@@ -6032,9 +6032,9 @@ row=6 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=8 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 row=9 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                                        "
@@ -6074,9 +6074,9 @@ row=6 text="                                                                    
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=8 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=9 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                                                                                "
@@ -6116,9 +6116,9 @@ row=6 text="                                                                    
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=8 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=9 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                                                                                                                        "
@@ -7407,9 +7407,9 @@ row=11 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -7442,9 +7442,9 @@ row=11 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -7476,9 +7476,9 @@ row=11 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=14
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -7510,9 +7510,9 @@ row=11 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=status height=16]
 width=20 rows=16
@@ -7571,9 +7571,9 @@ row=13 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
 row=0 text="❯ /status                               "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
@@ -7637,9 +7637,9 @@ row=13 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="❯ /status                                                                       "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
@@ -7705,9 +7705,9 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="❯ /status                                                                                                               "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
@@ -7773,9 +7773,9 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=usage height=16]
 width=20 rows=16
@@ -7821,9 +7821,9 @@ row=13 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
 row=0 text="  ⎿  Session cost: 1.234 AIU            "
 cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
@@ -7872,9 +7872,9 @@ row=13 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="  ⎿  Session cost: 1.234 AIU                                                    "
 cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
@@ -7925,9 +7925,9 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="  ⎿  Session cost: 1.234 AIU                                                                                            "
 cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
@@ -7978,9 +7978,9 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=nested-concurrent-tasks height=16]
 width=20 rows=16
@@ -8020,9 +8020,9 @@ row=13 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts   "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands    "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
 row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -8060,9 +8060,9 @@ row=13 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -8100,9 +8100,9 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                               "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -8140,9 +8140,9 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  ? for shortcuts                                                                                                       "
-cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="  / for commands                                                                                                        "
+cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=consecutive-user-messages height=14]
 width=20 rows=14

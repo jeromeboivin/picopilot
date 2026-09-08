@@ -1589,6 +1589,9 @@ impl App {
                 self.finish_ansi_stream(AnsiStreamId::Assistant(message_id.clone()));
                 self.assistant_live_ids.remove(&message_id);
                 self.replace_assistant(message_id, sanitize_plain(&content), agent_id);
+                if self.reasoning_live_ids.is_empty() && !self.has_active_tool() {
+                    self.clear_spinner();
+                }
             }
             EventUpdate::ReasoningDelta {
                 reasoning_id,
@@ -4413,7 +4416,7 @@ fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
     let left = if app.status.busy {
         Some("  esc to interrupt".to_string())
     } else if app.input().is_empty() {
-        Some("  ? for shortcuts".to_string())
+        Some("  / for commands".to_string())
     } else {
         None
     };
@@ -4746,6 +4749,12 @@ fn draw_live_chat(
     }
 
     let spinner_visible = app.spinner_visible();
+    let live_assistant = screen.live_entries().iter().any(|entry| {
+        matches!(
+            entry.kind(),
+            LiveEntryKind::Assistant | LiveEntryKind::AssistantNested
+        )
+    });
     let transcript_height = if spinner_visible {
         area.height.saturating_sub(2) as usize
     } else {
@@ -4758,10 +4767,17 @@ fn draw_live_chat(
         animation_elapsed_ms,
     );
     if spinner_visible {
+        if live_assistant && area.height >= 1 {
+            lines.extend(spinner_lines_at_width(
+                app,
+                area.width as usize,
+                animation_elapsed_ms,
+            ));
+        }
         if area.height >= 2 {
             lines.push(Line::default());
         }
-        if area.height >= 1 {
+        if !live_assistant && area.height >= 1 {
             lines.extend(spinner_lines_at_width(
                 app,
                 area.width as usize,
@@ -4798,7 +4814,16 @@ fn chat_lines_at_width_with_clock(
     animation_elapsed_ms: u64,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let mut spinner_rendered = false;
     for entry in app.entries() {
+        if app.spinner_visible()
+            && !spinner_rendered
+            && matches!(entry, ChatEntry::Assistant { message_id, .. } if app.assistant_live_ids.contains(message_id))
+        {
+            lines.extend(spinner_lines_at_width(app, width, animation_elapsed_ms));
+            lines.push(Line::default());
+            spinner_rendered = true;
+        }
         let kind = match entry {
             ChatEntry::User(_) => LiveEntryKind::User,
             ChatEntry::Assistant { agent_id, .. } => {
@@ -4823,7 +4848,7 @@ fn chat_lines_at_width_with_clock(
             app.transcript_expanded,
         ));
     }
-    if app.spinner_visible() {
+    if app.spinner_visible() && !spinner_rendered {
         lines.push(Line::default());
         lines.extend(spinner_lines_at_width(app, width, animation_elapsed_ms));
     }
@@ -6580,7 +6605,7 @@ mod tests {
         assert!(rows[top_rule - 1].trim().is_empty());
         assert_eq!(rows[top_rule].chars().count(), 60);
         assert!(rows[top_rule + 1].starts_with("❯ "));
-        assert!(rows.iter().any(|row| row.starts_with("  ? for shortcuts")));
+        assert!(rows.iter().any(|row| row.starts_with("  / for commands")));
         assert!(!rows.iter().any(|row| row.contains("^N")));
     }
 
@@ -7515,7 +7540,7 @@ mod tests {
         assert_eq!(lines[3].to_string(), "✻ Thinking…");
         assert_eq!(lines[5].to_string(), "● Done");
         assert_eq!(lines[3].spans[0].style.fg, Some(Color::Rgb(80, 80, 80)));
-        assert!(lines[7].to_string().ends_with(' '));
+        assert!(!app.spinner_visible());
     }
 
     #[test]
@@ -9636,7 +9661,7 @@ mod tests {
             .position(|row| row.contains("10% until auto-compact"))
             .expect("narrow warning should render");
         assert!(narrow_warning_index > 0);
-        assert!(narrow_rows[narrow_warning_index - 1].contains("? for shortcuts"));
+        assert!(narrow_rows[narrow_warning_index - 1].contains("/ for commands"));
         assert!(narrow_rows[narrow_warning_index].starts_with("  "));
     }
 
@@ -9906,7 +9931,7 @@ mod tests {
                 .map(|x| buffer[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(row(29).starts_with("  ? for shortcuts"));
+        assert!(row(29).starts_with("  / for commands"));
         assert!(!row(29).contains("^N"));
         assert!(!row(1).contains('┌'));
         assert!(!row(1).contains('│'));

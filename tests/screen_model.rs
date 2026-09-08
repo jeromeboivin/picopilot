@@ -731,6 +731,108 @@ fn startup_surface_is_not_restored_for_new_or_resumed_conversations() {
 }
 
 #[test]
+fn empty_prompt_advertises_commands_and_question_mark_remains_input() {
+    let mut app = App::new(None);
+    app.reset_for_new_conversation();
+    let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("prompt should render");
+    assert!(terminal_text(&terminal).contains("/ for commands"));
+    assert!(!terminal_text(&terminal).contains("? for shortcuts"));
+
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        ),
+        picopilot::tui::UiAction::None
+    );
+    assert_eq!(app.input(), "?");
+}
+
+#[test]
+fn live_assistant_activity_is_rendered_before_its_current_response() {
+    let mut app = App::new(None);
+    app.reset_for_new_conversation();
+    app.set_spinner_override(Some("Thinking".to_string()));
+    app.add_user_message("status ordering".to_string());
+    app.apply(EventUpdate::AssistantDelta {
+        message_id: "assistant-live".to_string(),
+        content: "current response".to_string(),
+        agent_id: None,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("live assistant should render");
+
+    assert!(row_containing(&terminal, "Thinking") < row_containing(&terminal, "current response"));
+}
+
+#[test]
+fn terminal_assistant_response_clears_generic_activity_but_keeps_active_tool_activity() {
+    let mut app = App::new(None);
+    app.reset_for_new_conversation();
+    app.set_spinner_override(Some("Thinking".to_string()));
+    app.add_user_message("terminal response".to_string());
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-terminal".to_string(),
+        content: "completed response".to_string(),
+        agent_id: None,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(80, 30)).expect("test terminal");
+
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("completed assistant should render");
+    assert!(terminal_text(&terminal).contains("completed response"));
+    assert!(!terminal_text(&terminal).contains("Thinking"));
+
+    app.set_spinner_override(Some("Thinking".to_string()));
+    app.add_user_message("tool follow-up".to_string());
+    app.apply(EventUpdate::ToolStarted {
+        tool_call_id: "tool-active".to_string(),
+        tool_name: "run_in_terminal".to_string(),
+        arguments: None,
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-before-tool".to_string(),
+        content: "tool follow-up response".to_string(),
+        agent_id: None,
+    });
+
+    let mut tool_terminal = Terminal::new(TestBackend::new(80, 60)).expect("test terminal");
+    tool_terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("active tool should render");
+    assert!(terminal_text(&tool_terminal).contains("Thinking"));
+
+    app.reset_for_new_conversation();
+    app.set_spinner_override(Some("Thinking".to_string()));
+    app.add_user_message("reasoning follow-up".to_string());
+    app.apply(EventUpdate::ReasoningDelta {
+        reasoning_id: "reasoning-active".to_string(),
+        content: "working".to_string(),
+        agent_id: None,
+    });
+    app.apply(EventUpdate::AssistantMessage {
+        message_id: "assistant-before-reasoning".to_string(),
+        content: "reasoning follow-up response".to_string(),
+        agent_id: None,
+    });
+
+    let mut reasoning_terminal = Terminal::new(TestBackend::new(80, 60)).expect("test terminal");
+    reasoning_terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .expect("active reasoning should render");
+    assert!(terminal_text(&reasoning_terminal).contains("(thinking)"));
+}
+
+#[test]
 fn assistant_markdown_visual_buffer_fixtures_at_required_widths() {
     let mut app = App::new(None);
     app.apply(EventUpdate::AssistantMessage {
