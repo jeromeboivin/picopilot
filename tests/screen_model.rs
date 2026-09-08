@@ -231,6 +231,51 @@ fn startup_artwork_keeps_the_fixed_frame_for_multiline_wide_project_names() {
 }
 
 #[test]
+fn interactive_startup_fits_full_artwork_before_the_prompt() {
+    let app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let terminal = draw_startup(&app, 80, FIXED_LIVE_REGION_HEIGHT);
+    let rows = buffer_rows(&terminal);
+    let mut expected = [
+        "┌───────────────────────────────────────────────────────────────────┐",
+        "│ PICOPILOT.EXE                                                     │",
+        "│                                                                   │",
+        "│ > INITIALIZING SYSTEM... Version: v0.1.0                          │",
+        "│ > LOADING NEURAL MODULES... Project: picopilot                    │",
+        "│ > BYPASSING SECURITY... Tools: 7                                  │",
+        "│ > ACCESS GRANTED.                                                 │",
+        "│                                                                   │",
+        "│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│",
+        "│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│",
+        "│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │",
+        "│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │",
+        "│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │",
+        "│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │",
+        "└───────────────────────────────────────────────────────────────────┘",
+    ]
+    .map(str::to_string);
+    expected[3] = format!(
+        "│ > INITIALIZING SYSTEM... Version: v{}                          │",
+        env!("CARGO_PKG_VERSION")
+    );
+    expected[5] = format!(
+        "│ > BYPASSING SECURITY... Tools: {:<35}│",
+        app.toolset().len()
+    );
+
+    for (rendered, expected) in rows.iter().zip(expected.iter()).take(expected.len()) {
+        assert!(
+            rendered.starts_with(expected),
+            "expected startup artwork row {expected:?}, got {rendered:?}"
+        );
+    }
+    assert_eq!(rows[expected.len()], " ".repeat(80));
+    assert!(rows[expected.len() + 1].contains('─'));
+}
+
+#[test]
 fn initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries() {
     let app = App::new_with_working_directory(
         Some("gpt-5".to_string()),
@@ -2229,7 +2274,7 @@ fn main_screen_setup_does_not_enter_the_alternate_screen() {
 
 #[test]
 fn inline_viewport_uses_the_measured_fixed_live_region() {
-    assert_eq!(FIXED_LIVE_REGION_HEIGHT, 14);
+    assert_eq!(FIXED_LIVE_REGION_HEIGHT, 22);
     assert_eq!(
         terminal_options().viewport,
         Viewport::Inline(FIXED_LIVE_REGION_HEIGHT)
@@ -2366,7 +2411,7 @@ fn live_lines_are_limited_to_the_available_viewport_rows() {
 fn new_conversation_resets_screen_identity_and_commits_reused_entries() {
     let mut app = App::new(None);
     let mut screen = ScreenModel::default();
-    let mut terminal = Terminal::with_options(TestBackend::new(80, 24), terminal_options())
+    let mut terminal = Terminal::with_options(TestBackend::new(80, 30), terminal_options())
         .expect("inline terminal should initialize");
 
     app.add_user_message("conversation A".to_string());
@@ -2423,7 +2468,7 @@ fn resuming_a_session_resets_screen_metadata_and_renders_history() {
 fn same_display_name_subagents_keep_separate_screen_entries() {
     let mut app = App::new(None);
     let mut screen = ScreenModel::default();
-    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 30), terminal_options())
         .expect("inline terminal should initialize");
 
     for agent_id in ["agent-1", "agent-2"] {
@@ -2555,7 +2600,7 @@ fn later_completed_entries_wait_for_earlier_live_entries() {
 fn tool_result_stays_after_messages_received_between_start_and_completion() {
     let mut app = App::new(None);
     let mut screen = ScreenModel::default();
-    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 30), terminal_options())
         .expect("inline terminal should initialize");
 
     app.apply(EventUpdate::ToolStarted {
@@ -2608,7 +2653,7 @@ fn tool_result_stays_after_messages_received_between_start_and_completion() {
 fn overlapping_tools_keep_reverse_completion_order() {
     let mut app = App::new(None);
     let mut screen = ScreenModel::default();
-    let mut terminal = Terminal::with_options(TestBackend::new(100, 24), terminal_options())
+    let mut terminal = Terminal::with_options(TestBackend::new(100, 30), terminal_options())
         .expect("inline terminal should initialize");
 
     for tool_call_id in ["tool-a", "tool-b"] {
@@ -4008,7 +4053,7 @@ fn removing_front_live_entry_commits_completed_entries_behind_it() {
 
 #[test]
 fn committed_long_lines_need_wrapped_height_before_insert() {
-    let mut terminal = Terminal::with_options(TestBackend::new(10, 24), terminal_options())
+    let mut terminal = Terminal::with_options(TestBackend::new(10, 30), terminal_options())
         .expect("inline terminal should initialize");
     let mut screen = ScreenModel::default();
     screen

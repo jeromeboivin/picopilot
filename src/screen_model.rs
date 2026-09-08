@@ -28,7 +28,7 @@ pub use crate::tool_rendering::{
 use crate::transcript_wrap::{wrap_lines, WrapSpec};
 use unicode_width::UnicodeWidthStr;
 
-pub const FIXED_LIVE_REGION_HEIGHT: u16 = 1 + 9 + 3 + 1;
+pub const FIXED_LIVE_REGION_HEIGHT: u16 = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveEntryKind {
