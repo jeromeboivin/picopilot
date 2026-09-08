@@ -107,6 +107,88 @@ fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
 }
 
 #[test]
+fn startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_live_values() {
+    let app = App::new_with_working_directory(
+        Some("gpt-5".to_string()),
+        std::path::Path::new("/workspace/picopilot"),
+    );
+    let terminal = draw_startup(&app, 69, 24);
+    let mut expected = [
+        "┌───────────────────────────────────────────────────────────────────┐",
+        "│ PICOPILOT.EXE                                                     │",
+        "│                                                                   │",
+        "│ > INITIALIZING SYSTEM... Version: v0.1.0                          │",
+        "│ > LOADING NEURAL MODULES... Project: picopilot                    │",
+        "│ > BYPASSING SECURITY... Tools: 7                                  │",
+        "│ > ACCESS GRANTED.                                                 │",
+        "│                                                                   │",
+        "│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│",
+        "│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│",
+        "│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │",
+        "│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │",
+        "│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │",
+        "│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │",
+        "└───────────────────────────────────────────────────────────────────┘",
+    ]
+    .map(str::to_string);
+    expected[3] = format!(
+        "│ > INITIALIZING SYSTEM... Version: v{}                          │",
+        env!("CARGO_PKG_VERSION")
+    );
+    expected[4] =
+        "│ > LOADING NEURAL MODULES... Project: picopilot                    │".to_string();
+    expected[5] = format!(
+        "│ > BYPASSING SECURITY... Tools: {:<35}│",
+        app.toolset().len()
+    );
+
+    assert_eq!(&buffer_rows(&terminal)[..expected.len()], expected);
+    let buffer = terminal.backend().buffer();
+    for row in 0..expected.len() as u16 {
+        assert_eq!(
+            buffer[(0, row)].symbol(),
+            if row == 0 {
+                "┌"
+            } else if row == expected.len() as u16 - 1 {
+                "└"
+            } else {
+                "│"
+            }
+        );
+        assert_eq!(
+            buffer[(68, row)].symbol(),
+            if row == 0 {
+                "┐"
+            } else if row == expected.len() as u16 - 1 {
+                "┘"
+            } else {
+                "│"
+            }
+        );
+    }
+
+    let long_project = App::new_with_working_directory(
+        None,
+        std::path::Path::new("/workspace/a-project-name-that-cannot-fit-inside-the-fixed-artwork"),
+    );
+    let long_terminal = draw_startup(&long_project, 69, 24);
+    for row in 0..expected.len() as u16 {
+        assert_eq!(buffer_row_display_width(&long_terminal, row), 69);
+        assert_eq!(
+            long_terminal.backend().buffer()[(0, row)].symbol(),
+            buffer[(0, row)].symbol()
+        );
+        assert_eq!(
+            long_terminal.backend().buffer()[(68, row)].symbol(),
+            buffer[(68, row)].symbol()
+        );
+    }
+    let long_project_row = &buffer_rows(&long_terminal)[4];
+    assert!(long_project_row.contains("Project: "));
+    assert!(long_project_row.contains("..."));
+}
+
+#[test]
 fn initial_frame_shows_the_picopilot_startup_surface_without_transcript_entries() {
     let app = App::new_with_working_directory(
         Some("gpt-5".to_string()),

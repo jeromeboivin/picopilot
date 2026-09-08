@@ -190,6 +190,7 @@ fn append_spinner_fixtures(output: &mut String) {
 }
 
 fn append_app_fixtures(output: &mut String) {
+    append_startup_app_fixture(output, "startup-authoritative-artwork", 24, |_| {});
     append_startup_app_fixture(output, "startup-two-column-and-vertical", 14, |_| {});
     append_startup_wordmark_fallback_fixture(output);
     append_startup_app_fixture(output, "startup-wrapped-values", 14, |app| {

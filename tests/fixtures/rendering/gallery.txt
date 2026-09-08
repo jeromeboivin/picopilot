@@ -5151,6 +5151,255 @@ line=0 width=11 text="● Working… " fg=default bg=default modifiers=NONE/NONE
 span=0 text="● " fg=#d77757 bg=default modifiers=NONE/NONE
 span=1 text="Working… " fg=#d77757 bg=default modifiers=NONE/NONE
 
+[startup name=startup-authoritative-artwork height=24]
+width=20 rows=24
+row=0 text="[pi]                "
+cell_span=0..4 text="[pi]" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=4..20 text="                " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Picopilot           "
+cell_span=0..9 text="Picopilot" fg=#d77757 bg=reset modifiers=BOLD/NONE
+cell_span=9..20 text="           " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Version: v0.1.0     "
+cell_span=0..8 text="Version:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=8..9 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=9..15 text="v0.1.0" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=15..20 text="     " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="Model: GPT-5 Gallery"
+cell_span=0..6 text="Model:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=6..7 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=7..20 text="GPT-5 Gallery" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=4 text="Project: picopilot-p"
+cell_span=0..8 text="Project:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=8..9 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=9..20 text="picopilot-p" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=5 text="         roject     "
+cell_span=0..9 text="         " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=9..15 text="roject" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=15..20 text="     " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="Tools: 1            "
+cell_span=0..6 text="Tools:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=6..7 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=7..8 text="1" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=8..20 text="            " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="Skills: 1           "
+cell_span=0..7 text="Skills:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=7..8 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..9 text="1" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=9..20 text="           " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="────────────────────"
+cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=10 text="❯                   "
+cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
+cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="────────────────────"
+cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=14 text="  ? for shortcuts   "
+cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=16 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=17 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=18 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=19 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=20 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=21 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=22 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=23 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+width=40 rows=24
+row=0 text="[pi]         Version: v0.1.0            "
+cell_span=0..4 text="[pi]" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=4..13 text="         " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..21 text="Version:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=21..22 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=22..28 text="v0.1.0" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=28..40 text="            " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Picopilot    Model: GPT-5 Gallery       "
+cell_span=0..9 text="Picopilot" fg=#d77757 bg=reset modifiers=BOLD/NONE
+cell_span=9..13 text="    " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..19 text="Model:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=19..20 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=20..33 text="GPT-5 Gallery" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=33..40 text="       " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="             Project: picopilot-project "
+cell_span=0..13 text="             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..21 text="Project:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=21..22 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=22..39 text="picopilot-project" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=39..40 text=" " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="             Tools: 1                   "
+cell_span=0..13 text="             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..19 text="Tools:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=19..20 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=20..21 text="1" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=21..40 text="                   " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="             Skills: 1                  "
+cell_span=0..13 text="             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="Skills:" fg=#505050 bg=reset modifiers=NONE/NONE
+cell_span=20..21 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=21..22 text="1" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="────────────────────────────────────────"
+cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=7 text="❯                                       "
+cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
+cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="────────────────────────────────────────"
+cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=11 text="  ? for shortcuts                       "
+cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=14 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=16 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=17 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=18 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=19 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=20 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=21 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=22 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=23 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+width=80 rows=24
+row=0 text="┌───────────────────────────────────────────────────────────────────┐           "
+cell_span=0..80 text="┌───────────────────────────────────────────────────────────────────┐           " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="│ PICOPILOT.EXE                                                     │           "
+cell_span=0..80 text="│ PICOPILOT.EXE                                                     │           " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="│                                                                   │           "
+cell_span=0..80 text="│                                                                   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="│ > INITIALIZING SYSTEM... Version: v0.1.0                          │           "
+cell_span=0..80 text="│ > INITIALIZING SYSTEM... Version: v0.1.0                          │           " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="│ > LOADING NEURAL MODULES... Project: picopilot-project            │           "
+cell_span=0..80 text="│ > LOADING NEURAL MODULES... Project: picopilot-project            │           " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="│ > BYPASSING SECURITY... Tools: 1                                  │           "
+cell_span=0..80 text="│ > BYPASSING SECURITY... Tools: 1                                  │           " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="│ > ACCESS GRANTED.                                                 │           "
+cell_span=0..80 text="│ > ACCESS GRANTED.                                                 │           " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="│                                                                   │           "
+cell_span=0..80 text="│                                                                   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│           "
+cell_span=0..80 text="│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│           " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│           "
+cell_span=0..80 text="│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│           " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │           "
+cell_span=0..80 text="│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │           "
+cell_span=0..80 text="│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │           "
+cell_span=0..80 text="│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │           "
+cell_span=0..80 text="│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │           " fg=reset bg=reset modifiers=NONE/NONE
+row=14 text="└───────────────────────────────────────────────────────────────────┘           "
+cell_span=0..80 text="└───────────────────────────────────────────────────────────────────┘           " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=16 text="────────────────────────────────────────────────────────────────────────────────"
+cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=17 text="❯                                                                               "
+cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
+cell_span=3..80 text="                                                                             " fg=reset bg=reset modifiers=NONE/NONE
+row=18 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=19 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=20 text="────────────────────────────────────────────────────────────────────────────────"
+cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=21 text="  ? for shortcuts                                                               "
+cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=22 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=23 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+width=120 rows=24
+row=0 text="┌───────────────────────────────────────────────────────────────────┐                                                   "
+cell_span=0..120 text="┌───────────────────────────────────────────────────────────────────┐                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="│ PICOPILOT.EXE                                                     │                                                   "
+cell_span=0..120 text="│ PICOPILOT.EXE                                                     │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="│                                                                   │                                                   "
+cell_span=0..120 text="│                                                                   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="│ > INITIALIZING SYSTEM... Version: v0.1.0                          │                                                   "
+cell_span=0..120 text="│ > INITIALIZING SYSTEM... Version: v0.1.0                          │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="│ > LOADING NEURAL MODULES... Project: picopilot-project            │                                                   "
+cell_span=0..120 text="│ > LOADING NEURAL MODULES... Project: picopilot-project            │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="│ > BYPASSING SECURITY... Tools: 1                                  │                                                   "
+cell_span=0..120 text="│ > BYPASSING SECURITY... Tools: 1                                  │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="│ > ACCESS GRANTED.                                                 │                                                   "
+cell_span=0..120 text="│ > ACCESS GRANTED.                                                 │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="│                                                                   │                                                   "
+cell_span=0..120 text="│                                                                   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│                                                   "
+cell_span=0..120 text="│  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│                                                   "
+cell_span=0..120 text="│  ██╔══██╗██║██╔════╝██╔═══██╗██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝│                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │                                                   "
+cell_span=0..120 text="│  ██████╔╝██║██║     ██║   ██║██████╔╝██║██║     ██║   ██║   ██║   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │                                                   "
+cell_span=0..120 text="│  ██╔═══╝ ██║██║     ██║   ██║██╔═══╝ ██║██║     ██║   ██║   ██║   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │                                                   "
+cell_span=0..120 text="│  ██║     ██║╚██████╗╚██████╔╝██║     ██║███████╗╚██████╔╝   ██║   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │                                                   "
+cell_span=0..120 text="│  ╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝   │                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=14 text="└───────────────────────────────────────────────────────────────────┘                                                   "
+cell_span=0..120 text="└───────────────────────────────────────────────────────────────────┘                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=16 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=17 text="❯                                                                                                                       "
+cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
+cell_span=3..120 text="                                                                                                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=18 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=19 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=20 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=21 text="  ? for shortcuts                                                                                                       "
+cell_span=0..17 text="  ? for shortcuts" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=22 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=23 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+
 [startup name=startup-two-column-and-vertical height=14]
 width=20 rows=14
 row=0 text="[pi]                "

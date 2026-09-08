@@ -3744,6 +3744,10 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
         return Vec::new();
     }
 
+    if width >= STARTUP_ART_WIDTH && available_rows >= STARTUP_ART_ROWS {
+        return startup_art_lines(app);
+    }
+
     let model = app.status.model.as_deref().map(|id| {
         app.models
             .iter()
@@ -3875,6 +3879,75 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
         }
     }
     lines
+}
+
+const STARTUP_ART_WIDTH: usize = 69;
+const STARTUP_ART_ROWS: usize = 15;
+const STARTUP_ART_INTERIOR_WIDTH: usize = STARTUP_ART_WIDTH - 2;
+const STARTUP_ART: &str = include_str!("../ascii-art.txt");
+
+fn startup_art_lines(app: &App) -> Vec<Line<'static>> {
+    STARTUP_ART
+        .lines()
+        .map(|line| match line {
+            "│ > INITIALIZING SYSTEM... Version: v0.1.0                          │" => {
+                startup_art_status_line(
+                    " > INITIALIZING SYSTEM... Version: ",
+                    &format!("v{}", env!("CARGO_PKG_VERSION")),
+                )
+            }
+            "│ > LOADING NEURAL MODULES... Project: picopilot                    │" => {
+                let project = app
+                    .working_directory
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(sanitize_plain)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_default();
+                startup_art_status_line(" > LOADING NEURAL MODULES... Project: ", &project)
+            }
+            "│ > BYPASSING SECURITY... Tools: 7                                  │" => {
+                let tools = if app.toolset.is_empty() {
+                    String::new()
+                } else {
+                    app.toolset.len().to_string()
+                };
+                startup_art_status_line(" > BYPASSING SECURITY... Tools: ", &tools)
+            }
+            _ => Line::from(line.to_string()),
+        })
+        .collect()
+}
+
+fn startup_art_status_line(prefix: &str, value: &str) -> Line<'static> {
+    let slot_width = STARTUP_ART_INTERIOR_WIDTH.saturating_sub(display_width(prefix));
+    let value = startup_art_slot_value(value, slot_width);
+    Line::from(format!("│{prefix}{value}│"))
+}
+
+fn startup_art_slot_value(value: &str, width: usize) -> String {
+    if display_width(value) <= width {
+        return format!(
+            "{value}{}",
+            " ".repeat(width.saturating_sub(display_width(value)))
+        );
+    }
+
+    let ellipsis = "...";
+    let content_width = width.saturating_sub(display_width(ellipsis));
+    let mut clipped = String::new();
+    let mut clipped_width: usize = 0;
+    for grapheme in value.graphemes(true) {
+        let grapheme_width = input_grapheme_width(grapheme);
+        if clipped_width.saturating_add(grapheme_width) > content_width {
+            break;
+        }
+        clipped.push_str(grapheme);
+        clipped_width += grapheme_width;
+    }
+    clipped.push_str(ellipsis);
+    clipped.push_str(&" ".repeat(width.saturating_sub(display_width(&clipped))));
+    clipped
 }
 
 fn startup_metadata_lines(metadata: &[(&str, String)], width: usize) -> Vec<Line<'static>> {
@@ -5855,7 +5928,7 @@ mod tests {
         spinner_frames, spinner_message_spans, spinner_platform_for, spinner_stall_intensity,
         thinking_status, App, ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode,
         SpinnerPlatform, TerminalCapabilities, TerminalStartupOperationAdapter, UiAction,
-        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS,
+        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS, STARTUP_ART_ROWS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -9328,7 +9401,10 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("GPT-5")));
         assert!(rendered.iter().any(|line| line.contains("128,000 tokens")));
         assert!(rendered.iter().any(|line| line.contains("200,000 tokens")));
-        assert!(!rendered.iter().any(|line| line.contains('┌')));
+        assert!(!rendered
+            .iter()
+            .skip(STARTUP_ART_ROWS)
+            .any(|line| line.contains('┌')));
     }
 
     #[test]
