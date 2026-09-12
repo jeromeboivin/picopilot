@@ -2998,12 +2998,20 @@ async fn process_terminal_events(
     mut events: Option<&mut EventSubscription>,
     first_event: Option<Event>,
 ) -> io::Result<bool> {
+    // Draining any burst of already-buffered raw terminal events beyond
+    // `first_event` only makes sense against a real terminal's ambient input
+    // source (the live `run_loop`, which always passes a runtime). The
+    // test-only harness (`run_loop_for_test`, `runtime: None`) injects a
+    // single synthetic event and must not fall through to the global
+    // `crossterm::event::poll`/`read`, which has no input source to read
+    // from outside a real terminal session.
+    let drain_ambient_events = runtime.is_some();
     let mut first_event = first_event;
     let mut state_changed = false;
     loop {
         let event = match first_event.take() {
             Some(event) => event,
-            None if event::poll(Duration::ZERO)? => event::read()?,
+            None if drain_ambient_events && event::poll(Duration::ZERO)? => event::read()?,
             None => break,
         };
         let Some(action) = consume_terminal_event(app, event) else {

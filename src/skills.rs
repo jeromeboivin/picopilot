@@ -617,12 +617,12 @@ mod tests {
 
     #[test]
     fn standard_roots_have_project_then_user_precedence() {
-        let roots = standard_roots(Path::new("C:\\project"), Some(Path::new("C:\\home")));
+        let roots = standard_roots(Path::new("/project"), Some(Path::new("/home")));
 
         assert_eq!(roots.len(), 6);
-        assert_eq!(roots[0].0, PathBuf::from("C:\\project\\.agents\\skills"));
-        assert_eq!(roots[1].0, PathBuf::from("C:\\project\\.github\\skills"));
-        assert_eq!(roots[2].0, PathBuf::from("C:\\project\\.claude\\skills"));
+        assert_eq!(roots[0].0, PathBuf::from("/project/.agents/skills"));
+        assert_eq!(roots[1].0, PathBuf::from("/project/.github/skills"));
+        assert_eq!(roots[2].0, PathBuf::from("/project/.claude/skills"));
         assert!(roots[3..]
             .iter()
             .all(|(_, source)| *source == SkillRootSource::User));
@@ -659,7 +659,7 @@ mod tests {
             Some(&user_settings),
             Some(&workspace_settings),
             &directory,
-            Some(Path::new("C:\\home")),
+            Some(Path::new("/home")),
             &mut diagnostics,
         );
 
@@ -667,7 +667,7 @@ mod tests {
         assert_eq!(
             locations,
             vec![
-                PathBuf::from("C:\\home\\.copilot\\skills"),
+                PathBuf::from("/home/.copilot/skills"),
                 directory.join("disabled"),
                 directory.join("workspace"),
             ]

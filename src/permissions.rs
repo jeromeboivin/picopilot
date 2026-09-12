@@ -525,7 +525,15 @@ mod tests {
     #[tokio::test]
     async fn confirms_writes_outside_the_workspace_and_through_traversal() {
         let (handler, mut requests, trust_directory) = test_gate();
-        for (index, path) in ["../outside.txt", "C:\\outside.txt"]
+        // The second case exercises an OS-native absolute path elsewhere on
+        // disk; it must be a path this platform's `Path::is_absolute()`
+        // actually recognizes as absolute, or it silently degrades into a
+        // harmless relative filename joined under the workspace instead.
+        #[cfg(windows)]
+        let absolute_outside_path = "C:\\outside.txt";
+        #[cfg(not(windows))]
+        let absolute_outside_path = "/outside.txt";
+        for (index, path) in ["../outside.txt", absolute_outside_path]
             .into_iter()
             .enumerate()
         {
