@@ -27,7 +27,10 @@ async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
         return Err("could not determine a home directory for the provider config file".into());
     };
 
-    let outcome = resolve_startup(&config_path, config.configure, run_setup_wizard)?;
+    let outcome = resolve_startup(&config_path, config.configure, |existing| {
+        run_setup_wizard(&config, &config_path, existing)
+    })
+    .await?;
     let provider_config = match outcome {
         StartupOutcome::ExitAfterConfigure => return Ok(()),
         StartupOutcome::Continue(provider_config) => provider_config,

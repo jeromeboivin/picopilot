@@ -5,6 +5,7 @@
 //! whether picopilot should continue straight into a session afterward or exit.
 
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use crate::provider_config::{self, ProviderConfigError, ProviderConfigFile};
@@ -26,12 +27,17 @@ pub enum StartupOutcome {
 /// Resolves startup behavior for the config file at `path`, per spec §2.4.
 ///
 /// `run_wizard` is injected so tests can supply a deterministic stub instead of driving a real
-/// interactive TUI; production code passes [`crate::wizard::run_setup_wizard`].
-pub fn resolve_startup(
+/// interactive TUI; production code passes a closure wrapping
+/// [`crate::wizard::run_setup_wizard`]. It returns a future rather than a value directly because
+/// the real wizard's Copilot-connect screen (spec §3.3) performs real async client startup.
+pub async fn resolve_startup<F>(
     path: &Path,
     configure_requested: bool,
-    run_wizard: impl FnOnce(Option<ProviderConfigFile>) -> ProviderConfigFile,
-) -> Result<StartupOutcome, ProviderConfigError> {
+    run_wizard: impl FnOnce(Option<ProviderConfigFile>) -> F,
+) -> Result<StartupOutcome, ProviderConfigError>
+where
+    F: Future<Output = ProviderConfigFile>,
+{
     let load_result = provider_config::load(path);
 
     if configure_requested {
@@ -40,7 +46,7 @@ pub fn resolve_startup(
         // against (unlike cases below, where an auto-launched wizard could otherwise clobber a
         // file the user did not expect to be judged invalid).
         let existing = load_result.unwrap_or(None);
-        let produced = run_wizard(existing);
+        let produced = run_wizard(existing).await;
         provider_config::save(path, &produced)?;
         return Ok(StartupOutcome::ExitAfterConfigure);
     }
@@ -49,7 +55,7 @@ pub fn resolve_startup(
         // Case 1: genuine first run. No warning, no backup (nothing to back up), run the wizard,
         // continue into a session with what it produced.
         Ok(None) => {
-            let produced = run_wizard(None);
+            let produced = run_wizard(None).await;
             provider_config::save(path, &produced)?;
             Ok(StartupOutcome::Continue(produced))
         }
@@ -60,7 +66,7 @@ pub fn resolve_startup(
             Err(error) => {
                 warn(&error);
                 backup_existing_file(path)?;
-                let produced = run_wizard(Some(config));
+                let produced = run_wizard(Some(config)).await;
                 provider_config::save(path, &produced)?;
                 Ok(StartupOutcome::Continue(produced))
             }
@@ -70,7 +76,7 @@ pub fn resolve_startup(
         Err(error) => {
             warn(&error);
             backup_existing_file(path)?;
-            let produced = run_wizard(None);
+            let produced = run_wizard(None).await;
             provider_config::save(path, &produced)?;
             Ok(StartupOutcome::Continue(produced))
         }
@@ -118,19 +124,21 @@ mod tests {
         path
     }
 
-    #[test]
-    fn no_config_file_runs_the_wizard_and_continues_with_no_backup() {
+    #[tokio::test]
+    async fn no_config_file_runs_the_wizard_and_continues_with_no_backup() {
         let directory = temp_directory("no-file");
         let path = directory.join("config.yaml");
-        let mut wizard_called_with = None;
+        let wizard_called_with = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let wizard_called_with_handle = wizard_called_with.clone();
 
         let outcome = resolve_startup(&path, false, |existing| {
-            wizard_called_with = Some(existing.clone());
-            existing.unwrap_or_else(|| ProviderConfigFile::new("copilot"))
+            *wizard_called_with_handle.borrow_mut() = Some(existing.clone());
+            async move { existing.unwrap_or_else(|| ProviderConfigFile::new("copilot")) }
         })
+        .await
         .expect("startup should resolve for a missing file");
 
-        assert_eq!(wizard_called_with, Some(None));
+        assert_eq!(*wizard_called_with.borrow(), Some(None));
         assert_eq!(
             outcome,
             StartupOutcome::Continue(ProviderConfigFile::new("copilot"))
@@ -142,8 +150,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unparseable_config_warns_backs_up_and_continues_after_the_wizard() {
+    #[tokio::test]
+    async fn unparseable_config_warns_backs_up_and_continues_after_the_wizard() {
         let directory = temp_directory("bad-yaml");
         let path = directory.join("config.yaml");
         fs::write(&path, "default_provider: [not valid yaml").unwrap();
@@ -151,8 +159,9 @@ mod tests {
 
         let outcome = resolve_startup(&path, false, |existing| {
             assert_eq!(existing, None, "an unparseable file has nothing to seed the wizard with");
-            ProviderConfigFile::new("copilot")
+            async move { ProviderConfigFile::new("copilot") }
         })
+        .await
         .expect("startup should resolve after backing up and running the wizard");
 
         assert_eq!(
@@ -165,8 +174,8 @@ mod tests {
         assert_eq!(saved, ProviderConfigFile::new("copilot"));
     }
 
-    #[test]
-    fn unresolved_default_provider_warns_backs_up_and_continues_after_the_wizard() {
+    #[tokio::test]
+    async fn unresolved_default_provider_warns_backs_up_and_continues_after_the_wizard() {
         let directory = temp_directory("bad-default-provider");
         let path = directory.join("config.yaml");
         let invalid = ProviderConfigFile::new("does-not-exist");
@@ -175,8 +184,9 @@ mod tests {
 
         let outcome = resolve_startup(&path, false, |existing| {
             assert_eq!(existing, Some(invalid.clone()));
-            ProviderConfigFile::new("copilot")
+            async move { ProviderConfigFile::new("copilot") }
         })
+        .await
         .expect("startup should resolve after backing up and running the wizard");
 
         assert_eq!(
@@ -187,8 +197,8 @@ mod tests {
         assert_eq!(backup_bytes, original_bytes);
     }
 
-    #[test]
-    fn valid_config_runs_no_wizard_and_continues_directly() {
+    #[tokio::test]
+    async fn valid_config_runs_no_wizard_and_continues_directly() {
         let directory = temp_directory("valid");
         let path = directory.join("config.yaml");
         let mut valid = ProviderConfigFile::new("ollama");
@@ -198,17 +208,18 @@ mod tests {
         );
         save(&path, &valid).unwrap();
 
-        let outcome = resolve_startup(&path, false, |_existing| {
+        let outcome = resolve_startup(&path, false, |_existing| async move {
             panic!("the wizard must not run over an already-valid config")
         })
+        .await
         .expect("a valid config should resolve without running the wizard");
 
         assert_eq!(outcome, StartupOutcome::Continue(valid));
         assert!(!backup_path_for(&path).exists());
     }
 
-    #[test]
-    fn configure_flag_runs_the_wizard_over_a_valid_config_and_exits() {
+    #[tokio::test]
+    async fn configure_flag_runs_the_wizard_over_a_valid_config_and_exits() {
         let directory = temp_directory("configure-valid");
         let path = directory.join("config.yaml");
         let mut valid = ProviderConfigFile::new("ollama");
@@ -220,8 +231,9 @@ mod tests {
 
         let outcome = resolve_startup(&path, true, |existing| {
             assert_eq!(existing, Some(valid.clone()));
-            ProviderConfigFile::new("copilot")
+            async move { ProviderConfigFile::new("copilot") }
         })
+        .await
         .expect("--configure should resolve by running the wizard and exiting");
 
         assert_eq!(outcome, StartupOutcome::ExitAfterConfigure);
@@ -233,15 +245,16 @@ mod tests {
         assert_eq!(saved, ProviderConfigFile::new("copilot"));
     }
 
-    #[test]
-    fn configure_flag_runs_the_wizard_with_no_existing_config() {
+    #[tokio::test]
+    async fn configure_flag_runs_the_wizard_with_no_existing_config() {
         let directory = temp_directory("configure-missing");
         let path = directory.join("config.yaml");
 
         let outcome = resolve_startup(&path, true, |existing| {
             assert_eq!(existing, None);
-            ProviderConfigFile::new("copilot")
+            async move { ProviderConfigFile::new("copilot") }
         })
+        .await
         .expect("--configure should resolve even with no existing config");
 
         assert_eq!(outcome, StartupOutcome::ExitAfterConfigure);
