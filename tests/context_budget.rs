@@ -3,6 +3,7 @@ use github_copilot_sdk::rpc::MetadataContextInfoRequest;
 use github_copilot_sdk::session_events::ToolExecutionStartData;
 use github_copilot_sdk::types::{SessionEvent, SetModelOptions};
 use picopilot::config::AppConfig;
+use picopilot::provider_config::ProviderConfigFile;
 use picopilot::runtime::{connect, connect_with_toolset, AppRuntime};
 use picopilot::toolset::{Toolset, SHELL_TOOL};
 use serde_json::Value;
@@ -149,7 +150,8 @@ async fn context_budget_stays_empty_and_toolsets_remain_bounded(
     // --provider-* CLI flags); until a later ticket wires the provider registry from that file
     // into this harness, this check always runs against hosted Copilot models only.
     let local_model: Option<String> = None;
-    let mut runtime = connect(&config, "copilot").await?;
+    let provider_config = ProviderConfigFile::new("copilot");
+    let mut runtime = connect(&config, &provider_config).await?;
 
     if let Some(local_model) = local_model.clone() {
         runtime
@@ -164,7 +166,8 @@ async fn context_budget_stays_empty_and_toolsets_remain_bounded(
     runtime.mark_conversation_started();
     let created = context_budget(&runtime).await?;
 
-    let mut all_runtime = connect_with_toolset(&config, "copilot", Toolset::all()).await?;
+    let mut all_runtime =
+        connect_with_toolset(&config, &provider_config, Toolset::all()).await?;
     all_runtime.set_toolset(Toolset::all()).await?;
     if let Some(local_model) = local_model.clone() {
         all_runtime
@@ -188,7 +191,8 @@ async fn context_budget_stays_empty_and_toolsets_remain_bounded(
         all.tool_tokens
     );
 
-    let mut shell_runtime = connect_with_toolset(&config, "copilot", Toolset::shell_only()).await?;
+    let mut shell_runtime =
+        connect_with_toolset(&config, &provider_config, Toolset::shell_only()).await?;
     if let Some(local_model) = local_model {
         shell_runtime
             .switch_model(local_model, None::<SetModelOptions>, None, None)

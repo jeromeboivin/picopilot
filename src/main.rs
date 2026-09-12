@@ -34,7 +34,7 @@ async fn run(config: AppConfig) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let reduced_motion = config.reduced_motion;
-    let runtime = connect(&config, &provider_config.default_provider).await?;
+    let runtime = connect(&config, &provider_config).await?;
     tui::run_with_settings(runtime, None, reduced_motion).await?;
     Ok(())
 }

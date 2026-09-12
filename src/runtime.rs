@@ -15,9 +15,10 @@ use github_copilot_sdk::{
 use serde_json::Value;
 
 use crate::config::AppConfig;
+use crate::events::{BannerSeverity, EventUpdate};
 use crate::permissions::{permission_handler, ApprovalRequest};
-use crate::provider::ProviderRegistry;
-use crate::provider_config::RESERVED_COPILOT_PROVIDER_NAME;
+use crate::provider::{ProviderRegistry, ProviderSettings};
+use crate::provider_config::{ProviderConfigFile, ProviderProfile, RESERVED_COPILOT_PROVIDER_NAME};
 use crate::skills::{SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, ToolsetProvenance};
 
@@ -52,6 +53,10 @@ pub struct AppRuntime {
     pub session: github_copilot_sdk::session::Session,
     pub models: Vec<Model>,
     pub provider_registry: Option<ProviderRegistry>,
+    /// One [`EventUpdate::Banner`] per configured provider that failed discovery at startup
+    /// (spec §4.2). Drained by the caller (the TUI's startup loop) once `AppRuntime` is handed
+    /// off, the same way `skill_catalog.diagnostics()` is drained today.
+    pub startup_banners: Vec<EventUpdate>,
     pub working_directory: PathBuf,
     pub active_model_options: ActiveModelOptions,
     pub active_toolset: Toolset,
@@ -151,12 +156,15 @@ mod tests {
 
     use super::{
         apply_active_model_options, apply_optional_active_model_options, apply_provider_registry,
-        apply_toolset, default_toolset_for_model, model_from_history, models_from_session_catalog,
-        recovery_backoff, recovery_message, restored_model, should_recompute_default_toolset,
-        toolset_transition, verify_session_identity, ActiveModelOptions, CatalogError,
-        SessionIdentity, ToolsetTransition, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        apply_toolset, default_toolset_for_model, discover_provider_registry, model_from_history,
+        models_from_session_catalog, recovery_backoff, recovery_message, restored_model,
+        should_recompute_default_toolset, toolset_transition, verify_session_identity,
+        ActiveModelOptions, CatalogError, SessionIdentity, ToolsetTransition,
+        RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
+    use crate::events::EventUpdate;
     use crate::provider::{ProviderRegistry, ProviderSettings};
+    use crate::provider_config::ProviderProfile;
     use crate::toolset::{Toolset, ToolsetProvenance};
 
     #[test]
@@ -352,6 +360,138 @@ mod tests {
             models_from_session_catalog(vec![serde_json::json!({"name": "missing"})]),
             Err(CatalogError::MissingModelId { index: 0 })
         ));
+    }
+
+    /// Binds a listener, immediately drops it, and returns its (now-closed) port so a connection
+    /// attempt against it fails fast with "connection refused" instead of waiting out a timeout.
+    fn unreachable_port() -> u16 {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("closed-port helper should bind");
+        listener
+            .local_addr()
+            .expect("closed-port helper should have an address")
+            .port()
+    }
+
+    fn unreachable_provider(name: &str) -> (String, ProviderProfile) {
+        let port = unreachable_port();
+        (
+            name.to_string(),
+            ProviderProfile::new(format!("http://127.0.0.1:{port}/v1")),
+        )
+    }
+
+    /// A mock `/models` server that sleeps for `delay` before responding, so a test can tell
+    /// concurrent discovery apart from serialized discovery by wall-clock time.
+    fn delayed_mock_models_server(
+        delay: std::time::Duration,
+        body: &str,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
+        let address = listener
+            .local_addr()
+            .expect("mock server address should be available");
+        let body = body.to_string();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("mock server should accept");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream.read(&mut buffer);
+            std::thread::sleep(delay);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\nContent-Type: application/json\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("mock response should be writable");
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[tokio::test]
+    async fn discovery_merges_successes_and_banners_every_failure_with_the_exact_message_shape() {
+        let (openrouter_url, openrouter_handle) =
+            delayed_mock_models_server(std::time::Duration::ZERO, r#"{"data":[{"id":"model-a"}]}"#);
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert("openrouter".to_string(), ProviderProfile::new(openrouter_url));
+        let (ollama_name, ollama_profile) = unreachable_provider("ollama");
+        providers.insert(ollama_name, ollama_profile);
+
+        let (registry, banners) = discover_provider_registry(&providers).await;
+        openrouter_handle.join().expect("mock server should finish");
+
+        let registry = registry.expect("the one successful provider should populate a registry");
+        assert_eq!(
+            registry.qualified_model_ids(),
+            vec!["openrouter/model-a"]
+        );
+        assert_eq!(banners.len(), 1);
+        match &banners[0] {
+            EventUpdate::Banner { severity, message, url } => {
+                assert_eq!(*severity, crate::events::BannerSeverity::Warning);
+                assert!(
+                    message.starts_with("provider 'ollama' is unreachable and was skipped: "),
+                    "unexpected banner message: {message}"
+                );
+                assert!(url.is_none());
+            }
+            other => panic!("expected a Banner update, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn all_providers_failing_yields_an_empty_registry_not_a_startup_abort() {
+        let mut providers = std::collections::BTreeMap::new();
+        let (name_a, profile_a) = unreachable_provider("ollama");
+        let (name_b, profile_b) = unreachable_provider("vllm");
+        providers.insert(name_a, profile_a);
+        providers.insert(name_b, profile_b);
+
+        let (registry, banners) = discover_provider_registry(&providers).await;
+
+        assert!(registry.is_none());
+        assert_eq!(banners.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn no_configured_providers_yields_an_empty_registry_and_no_banners() {
+        let providers = std::collections::BTreeMap::new();
+
+        let (registry, banners) = discover_provider_registry(&providers).await;
+
+        assert!(registry.is_none());
+        assert!(banners.is_empty());
+    }
+
+    #[tokio::test]
+    async fn discovery_runs_concurrently_not_serialized_per_provider() {
+        // Generously sized so scheduling noise under a fully parallel `cargo test` run can't
+        // push a genuinely-concurrent run over the threshold, while a serialized (3x) run still
+        // clears it by a wide margin.
+        let delay = std::time::Duration::from_millis(500);
+        let (url_a, handle_a) = delayed_mock_models_server(delay, r#"{"data":[{"id":"model-a"}]}"#);
+        let (url_b, handle_b) = delayed_mock_models_server(delay, r#"{"data":[{"id":"model-b"}]}"#);
+        let (url_c, handle_c) = delayed_mock_models_server(delay, r#"{"data":[{"id":"model-c"}]}"#);
+        let mut providers = std::collections::BTreeMap::new();
+        providers.insert("a".to_string(), ProviderProfile::new(url_a));
+        providers.insert("b".to_string(), ProviderProfile::new(url_b));
+        providers.insert("c".to_string(), ProviderProfile::new(url_c));
+
+        let started = std::time::Instant::now();
+        let (registry, banners) = discover_provider_registry(&providers).await;
+        let elapsed = started.elapsed();
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+        handle_c.join().unwrap();
+
+        assert!(banners.is_empty());
+        assert_eq!(registry.expect("all three should succeed").providers().len(), 3);
+        assert!(
+            elapsed < delay * 2,
+            "3 discoveries each delayed {delay:?} took {elapsed:?} — looks serialized, not concurrent"
+        );
     }
 }
 
@@ -1178,17 +1318,72 @@ fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, Catalo
 
 pub async fn connect(
     config: &AppConfig,
-    default_provider: &str,
+    provider_config: &ProviderConfigFile,
 ) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, default_provider, None).await
+    connect_inner(config, provider_config, None).await
 }
 
 pub async fn connect_with_toolset(
     config: &AppConfig,
-    default_provider: &str,
+    provider_config: &ProviderConfigFile,
     requested_toolset: Toolset,
 ) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, default_provider, Some(requested_toolset)).await
+    connect_inner(config, provider_config, Some(requested_toolset)).await
+}
+
+/// Builds the [`ProviderSettings`] `provider.rs::discover` needs from a config-file profile.
+/// Profiles are already validated at config-load time (`provider_config::validate`), so a
+/// construction failure here is treated the same as a discovery failure (spec §4.2): skip with a
+/// banner rather than aborting startup.
+fn provider_settings_for(name: &str, profile: &ProviderProfile) -> Result<ProviderSettings, String> {
+    ProviderSettings::new(
+        name,
+        profile.base_url.clone(),
+        profile.wire_api.clone(),
+        profile.api_key.clone(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Runs `provider.rs::discover` once per configured non-`copilot` provider profile, concurrently
+/// (spec §4.1), bounded by `discover`'s own per-request timeout so N unreachable providers cost
+/// one timeout period rather than N serialized ones. Successes are merged via
+/// `ProviderRegistry`'s `FromIterator` impl; failures never abort startup and instead become one
+/// `EventUpdate::Banner` each (spec §4.2). Returns `None` when there were no configured providers
+/// or every one of them failed.
+async fn discover_provider_registry(
+    providers: &std::collections::BTreeMap<String, ProviderProfile>,
+) -> (Option<ProviderRegistry>, Vec<EventUpdate>) {
+    let attempts = providers.iter().map(|(name, profile)| {
+        let settings = provider_settings_for(name, profile);
+        let name = name.clone();
+        async move {
+            match settings {
+                Ok(settings) => crate::provider::discover(&settings)
+                    .await
+                    .map_err(|error| (name, error.to_string())),
+                Err(error) => Err((name, error)),
+            }
+        }
+    });
+    let results = futures_util::future::join_all(attempts).await;
+
+    let mut registries = Vec::new();
+    let mut banners = Vec::new();
+    for result in results {
+        match result {
+            Ok(registry) => registries.push(registry),
+            Err((name, error)) => banners.push(EventUpdate::Banner {
+                severity: BannerSeverity::Warning,
+                message: format!("provider '{name}' is unreachable and was skipped: {error}"),
+                url: None,
+            }),
+        }
+    }
+
+    let registry: ProviderRegistry = registries.into_iter().collect();
+    let registry = (!registry.providers().is_empty()).then_some(registry);
+    (registry, banners)
 }
 
 /// Empty [`ListModelsHandler`] used when `default_provider` resolves to anything other than
@@ -1220,9 +1415,10 @@ fn client_options_for(config: &AppConfig, working_directory: &Path, default_prov
 
 async fn connect_inner(
     config: &AppConfig,
-    default_provider: &str,
+    provider_config: &ProviderConfigFile,
     requested_toolset: Option<Toolset>,
 ) -> Result<AppRuntime, StartupError> {
+    let default_provider = provider_config.default_provider.as_str();
     let working_directory = config
         .working_directory()
         .map_err(StartupError::CurrentDirectory)?;
@@ -1234,9 +1430,8 @@ async fn connect_inner(
         .await
         .map_err(StartupError::Client)?;
     let hosted_models = client.list_models().await.map_err(StartupError::Client)?;
-    // TODO(ticket 3+): wire the provider registry from the config.yaml `providers` map instead of
-    // always leaving it empty.
-    let provider_registry: Option<ProviderRegistry> = None;
+    let (provider_registry, startup_banners) =
+        discover_provider_registry(&provider_config.providers).await;
     let active_toolset = requested_toolset
         .unwrap_or_else(|| default_toolset_for_model(None, provider_registry.as_ref()));
 
@@ -1286,6 +1481,7 @@ async fn connect_inner(
         session,
         models,
         provider_registry,
+        startup_banners,
         working_directory,
         startup_config: config.clone(),
         session_start_time,

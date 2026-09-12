@@ -129,6 +129,26 @@ impl ProviderRegistry {
             .map(|model| format!("{}/{}", model.provider, model.id))
             .collect()
     }
+
+    /// Concatenates `providers`/`models` from `other` onto `self` (spec §4.1). Used to combine
+    /// the per-provider registries produced by concurrently discovering N configured profiles.
+    pub fn merge(mut self, other: Self) -> Self {
+        self.providers.extend(other.providers);
+        self.models.extend(other.models);
+        self
+    }
+}
+
+impl FromIterator<ProviderRegistry> for ProviderRegistry {
+    fn from_iter<I: IntoIterator<Item = ProviderRegistry>>(iter: I) -> Self {
+        iter.into_iter().fold(
+            ProviderRegistry {
+                providers: Vec::new(),
+                models: Vec::new(),
+            },
+            ProviderRegistry::merge,
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -505,6 +525,64 @@ mod tests {
             .join()
             .expect("empty mock server should finish");
         assert!(matches!(empty_error, ProviderError::NoModels));
+    }
+
+    #[test]
+    fn merges_two_registries_by_concatenating_providers_and_models() {
+        let openrouter =
+            ProviderSettings::new("openrouter", "https://openrouter.ai/api/v1", "completions", None)
+                .unwrap();
+        let ollama =
+            ProviderSettings::new("ollama", "http://localhost:11434/v1", "completions", None)
+                .unwrap();
+        let a = ProviderRegistry::from_model_ids(&openrouter, ["anthropic/claude-3.5-sonnet"])
+            .unwrap();
+        let b = ProviderRegistry::from_model_ids(&ollama, ["qwen2.5-coder:14b"]).unwrap();
+
+        let merged = a.merge(b);
+
+        assert_eq!(merged.providers().len(), 2);
+        assert_eq!(
+            merged.qualified_model_ids(),
+            vec![
+                "openrouter/anthropic/claude-3.5-sonnet",
+                "ollama/qwen2.5-coder:14b",
+            ]
+        );
+    }
+
+    #[test]
+    fn from_iter_combines_n_registries_sharing_no_names() {
+        let settings_a =
+            ProviderSettings::new("openrouter", "https://openrouter.ai/api/v1", "completions", None)
+                .unwrap();
+        let settings_b =
+            ProviderSettings::new("ollama", "http://localhost:11434/v1", "completions", None)
+                .unwrap();
+        let settings_c =
+            ProviderSettings::new("vllm", "http://localhost:8000/v1", "completions", None).unwrap();
+        let registries = vec![
+            ProviderRegistry::from_model_ids(&settings_a, ["model-a"]).unwrap(),
+            ProviderRegistry::from_model_ids(&settings_b, ["model-b"]).unwrap(),
+            ProviderRegistry::from_model_ids(&settings_c, ["model-c"]).unwrap(),
+        ];
+
+        let merged: ProviderRegistry = registries.into_iter().collect();
+
+        assert_eq!(merged.providers().len(), 3);
+        assert_eq!(
+            merged.qualified_model_ids(),
+            vec!["openrouter/model-a", "ollama/model-b", "vllm/model-c"]
+        );
+    }
+
+    #[test]
+    fn from_iter_over_zero_registries_yields_an_empty_registry() {
+        let merged: ProviderRegistry = std::iter::empty().collect();
+
+        assert!(merged.providers().is_empty());
+        assert!(merged.models().is_empty());
+        assert!(merged.qualified_model_ids().is_empty());
     }
 
     #[tokio::test]

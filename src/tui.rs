@@ -2857,6 +2857,9 @@ async fn run_loop(
             diagnostic.path.display()
         ));
     }
+    for banner in std::mem::take(&mut runtime.startup_banners) {
+        app.apply(banner);
+    }
     app.set_reasoning_effort(reasoning_effort);
     let mut events = runtime.session.subscribe();
     let mut screen_model = ScreenModel::default();
