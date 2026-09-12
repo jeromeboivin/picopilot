@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>picopilot setup wizard — flow prototype</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f26;
+    --border: #3a3f4b;
+    --text: #e6e6e6;
+    --dim: #999999;
+    --accent: #f0b15e;      /* picopilot's existing accent, per the rendering-parity palette notes */
+    --good: #4eba65;
+    --bad: #ff7575;
+    --focus-bg: #262a33;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: #0e0f12;
+    color: var(--text);
+    font-family: 'Cascadia Code', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+    padding: 24px;
+    line-height: 1.5;
+  }
+  h1 { font-size: 15px; color: var(--dim); font-weight: 600; margin: 0 0 4px; }
+  .intro {
+    max-width: 900px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    font-size: 13px;
+    color: #cfd3da;
+  }
+  .intro b { color: var(--accent); }
+  .layout { display: grid; grid-template-columns: 560px 1fr; gap: 20px; max-width: 1200px; }
+  .term {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-size: 13px;
+    white-space: pre;
+    min-height: 320px;
+  }
+  .term .cursor { color: var(--accent); }
+  .term .dim { color: var(--dim); }
+  .term .good { color: var(--good); }
+  .term .bad { color: var(--bad); }
+  .term .focus-row { background: var(--focus-bg); display: inline-block; width: 100%; }
+  .side { display: flex; flex-direction: column; gap: 14px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+  }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 0 0 8px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  button {
+    font-family: inherit;
+    font-size: 12px;
+    background: #23262e;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .35; cursor: default; }
+  button.primary { border-color: var(--accent); color: var(--accent); }
+  .field { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+  .field label { font-size: 11px; color: var(--dim); }
+  .field input, .field select {
+    font-family: inherit;
+    font-size: 12px;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 7px;
+  }
+  .field .err { color: var(--bad); font-size: 11px; }
+  .yaml { font-size: 11.5px; white-space: pre; color: #b9c4d4; }
+  .yaml .k { color: #8fbcff; }
+  .yaml .v { color: #d9c98a; }
+  .log { font-size: 11px; color: var(--dim); max-height: 140px; overflow-y: auto; }
+  .log div { margin-bottom: 2px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button.active { border-color: var(--accent); color: var(--accent); }
+  .scenario-desc { font-size: 12px; color: #cfd3da; margin-bottom: 8px; }
+  .steps { display: flex; flex-direction: column; gap: 6px; }
+  .steps button { text-align: left; }
+  .steps button.done { opacity: .4; }
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    border-radius: 3px;
+    padding: 1px 5px;
+    margin-left: 6px;
+    border: 1px solid var(--border);
+    color: var(--dim);
+  }
+</style>
+</head>
+<body>
+
+<h1>picopilot — setup wizard flow prototype</h1>
+<div class="intro">
+  <b>Question this answers:</b> does the setup-wizard's screen sequence — entry → add a provider
+  (or connect Copilot) → repeat or finish — hold together across the awkward cases? In particular:
+  what happens when a user configures <b>both</b> Copilot and an OpenAI-compatible provider in the
+  same pass, and which one should become <code>default_provider</code>? This prototype proposes
+  <b>"whichever was configured most recently in the wizard wins"</b> — consistent with how
+  <code>default_provider</code> already behaves everywhere else in the design (it always tracks
+  "last used"), rather than inventing a special wizard-only tie-break rule. Free-play on the left/right
+  panels, or step through the scenarios below. Nothing here is wired into picopilot's real TUI —
+  it's throwaway code to react to, per
+  <code>.wayfinder/provider-config/tickets/06-setup-wizard-flow-prototype.md</code>.
+</div>
+
+<div class="tabs" id="tabs"></div>
+<div id="scenario-panel" class="card" style="max-width: 900px; margin-bottom: 16px; display:none;">
+  <h2>Scenario</h2>
+  <div class="scenario-desc" id="scenario-desc"></div>
+  <div class="steps" id="scenario-steps"></div>
+</div>
+
+<div class="layout">
+  <div>
+    <div class="term" id="term"></div>
+  </div>
+  <div class="side">
+    <div class="card">
+      <h2>Free-play actions</h2>
+      <div class="actions" id="actions"></div>
+    </div>
+    <div class="card">
+      <h2>config.yaml so far</h2>
+      <div class="yaml" id="yaml"></div>
+    </div>
+    <div class="card">
+      <h2>What happened, in order</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ============================================================================
+// PURE LOGIC MODULE — no DOM access. This is the part meant to be liftable
+// into the real wizard implementation once the flow is validated.
+// ============================================================================
+const Wizard = (() => {
+  const RESERVED_NAME = 'copilot';
+
+  function initialState() {
+    return {
+      screen: 'entry',               // 'entry' | 'addProvider' | 'connectingCopilot' | 'finish'
+      providers: [],                 // [{name, baseUrl, wireApi, hasApiKey}]
+      copilotConnected: false,
+      defaultProvider: null,         // name string, or 'copilot', or null if nothing configured yet
+      draft: { name: '', baseUrl: '', wireApi: 'completions', apiKey: '' },
+      fieldErrors: {},
+      log: [],
+    };
+  }
+
+  function withLog(state, message) {
+    return { ...state, log: [...state.log, message] };
+  }
+
+  function validateName(name, existingProviders) {
+    if (!name || !name.trim()) return 'name is required';
+    if (name.includes('/')) return "name cannot contain '/'";
+    if (name.trim().toLowerCase() === RESERVED_NAME) return `'${RESERVED_NAME}' is reserved`;
+    if (existingProviders.some((p) => p.name === name.trim())) return 'a provider with this name already exists';
+    return null;
+  }
+
+  function validateBaseUrl(raw) {
+    const value = (raw || '').trim();
+    if (!value) return 'base URL is required';
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return 'not a valid URL';
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return 'must be http or https';
+    if (url.username || url.password) return 'must not embed credentials';
+    if (url.search || url.hash) return 'must not include a query or fragment';
+    return null;
+  }
+
+  function goToAddProvider(state) {
+    return { ...state, screen: 'addProvider', draft: { name: '', baseUrl: '', wireApi: 'completions', apiKey: '' }, fieldErrors: {} };
+  }
+
+  function cancelAddProvider(state) {
+    return { ...state, screen: 'entry', fieldErrors: {} };
+  }
+
+  function updateDraftField(state, field, value) {
+    return { ...state, draft: { ...state.draft, [field]: value }, fieldErrors: { ...state.fieldErrors, [field]: undefined } };
+  }
+
+  function submitProviderForm(state) {
+    const nameError = validateName(state.draft.name, state.providers);
+    const urlError = validateBaseUrl(state.draft.baseUrl);
+    if (nameError || urlError) {
+      return { ...state, fieldErrors: { name: nameError, baseUrl: urlError } };
+    }
+    const name = state.draft.name.trim();
+    const provider = {
+      name,
+      baseUrl: state.draft.baseUrl.trim(),
+      wireApi: state.draft.wireApi,
+      hasApiKey: !!state.draft.apiKey,
+    };
+    let next = {
+      ...state,
+      providers: [...state.providers, provider],
+      defaultProvider: name, // "last configured wins"
+      screen: 'entry',
+      fieldErrors: {},
+    };
+    return withLog(next, `added provider '${name}' (${provider.baseUrl}) — default_provider is now '${name}'`);
+  }
+
+  function removeProvider(state, name) {
+    const providers = state.providers.filter((p) => p.name !== name);
+    let defaultProvider = state.defaultProvider;
+    if (defaultProvider === name) {
+      // Recompute from the log: fall back to whatever was configured next-most-recently.
+      const remaining = [...providers.map((p) => p.name)];
+      if (state.copilotConnected) remaining.push(RESERVED_NAME);
+      defaultProvider = remaining.length ? remaining[remaining.length - 1] : null;
+    }
+    return withLog({ ...state, providers, defaultProvider }, `removed provider '${name}'`);
+  }
+
+  function selectCopilot(state) {
+    if (state.copilotConnected) {
+      return withLog({ ...state }, 'Copilot is already connected — nothing to do');
+    }
+    return { ...state, screen: 'connectingCopilot' };
+  }
+
+  function confirmCopilotConnected(state) {
+    let next = {
+      ...state,
+      copilotConnected: true,
+      defaultProvider: RESERVED_NAME, // "last configured wins"
+      screen: 'entry',
+    };
+    return withLog(next, `connected to GitHub Copilot (ambient auto-login, unchanged from today) — default_provider is now 'copilot'`);
+  }
+
+  function finish(state) {
+    return withLog({ ...state, screen: 'finish' }, 'wizard finished — config.yaml written');
+  }
+
+  function backToEntry(state) {
+    return { ...state, screen: 'entry' };
+  }
+
+  function canFinish(state) {
+    return state.providers.length > 0 || state.copilotConnected;
+  }
+
+  return {
+    initialState, goToAddProvider, cancelAddProvider, updateDraftField, submitProviderForm,
+    removeProvider, selectCopilot, confirmCopilotConnected, finish, backToEntry, canFinish,
+    validateName, validateBaseUrl, RESERVED_NAME,
+  };
+})();
+
+// ============================================================================
+// PAGE SHELL — DOM rendering only. Throwaway; not meant to be lifted anywhere.
+// ============================================================================
+let state = Wizard.initialState();
+let activeScenario = null;
+let scenarioStepIndex = 0;
+
+function esc(s) { return (s ?? '').toString().replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function renderYaml() {
+  const lines = [];
+  lines.push(`<span class="k">default_provider:</span> <span class="v">${state.defaultProvider ? esc(state.defaultProvider) : '# (none yet)'}</span>`);
+  if (state.copilotConnected) {
+    lines.push('');
+    lines.push(`<span class="k">copilot:</span> <span class="dim"># connected, no fields to store</span>`);
+  }
+  lines.push('');
+  lines.push(`<span class="k">providers:</span>${state.providers.length ? '' : ' <span class="dim">{}</span>'}`);
+  for (const p of state.providers) {
+    lines.push(`  <span class="k">${esc(p.name)}:</span>`);
+    lines.push(`    <span class="k">base_url:</span> <span class="v">${esc(p.baseUrl)}</span>`);
+    lines.push(`    <span class="k">wire_api:</span> <span class="v">${esc(p.wireApi)}</span>`);
+    if (p.hasApiKey) lines.push(`    <span class="k">api_key:</span> <span class="v">********</span>`);
+  }
+  document.getElementById('yaml').innerHTML = lines.join('\n');
+}
+
+function renderLog() {
+  const el = document.getElementById('log');
+  if (!state.log.length) { el.innerHTML = '<div class="dim">(nothing yet — try an action)</div>'; return; }
+  el.innerHTML = state.log.map((l) => `<div>› ${esc(l)}</div>`).join('');
+}
+
+function termLine(text, cls) {
+  return cls ? `<span class="${cls}">${text}</span>` : text;
+}
+
+function renderTerm() {
+  const el = document.getElementById('term');
+  const rows = [];
+  const configuredCount = state.providers.length + (state.copilotConnected ? 1 : 0);
+
+  if (state.screen === 'entry') {
+    rows.push(termLine(configuredCount === 0
+      ? 'Welcome to picopilot. Let’s set up a model provider.'
+      : 'Setup — add another provider, or finish.', 'dim'));
+    rows.push('');
+    let idx = 1;
+    rows.push(termLine(`❯ ${idx}.  Connect to GitHub Copilot`, 'focus-row cursor') + (state.copilotConnected ? termLine('  [connected]', 'good') : ''));
+    idx++;
+    rows.push(`  ${idx}.  Add a provider (OpenRouter, Ollama, vLLM, LM Studio, …)`);
+    idx++;
+    if (configuredCount > 0) {
+      rows.push(`  ${idx}.  Finish`);
+    } else {
+      rows.push(termLine(`  ${idx}.  Finish`, 'dim') + termLine('  (configure at least one to finish)', 'dim'));
+    }
+    if (state.providers.length) {
+      rows.push('');
+      rows.push(termLine('Configured so far:', 'dim'));
+      for (const p of state.providers) {
+        const isDefault = state.defaultProvider === p.name;
+        rows.push(`   ${isDefault ? '●' : '○'} ${p.name}  (${p.baseUrl})` + (isDefault ? termLine('  ← default', 'dim') : ''));
+      }
+      if (state.copilotConnected) {
+        const isDefault = state.defaultProvider === Wizard.RESERVED_NAME;
+        rows.push(`   ${isDefault ? '●' : '○'} copilot` + (isDefault ? termLine('  ← default', 'dim') : ''));
+      }
+    }
+    rows.push('');
+    rows.push(termLine('  ↑/↓ to select · Enter to choose · Esc to quit without saving', 'dim'));
+  }
+
+  else if (state.screen === 'addProvider') {
+    rows.push(termLine('Add a provider', 'dim'));
+    rows.push('');
+    rows.push('Name        ' + termLine(state.draft.name || '_', state.draft.name ? '' : 'dim'));
+    if (state.fieldErrors.name) rows.push(termLine('            ' + state.fieldErrors.name, 'bad'));
+    rows.push('');
+    rows.push('Base URL    ' + termLine(state.draft.baseUrl || '_', state.draft.baseUrl ? '' : 'dim'));
+    if (state.fieldErrors.baseUrl) rows.push(termLine('            ' + state.fieldErrors.baseUrl, 'bad'));
+    rows.push('');
+    rows.push('Wire API    [' + (state.draft.wireApi === 'completions' ? '●' : '○') + '] completions   [' + (state.draft.wireApi === 'responses' ? '●' : '○') + '] responses');
+    rows.push('');
+    rows.push('API key     ' + termLine(state.draft.apiKey ? '*'.repeat(Math.min(state.draft.apiKey.length, 20)) : '(optional, not echoed)', state.draft.apiKey ? '' : 'dim'));
+    rows.push('');
+    rows.push(termLine('  Tab between fields · Enter to save · Esc to cancel', 'dim'));
+  }
+
+  else if (state.screen === 'connectingCopilot') {
+    rows.push(termLine('Connecting to GitHub Copilot…', 'dim'));
+    rows.push('');
+    rows.push('  This runs exactly like picopilot’s startup does today: the bundled');
+    rows.push('  Copilot CLI performs its own ambient/interactive sign-in. picopilot');
+    rows.push('  builds no custom login screen — whatever that process shows or asks');
+    rows.push('  for happens here, unmodified.');
+    rows.push('');
+    rows.push(termLine('  [Simulate: sign-in succeeds]', 'good'));
+  }
+
+  else if (state.screen === 'finish') {
+    rows.push(termLine('Setup complete.', 'good'));
+    rows.push('');
+    rows.push('  config.yaml written. Starting picopilot with default_provider =');
+    rows.push(`  '${esc(state.defaultProvider)}'.`);
+    rows.push('');
+    rows.push(termLine('  (or, if this was launched via --configure: picopilot exits here', 'dim'));
+    rows.push(termLine('   instead of continuing into a session — see ticket 03)', 'dim'));
+  }
+
+  el.innerHTML = rows.join('\n');
+}
+
+function renderActions() {
+  const el = document.getElementById('actions');
+  const buttons = [];
+  if (state.screen === 'entry') {
+    buttons.push(['Select: Connect Copilot', () => dispatch(Wizard.selectCopilot)]);
+    buttons.push(['Select: Add a provider', () => dispatch(Wizard.goToAddProvider)]);
+    buttons.push(['Select: Finish', () => dispatch(Wizard.finish), !Wizard.canFinish(state)]);
+    for (const p of state.providers) {
+      buttons.push([`Remove '${p.name}'`, () => dispatch((s) => Wizard.removeProvider(s, p.name))]);
+    }
+  } else if (state.screen === 'addProvider') {
+    buttons.push(['Type name: "ollama"', () => dispatch((s) => Wizard.updateDraftField(s, 'name', 'ollama'))]);
+    buttons.push(['Type name: "openrouter"', () => dispatch((s) => Wizard.updateDraftField(s, 'name', 'openrouter'))]);
+    buttons.push(['Type name: "copilot" (illegal)', () => dispatch((s) => Wizard.updateDraftField(s, 'name', 'copilot'))]);
+    buttons.push(['Type name: "" (empty)', () => dispatch((s) => Wizard.updateDraftField(s, 'name', ''))]);
+    buttons.push(['Type URL: http://localhost:11434/v1', () => dispatch((s) => Wizard.updateDraftField(s, 'baseUrl', 'http://localhost:11434/v1'))]);
+    buttons.push(['Type URL: https://openrouter.ai/api/v1', () => dispatch((s) => Wizard.updateDraftField(s, 'baseUrl', 'https://openrouter.ai/api/v1'))]);
+    buttons.push(['Type URL: "not-a-url" (illegal)', () => dispatch((s) => Wizard.updateDraftField(s, 'baseUrl', 'not-a-url'))]);
+    buttons.push(['Type URL: "" (empty)', () => dispatch((s) => Wizard.updateDraftField(s, 'baseUrl', ''))]);
+    buttons.push(['Toggle wire API', () => dispatch((s) => Wizard.updateDraftField(s, 'wireApi', s.draft.wireApi === 'completions' ? 'responses' : 'completions'))]);
+    buttons.push(['Type API key: "sk-demo-123"', () => dispatch((s) => Wizard.updateDraftField(s, 'apiKey', 'sk-demo-123'))]);
+    buttons.push(['Submit', () => dispatch(Wizard.submitProviderForm)]);
+    buttons.push(['Cancel', () => dispatch(Wizard.cancelAddProvider)]);
+  } else if (state.screen === 'connectingCopilot') {
+    buttons.push(['Simulate: sign-in succeeds', () => dispatch(Wizard.confirmCopilotConnected)]);
+  } else if (state.screen === 'finish') {
+    buttons.push(['Start over', () => { state = Wizard.initialState(); renderAll(); }]);
+  }
+  el.innerHTML = '';
+  for (const [label, fn, disabled] of buttons) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (disabled) b.disabled = true;
+    b.onclick = fn;
+    el.appendChild(b);
+  }
+}
+
+function dispatch(fn) {
+  state = fn(state);
+  renderAll();
+}
+
+function renderAll() {
+  renderTerm();
+  renderActions();
+  renderYaml();
+  renderLog();
+  renderScenarioPanel();
+}
+
+// ----------------------------------------------------------------------------
+// Guided walkthroughs
+// ----------------------------------------------------------------------------
+const scenarios = [
+  {
+    name: 'Happy path',
+    desc: 'One local provider, nothing else. The simplest case.',
+    steps: [
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "ollama"', (s) => Wizard.updateDraftField(s, 'name', 'ollama')],
+      ['Type URL: http://localhost:11434/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'http://localhost:11434/v1')],
+      ['Submit', (s) => Wizard.submitProviderForm(s)],
+      ['Select: Finish', (s) => Wizard.finish(s)],
+    ],
+  },
+  {
+    name: 'Copilot + a provider — who wins?',
+    desc: 'Connect Copilot first, then add OpenRouter. Watch default_provider switch to ‘openrouter’ because it was configured last — that’s the proposed tie-break rule, not an accident.',
+    steps: [
+      ['Select: Connect Copilot', (s) => Wizard.selectCopilot(s)],
+      ['Simulate: sign-in succeeds', (s) => Wizard.confirmCopilotConnected(s)],
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "openrouter"', (s) => Wizard.updateDraftField(s, 'name', 'openrouter')],
+      ['Type URL: https://openrouter.ai/api/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'https://openrouter.ai/api/v1')],
+      ['Submit', (s) => Wizard.submitProviderForm(s)],
+      ['Select: Finish', (s) => Wizard.finish(s)],
+    ],
+  },
+  {
+    name: 'Validation error, then fix it',
+    desc: 'Submit with an empty name and a bad URL, see both field errors, then correct them and resubmit.',
+    steps: [
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "" (empty)', (s) => Wizard.updateDraftField(s, 'name', '')],
+      ['Type URL: "not-a-url" (illegal)', (s) => Wizard.updateDraftField(s, 'baseUrl', 'not-a-url')],
+      ['Submit (fails)', (s) => Wizard.submitProviderForm(s)],
+      ['Type name: "ollama"', (s) => Wizard.updateDraftField(s, 'name', 'ollama')],
+      ['Type URL: http://localhost:11434/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'http://localhost:11434/v1')],
+      ['Submit (succeeds)', (s) => Wizard.submitProviderForm(s)],
+    ],
+  },
+  {
+    name: 'Illegal: reserved name',
+    desc: 'Try to name a provider "copilot" — it’s reserved for the Copilot slot and must be rejected.',
+    steps: [
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "copilot" (illegal)', (s) => Wizard.updateDraftField(s, 'name', 'copilot')],
+      ['Type URL: http://localhost:11434/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'http://localhost:11434/v1')],
+      ['Submit (fails)', (s) => Wizard.submitProviderForm(s)],
+    ],
+  },
+  {
+    name: 'Multiple providers, then remove one',
+    desc: 'Add two providers, then remove the one that was NOT last — default_provider should be unaffected since it wasn’t pointing at the removed one.',
+    steps: [
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "ollama"', (s) => Wizard.updateDraftField(s, 'name', 'ollama')],
+      ['Type URL: http://localhost:11434/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'http://localhost:11434/v1')],
+      ['Submit', (s) => Wizard.submitProviderForm(s)],
+      ['Select: Add a provider', (s) => Wizard.goToAddProvider(s)],
+      ['Type name: "openrouter"', (s) => Wizard.updateDraftField(s, 'name', 'openrouter')],
+      ['Type URL: https://openrouter.ai/api/v1', (s) => Wizard.updateDraftField(s, 'baseUrl', 'https://openrouter.ai/api/v1')],
+      ['Submit', (s) => Wizard.submitProviderForm(s)],
+      ["Remove 'ollama'", (s) => Wizard.removeProvider(s, 'ollama')],
+      ['Select: Finish', (s) => Wizard.finish(s)],
+    ],
+  },
+];
+
+function renderTabs() {
+  const el = document.getElementById('tabs');
+  el.innerHTML = '';
+  const freeplay = document.createElement('button');
+  freeplay.textContent = 'Free play';
+  freeplay.className = activeScenario === null ? 'active' : '';
+  freeplay.onclick = () => { activeScenario = null; state = Wizard.initialState(); renderAll(); };
+  el.appendChild(freeplay);
+  scenarios.forEach((sc, i) => {
+    const b = document.createElement('button');
+    b.textContent = sc.name;
+    b.className = activeScenario === i ? 'active' : '';
+    b.onclick = () => { activeScenario = i; scenarioStepIndex = 0; state = Wizard.initialState(); renderAll(); };
+    el.appendChild(b);
+  });
+}
+
+function renderScenarioPanel() {
+  const panel = document.getElementById('scenario-panel');
+  if (activeScenario === null) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const sc = scenarios[activeScenario];
+  document.getElementById('scenario-desc').textContent = sc.desc;
+  const stepsEl = document.getElementById('scenario-steps');
+  stepsEl.innerHTML = '';
+  sc.steps.forEach((step, i) => {
+    const b = document.createElement('button');
+    b.textContent = `${i + 1}. ${step[0]}`;
+    if (i < scenarioStepIndex) b.classList.add('done');
+    if (i !== scenarioStepIndex) b.disabled = true;
+    b.onclick = () => {
+      state = step[1](state);
+      scenarioStepIndex++;
+      renderAll();
+    };
+    stepsEl.appendChild(b);
+  });
+}
+
+renderTabs();
+renderAll();
+</script>
+</body>
+</html>
