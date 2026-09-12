@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,9 +14,10 @@ use github_copilot_sdk::{
 };
 use serde_json::Value;
 
-use crate::config::{AppConfig, ConfigError};
+use crate::config::AppConfig;
 use crate::permissions::{permission_handler, ApprovalRequest};
-use crate::provider::{ProviderError, ProviderRegistry};
+use crate::provider::ProviderRegistry;
+use crate::provider_config::RESERVED_COPILOT_PROVIDER_NAME;
 use crate::skills::{SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, ToolsetProvenance};
 
@@ -1064,8 +1065,6 @@ impl AppRuntime {
 pub enum StartupError {
     CurrentDirectory(std::io::Error),
     Client(SdkError),
-    Configuration(ConfigError),
-    ProviderDiscovery(ProviderError),
     Session(SdkError),
     SessionCatalog(SdkError),
     InvalidSessionCatalog(CatalogError),
@@ -1081,12 +1080,6 @@ impl fmt::Display for StartupError {
                 )
             }
             Self::Client(error) => write!(formatter, "could not start Copilot: {error}"),
-            Self::Configuration(error) => {
-                write!(formatter, "invalid startup configuration: {error}")
-            }
-            Self::ProviderDiscovery(error) => {
-                write!(formatter, "could not discover provider models: {error}")
-            }
             Self::Session(error) => write!(formatter, "could not create Copilot session: {error}"),
             Self::SessionCatalog(error) => {
                 write!(formatter, "could not list session models: {error}")
@@ -1103,8 +1096,6 @@ impl std::error::Error for StartupError {
         match self {
             Self::CurrentDirectory(error) => Some(error),
             Self::Client(error) | Self::Session(error) | Self::SessionCatalog(error) => Some(error),
-            Self::Configuration(error) => Some(error),
-            Self::ProviderDiscovery(error) => Some(error),
             Self::InvalidSessionCatalog(error) => Some(error),
         }
     }
@@ -1185,19 +1176,51 @@ fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, Catalo
         .map_err(|source| CatalogError::InvalidEntry { index, source })
 }
 
-pub async fn connect(config: &AppConfig) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, None).await
+pub async fn connect(
+    config: &AppConfig,
+    default_provider: &str,
+) -> Result<AppRuntime, StartupError> {
+    connect_inner(config, default_provider, None).await
 }
 
 pub async fn connect_with_toolset(
     config: &AppConfig,
+    default_provider: &str,
     requested_toolset: Toolset,
 ) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, Some(requested_toolset)).await
+    connect_inner(config, default_provider, Some(requested_toolset)).await
+}
+
+/// Empty [`ListModelsHandler`] used when `default_provider` resolves to anything other than
+/// `"copilot"` (spec §2.2): it satisfies `ClientOptions::on_list_models` so `Client::list_models`
+/// never issues the real `models.list` RPC, and the session's models come entirely from the
+/// configured provider registry instead.
+struct EmptyModelCatalog;
+
+#[async_trait::async_trait]
+impl github_copilot_sdk::ListModelsHandler for EmptyModelCatalog {
+    async fn list_models(&self) -> github_copilot_sdk::Result<Vec<Model>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Builds the [`ClientOptions`] for `default_provider` (spec §2.2). `"copilot"` gets today's
+/// unchanged ambient/interactive auto-login path; anything else disables logged-in-user fallback,
+/// carries no `github_token`, and never issues the real `models.list` RPC.
+fn client_options_for(config: &AppConfig, working_directory: &Path, default_provider: &str) -> ClientOptions {
+    let options = config.client_options_in(working_directory);
+    if default_provider == RESERVED_COPILOT_PROVIDER_NAME {
+        options
+    } else {
+        options
+            .with_use_logged_in_user(false)
+            .with_list_models_handler(EmptyModelCatalog)
+    }
 }
 
 async fn connect_inner(
     config: &AppConfig,
+    default_provider: &str,
     requested_toolset: Option<Toolset>,
 ) -> Result<AppRuntime, StartupError> {
     let working_directory = config
@@ -1206,33 +1229,16 @@ async fn connect_inner(
     let skill_catalog = SkillCatalog::discover(&working_directory);
     let active_skill_selection = SkillSelection::none();
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
-    let provider_settings = config
-        .provider_settings()
-        .map_err(StartupError::Configuration)?;
-    let client = Client::start(config.client_options_in(&working_directory))
+    let client_options = client_options_for(config, &working_directory, default_provider);
+    let client = Client::start(client_options)
         .await
         .map_err(StartupError::Client)?;
     let hosted_models = client.list_models().await.map_err(StartupError::Client)?;
-    let provider_registry = match provider_settings.as_ref() {
-        Some(settings) => Some(
-            crate::provider::discover(settings)
-                .await
-                .map_err(StartupError::ProviderDiscovery)?,
-        ),
-        None => None,
-    };
-    let active_toolset = requested_toolset.unwrap_or_else(|| {
-        default_toolset_for_model(config.model.as_deref(), provider_registry.as_ref())
-    });
-
-    match provider_registry.as_ref() {
-        Some(registry) => config
-            .validate_against_registry(&hosted_models, registry)
-            .map_err(StartupError::Configuration)?,
-        None => config
-            .validate_against(&hosted_models)
-            .map_err(StartupError::Configuration)?,
-    }
+    // TODO(ticket 3+): wire the provider registry from the config.yaml `providers` map instead of
+    // always leaving it empty.
+    let provider_registry: Option<ProviderRegistry> = None;
+    let active_toolset = requested_toolset
+        .unwrap_or_else(|| default_toolset_for_model(None, provider_registry.as_ref()));
 
     let mut session_config = config
         .session_config_in_with_registry_and_toolset(
@@ -1283,11 +1289,7 @@ async fn connect_inner(
         working_directory,
         startup_config: config.clone(),
         session_start_time,
-        active_model_options: ActiveModelOptions {
-            model: config.model.clone(),
-            reasoning_effort: config.reasoning_effort.clone(),
-            context_tier: config.context_tier.clone(),
-        },
+        active_model_options: ActiveModelOptions::default(),
         active_toolset,
         toolset_provenance: ToolsetProvenance::Default,
         skill_catalog,
