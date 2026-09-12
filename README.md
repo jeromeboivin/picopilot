@@ -8,7 +8,7 @@ A minimalist Rust coding agent built on the GitHub Copilot SDK.
 │                                                                   │
 │ > INITIALIZING SYSTEM... Version: v0.1.0                          │
 │ > LOADING NEURAL MODULES... Project: dev                          │
-│ > BYPASSING SECURITY... Tools: 7                                  │
+│ > BYPASSING SECURITY... Tools: 17                                 │
 │ > ACCESS GRANTED.                                                 │
 │                                                                   │
 │  ██████╗ ██╗ ██████╗ ██████╗ ██████╗ ██╗██╗      ██████╗ ████████╗│
@@ -177,7 +177,7 @@ Press `Ctrl+K` to open the full-height tool picker. Use `Space` to toggle the
 highlighted tool, `s` for shell only, `a` for all tools, `Enter` to apply, and
 `Esc` to cancel. Applying a selection reconnects the same session; it is
 available only while idle and failed changes are rolled back. The status bar
-shows the active count as `tools N/7`. The picker can still be opened during an
+shows the active count as `tools N/17`. The picker can still be opened during an
 approval or reconnect, but applying a change waits until that work is finished.
 
 Press `Ctrl+N` while idle to start a new conversation immediately. The current
