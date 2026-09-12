@@ -8,25 +8,53 @@ pub const SHELL_TOOL: &str = "bash";
 #[cfg(windows)]
 pub const CANONICAL_TOOLS: &[&str] = &[
     "powershell",
+    "list_powershell",
+    "read_powershell",
+    "stop_powershell",
+    "write_powershell",
     "view",
     "edit",
     "create",
+    "apply_patch",
     "grep",
     "glob",
     "task",
+    "list_agents",
+    "read_agent",
+    "write_agent",
+    "ask_user",
+    "skill"
 ];
 
 #[cfg(not(windows))]
-pub const CANONICAL_TOOLS: &[&str] = &["bash", "view", "edit", "create", "grep", "glob", "task"];
+pub const CANONICAL_TOOLS: &[&str] = &[
+    "bash",
+    "list_bash",
+    "read_bash",
+    "stop_bash",
+    "write_bash",
+    "view",
+    "edit",
+    "create",
+    "apply_patch",
+    "grep",
+    "glob",
+    "task",
+    "list_agents",
+    "read_agent",
+    "write_agent",
+    "ask_user",
+    "skill"
+];
 
 pub const EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];
 pub const TOOL_COUNT: usize = CANONICAL_TOOLS.len();
 
-const ALL_TOOLS_MASK: u8 = (1_u8 << TOOL_COUNT) - 1;
+const ALL_TOOLS_MASK: u32 = (1_u32 << TOOL_COUNT) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Toolset {
-    selected: u8,
+    selected: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,7 +123,7 @@ impl Toolset {
     }
 
     pub const fn contains_at(self, index: usize) -> bool {
-        index < TOOL_COUNT && self.selected & (1_u8 << index) != 0
+        index < TOOL_COUNT && self.selected & (1_u32 << index) != 0
     }
 
     pub fn contains(self, tool: &str) -> bool {
@@ -107,7 +135,7 @@ impl Toolset {
         if index >= TOOL_COUNT {
             return false;
         }
-        self.selected ^= 1_u8 << index;
+        self.selected ^= 1_u32 << index;
         true
     }
 
@@ -133,7 +161,7 @@ impl Toolset {
                 tool: tool.to_string(),
             });
         };
-        self.selected |= 1_u8 << index;
+        self.selected |= 1_u32 << index;
         Ok(())
     }
 
@@ -214,5 +242,56 @@ mod tests {
     fn defaults_to_hosted_tools_and_default_provenance() {
         assert_eq!(Toolset::default(), Toolset::all());
         assert_eq!(ToolsetProvenance::default(), ToolsetProvenance::Default);
+    }
+
+    #[test]
+    fn includes_all_shell_tools() {
+        let toolset = Toolset::all();
+        let tools = toolset.available_tools();
+        assert!(tools.contains(&SHELL_TOOL));
+        #[cfg(windows)]
+        {
+            assert!(tools.contains(&"list_powershell"));
+            assert!(tools.contains(&"read_powershell"));
+            assert!(tools.contains(&"stop_powershell"));
+            assert!(tools.contains(&"write_powershell"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(tools.contains(&"list_bash"));
+            assert!(tools.contains(&"read_bash"));
+            assert!(tools.contains(&"stop_bash"));
+            assert!(tools.contains(&"write_bash"));
+        }
+    }
+
+    #[test]
+    fn includes_all_file_tools() {
+        let toolset = Toolset::all();
+        let tools = toolset.available_tools();
+        assert!(tools.contains(&"view"));
+        assert!(tools.contains(&"edit"));
+        assert!(tools.contains(&"create"));
+        assert!(tools.contains(&"apply_patch"));
+    }
+
+    #[test]
+    fn includes_all_agent_tools() {
+        let toolset = Toolset::all();
+        let tools = toolset.available_tools();
+        assert!(tools.contains(&"task"));
+        assert!(tools.contains(&"list_agents"));
+        assert!(tools.contains(&"read_agent"));
+        assert!(tools.contains(&"write_agent"));
+    }
+
+    #[test]
+    fn includes_other_tools() {
+        let toolset = Toolset::all();
+        let tools = toolset.available_tools();
+        assert!(tools.contains(&"grep"));
+        assert!(tools.contains(&"glob"));
+        assert!(tools.contains(&"ask_user"));
+        assert!(tools.contains(&"skill"));
     }
 }

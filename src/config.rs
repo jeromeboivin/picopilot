@@ -546,10 +546,14 @@ mod tests {
         assert_eq!(session.context_tier.as_deref(), Some("long_context"));
         assert_eq!(session.streaming, Some(true));
         let shell_tool = if cfg!(windows) { "powershell" } else { "bash" };
+        let list_tool = if cfg!(windows) { "list_powershell" } else { "list_bash" };
+        let read_tool = if cfg!(windows) { "read_powershell" } else { "read_bash" };
+        let stop_tool = if cfg!(windows) { "stop_powershell" } else { "stop_bash" };
+        let write_tool = if cfg!(windows) { "write_powershell" } else { "write_bash" };
         assert_eq!(
             session.available_tools,
             Some(
-                [shell_tool, "view", "edit", "create", "grep", "glob", "task"]
+                [shell_tool, list_tool, read_tool, stop_tool, write_tool, "view", "edit", "create", "apply_patch", "grep", "glob", "task", "list_agents", "read_agent", "write_agent", "ask_user", "skill"]
                     .into_iter()
                     .map(String::from)
                     .collect()

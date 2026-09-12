@@ -163,11 +163,13 @@ picopilot sends an explicitly empty system message to both hosted and local
 models. The SDK's default system instructions are not merged into the session.
 Built-in tools are also sent as an explicit allowlist so an empty selection
 cannot accidentally restore SDK defaults. The selectable set contains the
-platform shell, `view`, `edit`, `create`, `grep`, `glob`, and `task`; web search
-and web fetch are not enabled.
+platform shell plus its list/read/stop/write background-process tools, `view`,
+`edit`, `create`, `apply_patch`, `grep`, `glob`, `task` plus its
+list/read/write agent tools, `ask_user`, and `skill`; web search and web fetch
+are not enabled.
 
 New local-model conversations start with the shell only. New hosted-model
-conversations start with all seven tools. Before the first message, changing
+conversations start with all tools. Before the first message, changing
 models recomputes that default unless tools were selected manually. After a
 conversation has history, model changes preserve the current tool selection.
 
@@ -185,7 +187,7 @@ cleared. Previous conversations remain available through the `/resume` command.
 
 When resuming a historical session, picopilot first reconnects with shell-only
 tools, then detects the stored model from usage metrics or model-change history.
-Known hosted models are expanded to all seven tools; local and unknown models
+Known hosted models are expanded to all tools; local and unknown models
 remain shell-only. Custom tool selections are not persisted across processes.
 Automatic transport recovery preserves the exact active selection.
 

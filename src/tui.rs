@@ -8986,9 +8986,8 @@ mod tests {
         let mut app = App::new(None);
         app.set_toolset(Toolset::shell_only());
         let lines = super::status_detail_lines(&app);
-        assert!(lines
-            .iter()
-            .any(|line| line.to_string().contains("Tools: 1 enabled, 6 disabled")));
+        let expected = format!("Tools: 1 enabled, {} disabled", TOOL_COUNT - 1);
+        assert!(lines.iter().any(|line| line.to_string().contains(&expected)));
     }
 
     #[test]
