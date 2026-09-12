@@ -8,6 +8,7 @@ mod file_diff;
 pub mod palette;
 pub mod permissions;
 pub mod provider;
+pub mod provider_config;
 pub mod runtime;
 pub mod screen_model;
 pub mod skills;

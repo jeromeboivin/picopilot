@@ -547,7 +547,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn home_directory() -> Option<PathBuf> {
+pub(crate) fn home_directory() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
