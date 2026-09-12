@@ -18,7 +18,10 @@ use crate::config::AppConfig;
 use crate::events::{BannerSeverity, EventUpdate};
 use crate::permissions::{permission_handler, ApprovalRequest};
 use crate::provider::{ProviderRegistry, ProviderSettings};
-use crate::provider_config::{ProviderConfigFile, ProviderProfile, RESERVED_COPILOT_PROVIDER_NAME};
+use crate::provider_config::{
+    self, CopilotDefaults, ProviderConfigError, ProviderConfigFile, ProviderProfile,
+    RESERVED_COPILOT_PROVIDER_NAME,
+};
 use crate::skills::{SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, ToolsetProvenance};
 
@@ -64,6 +67,12 @@ pub struct AppRuntime {
     pub skill_catalog: SkillCatalog,
     pub active_skill_selection: SkillSelection,
     startup_config: AppConfig,
+    /// The in-memory provider config struct that startup already loaded/validated (spec §5.5) —
+    /// never reloaded from disk here. `switch_model` and the Ctrl+P picker's provider-changing
+    /// path mutate this, then call `persist_config()` to write it back out.
+    provider_config: ProviderConfigFile,
+    /// Where `provider_config` was loaded from and is written back to.
+    provider_config_path: PathBuf,
     session_start_time: Option<String>,
     conversation_has_history: bool,
 }
@@ -150,21 +159,69 @@ fn apply_provider_registry(
     }
 }
 
+/// Which config provider (a `providers` key, or `"copilot"`) a just-switched-to model belongs to.
+/// `model` is the id `switch_model` was called with — either a bare Copilot model id, or a
+/// registry-qualified `provider/id` (spec §4). This mirrors `AppRuntime::is_local_model`'s lookup,
+/// but returns the owning provider's name rather than a yes/no.
+fn provider_owning_model(model: &str, provider_registry: Option<&ProviderRegistry>) -> String {
+    provider_registry
+        .and_then(|registry| {
+            registry
+                .models()
+                .iter()
+                .find(|candidate| format!("{}/{}", candidate.provider, candidate.id) == model)
+                .map(|candidate| candidate.provider.clone())
+        })
+        .unwrap_or_else(|| RESERVED_COPILOT_PROVIDER_NAME.to_string())
+}
+
+/// Mutates `config` in memory for a model switch to `model` under `provider` (spec §5.5): sets
+/// `default_provider` to `provider` (this is "the Ctrl+P picker's provider-changing path" — in
+/// this codebase switching to a model owned by a different provider *is* the provider switch, per
+/// spec §3.5's "last used" tie-break), and updates that provider's `default_model`/
+/// `default_reasoning_effort`/`default_context_tier` — the `copilot` block if `provider` is
+/// `"copilot"`, otherwise the matching entry under `providers`. Never touches any other provider's
+/// block. Does not persist anything itself — callers persist via `AppRuntime::persist_config`.
+fn apply_model_switch_to_config(
+    config: &mut ProviderConfigFile,
+    provider: &str,
+    model: &str,
+    reasoning_effort: Option<String>,
+    context_tier: Option<String>,
+) {
+    config.default_provider = provider.to_string();
+
+    if provider == RESERVED_COPILOT_PROVIDER_NAME {
+        let defaults = config.copilot.get_or_insert_with(CopilotDefaults::default);
+        defaults.default_model = Some(model.to_string());
+        defaults.default_reasoning_effort = reasoning_effort;
+        defaults.default_context_tier = context_tier;
+    } else if let Some(profile) = config.providers.get_mut(provider) {
+        profile.default_model = Some(model.to_string());
+        profile.default_reasoning_effort = reasoning_effort;
+        profile.default_context_tier = context_tier;
+    }
+    // else: `provider` names neither `"copilot"` nor a configured profile. Unreachable in
+    // practice (`provider_owning_model` only ever returns a name it read out of the same
+    // `provider_registry` that was itself built from `config.providers`), but silently doing
+    // nothing rather than panicking keeps a startup/config mismatch non-fatal.
+}
+
 #[cfg(test)]
 mod tests {
     use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, apply_optional_active_model_options, apply_provider_registry,
-        apply_toolset, default_toolset_for_model, discover_provider_registry, model_from_history,
-        models_from_session_catalog, recovery_backoff, recovery_message, restored_model,
-        should_recompute_default_toolset, toolset_transition, verify_session_identity,
-        ActiveModelOptions, CatalogError, SessionIdentity, ToolsetTransition,
-        RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        apply_active_model_options, apply_model_switch_to_config, apply_optional_active_model_options,
+        apply_provider_registry, apply_toolset, default_toolset_for_model, discover_provider_registry,
+        model_from_history, models_from_session_catalog, provider_owning_model, recovery_backoff,
+        recovery_message, restored_model, should_recompute_default_toolset, toolset_transition,
+        verify_session_identity, ActiveModelOptions, CatalogError, SessionIdentity,
+        ToolsetTransition, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
     use crate::events::EventUpdate;
     use crate::provider::{ProviderRegistry, ProviderSettings};
-    use crate::provider_config::ProviderProfile;
+    use crate::provider_config::{CopilotDefaults, ProviderConfigFile, ProviderProfile};
     use crate::toolset::{Toolset, ToolsetProvenance};
 
     #[test]
@@ -493,6 +550,154 @@ mod tests {
             "3 discoveries each delayed {delay:?} took {elapsed:?} — looks serialized, not concurrent"
         );
     }
+
+    // -- persistence wiring (spec §5, ticket 5) --------------------------------------------------
+    //
+    // `AppRuntime::switch_model` and `persist_config()` themselves can't be unit-tested directly:
+    // building an `AppRuntime` requires a live `github_copilot_sdk::Client`/session, which nothing
+    // in this test module stands up. The logic that actually decides *what* gets persisted is
+    // factored out into the plain functions below instead (`provider_owning_model`,
+    // `apply_model_switch_to_config`), which are exercised here together with
+    // `provider_config::save`/`load` to confirm the on-disk effect ticket 5 asks for.
+
+    fn registry_with_one_model(provider: &str, model_id: &str) -> ProviderRegistry {
+        let settings = ProviderSettings::new(provider, "http://localhost:11434/v1", "completions", None)
+            .expect("valid settings");
+        ProviderRegistry::from_model_ids(&settings, [model_id]).expect("non-empty model ids")
+    }
+
+    #[test]
+    fn provider_owning_model_resolves_a_registry_qualified_id() {
+        let registry = registry_with_one_model("ollama", "llama3");
+
+        let provider = provider_owning_model("ollama/llama3", Some(&registry));
+
+        assert_eq!(provider, "ollama");
+    }
+
+    #[test]
+    fn provider_owning_model_falls_back_to_copilot_for_an_unqualified_id() {
+        let registry = registry_with_one_model("ollama", "llama3");
+
+        let provider = provider_owning_model("gpt-5", Some(&registry));
+
+        assert_eq!(provider, "copilot");
+    }
+
+    #[test]
+    fn provider_owning_model_falls_back_to_copilot_with_no_registry_at_all() {
+        let provider = provider_owning_model("gpt-5", None);
+
+        assert_eq!(provider, "copilot");
+    }
+
+    fn config_with_copilot_and_two_providers() -> ProviderConfigFile {
+        let mut config = ProviderConfigFile::new("copilot");
+        config.copilot = Some(CopilotDefaults {
+            default_model: Some("gpt-4o".to_string()),
+            default_reasoning_effort: Some("medium".to_string()),
+            default_context_tier: Some("standard".to_string()),
+        });
+        let mut openrouter = ProviderProfile::new("https://openrouter.ai/api/v1");
+        openrouter.default_model = Some("anthropic/claude-3.5-sonnet".to_string());
+        config.providers.insert("openrouter".to_string(), openrouter);
+        let ollama = ProviderProfile::new("http://localhost:11434/v1");
+        config.providers.insert("ollama".to_string(), ollama);
+        config
+    }
+
+    #[test]
+    fn switching_model_under_copilot_updates_only_the_copilot_block() {
+        let mut config = config_with_copilot_and_two_providers();
+        let before_openrouter = config.providers["openrouter"].clone();
+        let before_ollama = config.providers["ollama"].clone();
+
+        apply_model_switch_to_config(
+            &mut config,
+            "copilot",
+            "gpt-5",
+            Some("high".to_string()),
+            Some("long_context".to_string()),
+        );
+
+        assert_eq!(config.default_provider, "copilot");
+        let copilot = config.copilot.expect("copilot defaults should still be present");
+        assert_eq!(copilot.default_model.as_deref(), Some("gpt-5"));
+        assert_eq!(copilot.default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(copilot.default_context_tier.as_deref(), Some("long_context"));
+        assert_eq!(config.providers["openrouter"], before_openrouter);
+        assert_eq!(config.providers["ollama"], before_ollama);
+    }
+
+    #[test]
+    fn switching_model_under_a_named_provider_updates_only_that_providers_block() {
+        let mut config = config_with_copilot_and_two_providers();
+        let before_copilot = config.copilot.clone();
+        let before_ollama = config.providers["ollama"].clone();
+
+        apply_model_switch_to_config(
+            &mut config,
+            "openrouter",
+            "openrouter/mistralai/mixtral-8x7b",
+            None,
+            None,
+        );
+
+        assert_eq!(config.default_provider, "openrouter");
+        let openrouter = &config.providers["openrouter"];
+        assert_eq!(
+            openrouter.default_model.as_deref(),
+            Some("openrouter/mistralai/mixtral-8x7b")
+        );
+        assert_eq!(openrouter.default_reasoning_effort, None);
+        assert_eq!(openrouter.default_context_tier, None);
+        assert_eq!(config.copilot, before_copilot);
+        assert_eq!(config.providers["ollama"], before_ollama);
+    }
+
+    #[test]
+    fn switching_provider_updates_only_default_provider_when_no_model_state_is_provided_for_it() {
+        // Exercises the "Ctrl+P picker's provider-changing path" half of ticket 5's scope: in this
+        // codebase, switching to a model owned by a different provider *is* what changes
+        // `default_provider` (spec §3.5) — there is no separate function for it.
+        let mut config = config_with_copilot_and_two_providers();
+
+        apply_model_switch_to_config(&mut config, "ollama", "ollama/llama3", None, None);
+
+        assert_eq!(config.default_provider, "ollama");
+        assert_eq!(config.providers["ollama"].default_model.as_deref(), Some("ollama/llama3"));
+    }
+
+    #[test]
+    fn last_write_wins_with_no_locking_between_two_sequential_persists() {
+        // Spec §5.3: no locking, no mtime check — this is accepted behavior for a single-user
+        // local alpha tool, not an oversight. Two sequential saves to the same path must both
+        // succeed, and the second's content is what a subsequent load sees.
+        let directory = std::env::temp_dir().join(format!(
+            "picopilot-runtime-persist-last-write-wins-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.yaml");
+
+        let mut first = config_with_copilot_and_two_providers();
+        apply_model_switch_to_config(&mut first, "copilot", "gpt-4o", None, None);
+        crate::provider_config::save(&path, &first).expect("first persist should succeed");
+
+        let mut second = config_with_copilot_and_two_providers();
+        apply_model_switch_to_config(&mut second, "ollama", "ollama/llama3", None, None);
+        crate::provider_config::save(&path, &second).expect("second persist should succeed");
+
+        let loaded = crate::provider_config::load(&path).unwrap().unwrap();
+        assert_eq!(loaded.default_provider, "ollama");
+        assert_eq!(
+            loaded.providers["ollama"].default_model.as_deref(),
+            Some("ollama/llama3")
+        );
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }
 
 #[derive(Debug)]
@@ -795,15 +1000,16 @@ impl AppRuntime {
         if default_toolset.is_some_and(|toolset| toolset != self.active_toolset)
             && toolset_transition(self.conversation_has_history) == ToolsetTransition::ReplaceEmpty
         {
-            return self
-                .replace_empty_session(
-                    default_toolset.expect("checked above"),
-                    ToolsetProvenance::Default,
-                    next_model_options,
-                    self.active_skill_selection.clone(),
-                )
-                .await
-                .map_err(ModelSwitchError::Session);
+            self.replace_empty_session(
+                default_toolset.expect("checked above"),
+                ToolsetProvenance::Default,
+                next_model_options,
+                self.active_skill_selection.clone(),
+            )
+            .await
+            .map_err(ModelSwitchError::Session)?;
+            self.persist_model_switch(&model);
+            return Ok(());
         }
 
         self.session
@@ -817,7 +1023,42 @@ impl AppRuntime {
                 .await
                 .map_err(ModelSwitchError::Toolset)?;
         }
+        self.persist_model_switch(&model);
         Ok(())
+    }
+
+    /// Persists the effect of a successful `switch_model` (spec §5.5): updates
+    /// `default_provider` plus the switched-to provider's `default_model`/
+    /// `default_reasoning_effort`/`default_context_tier` in the in-memory config, then writes it
+    /// out. This is also "the Ctrl+P picker's provider-changing path" spec §5.5 calls out
+    /// separately — in this codebase there is no separate function for it, since switching to a
+    /// model owned by a different provider is exactly what changes `default_provider` (spec
+    /// §3.5). Called only after the live model switch itself already succeeded; a failure to
+    /// persist is logged, not propagated — the in-session switch stands either way.
+    fn persist_model_switch(&mut self, model: &str) {
+        let provider = provider_owning_model(model, self.provider_registry.as_ref());
+        let reasoning_effort = self.active_model_options.reasoning_effort.clone();
+        let context_tier = self.active_model_options.context_tier.clone();
+        apply_model_switch_to_config(
+            &mut self.provider_config,
+            &provider,
+            model,
+            reasoning_effort,
+            context_tier,
+        );
+        if let Err(error) = self.persist_config() {
+            eprintln!("picopilot: warning: could not save config.yaml: {error}");
+        }
+    }
+
+    /// Full read-modify-write, write-to-temp-then-rename save of `self.provider_config` to
+    /// `self.provider_config_path` (spec §5.1-§5.2 and §5.4 — always a full re-serialize, never
+    /// targeted patching, so hand-edited comments/formatting are not preserved). No locking, no
+    /// mtime check (spec §5.3): if a second picopilot process writes the same file concurrently,
+    /// whichever write lands on disk last wins outright. That is accepted behavior for a
+    /// single-user local alpha tool, not an oversight.
+    fn persist_config(&self) -> Result<(), ProviderConfigError> {
+        provider_config::save(&self.provider_config_path, &self.provider_config)
     }
 
     async fn reconnect_toolset(
@@ -1316,19 +1557,30 @@ fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, Catalo
         .map_err(|source| CatalogError::InvalidEntry { index, source })
 }
 
+/// `provider_config_path` is where `provider_config` was loaded from (spec §5.5) — `AppRuntime`
+/// holds onto both for later writes from `switch_model`, reusing this already-loaded struct
+/// rather than reloading from disk.
 pub async fn connect(
     config: &AppConfig,
     provider_config: &ProviderConfigFile,
+    provider_config_path: &Path,
 ) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, provider_config, None).await
+    connect_inner(config, provider_config, provider_config_path, None).await
 }
 
 pub async fn connect_with_toolset(
     config: &AppConfig,
     provider_config: &ProviderConfigFile,
+    provider_config_path: &Path,
     requested_toolset: Toolset,
 ) -> Result<AppRuntime, StartupError> {
-    connect_inner(config, provider_config, Some(requested_toolset)).await
+    connect_inner(
+        config,
+        provider_config,
+        provider_config_path,
+        Some(requested_toolset),
+    )
+    .await
 }
 
 /// Builds the [`ProviderSettings`] `provider.rs::discover` needs from a config-file profile.
@@ -1416,6 +1668,7 @@ fn client_options_for(config: &AppConfig, working_directory: &Path, default_prov
 async fn connect_inner(
     config: &AppConfig,
     provider_config: &ProviderConfigFile,
+    provider_config_path: &Path,
     requested_toolset: Option<Toolset>,
 ) -> Result<AppRuntime, StartupError> {
     let default_provider = provider_config.default_provider.as_str();
@@ -1484,6 +1737,8 @@ async fn connect_inner(
         startup_banners,
         working_directory,
         startup_config: config.clone(),
+        provider_config: provider_config.clone(),
+        provider_config_path: provider_config_path.to_path_buf(),
         session_start_time,
         active_model_options: ActiveModelOptions::default(),
         active_toolset,
