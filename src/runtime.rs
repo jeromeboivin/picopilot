@@ -159,6 +159,154 @@ fn apply_provider_registry(
     }
 }
 
+/// Resolves the remembered `default_model`/`default_reasoning_effort`/`default_context_tier` for
+/// whichever config block backs `default_provider` (spec §1.2) — the `copilot` block if
+/// `default_provider` is `"copilot"`, otherwise the matching `providers` entry. Returns `None` when
+/// that block is absent or has no remembered model yet, in which case startup falls back to
+/// today's behavior (empty `ActiveModelOptions`, whatever model the CLI auto-selects). This is the
+/// read-side counterpart to `apply_model_switch_to_config`, which writes into the same blocks.
+fn remembered_model_options(config: &ProviderConfigFile) -> Option<ActiveModelOptions> {
+    let (default_model, reasoning_effort, context_tier) =
+        if config.default_provider == RESERVED_COPILOT_PROVIDER_NAME {
+            let defaults = config.copilot.as_ref()?;
+            (
+                defaults.default_model.clone(),
+                defaults.default_reasoning_effort.clone(),
+                defaults.default_context_tier.clone(),
+            )
+        } else {
+            let profile = config.providers.get(&config.default_provider)?;
+            (
+                profile.default_model.clone(),
+                profile.default_reasoning_effort.clone(),
+                profile.default_context_tier.clone(),
+            )
+        };
+
+    default_model.map(|model| ActiveModelOptions {
+        model: Some(model),
+        reasoning_effort,
+        context_tier,
+    })
+}
+
+/// A remembered `default_model`/`default_reasoning_effort`/`default_context_tier` (spec §1.2) that
+/// no longer matches what the resolved provider(s) actually offer at startup. Spec §1.4: this MUST
+/// surface exactly as an invalid `--model` flag did before ticket 2 removed that flag — a runtime
+/// error, not a config-file error — so the shape and wording here deliberately mirrors the old
+/// `config::ConfigError` this replaces.
+#[derive(Debug)]
+pub enum RememberedModelError {
+    ModelNotFound {
+        model: String,
+        available: Vec<String>,
+    },
+    ReasoningEffortNotSupported {
+        model: String,
+        effort: String,
+        supported: Vec<String>,
+    },
+    ContextTierNotSupported {
+        model: String,
+        tier: String,
+        supported: Vec<String>,
+    },
+}
+
+impl fmt::Display for RememberedModelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModelNotFound { model, available } => write!(
+                formatter,
+                "remembered model '{model}' was not found; available models: {}",
+                available.join(", ")
+            ),
+            Self::ReasoningEffortNotSupported {
+                model,
+                effort,
+                supported,
+            } => write!(
+                formatter,
+                "remembered reasoning effort '{effort}' is not supported by model '{model}'; supported values: {}",
+                supported.join(", ")
+            ),
+            Self::ContextTierNotSupported {
+                model,
+                tier,
+                supported,
+            } => write!(
+                formatter,
+                "remembered context tier '{tier}' is not supported by model '{model}'; supported values: {}",
+                supported.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RememberedModelError {}
+
+/// Validates a remembered `ActiveModelOptions` (spec §1.4) against what startup actually resolved:
+/// `known_models` (the hosted Copilot catalog, i.e. `client.list_models()`) and, separately,
+/// `provider_registry`'s qualified model ids. A model owned by a configured provider is only
+/// checked for existence — `ProviderModelConfig` carries no reasoning-effort/context-tier
+/// capability metadata to validate against, matching `switch_model`, which likewise never validates
+/// those for provider-registry models today.
+fn validate_remembered_model(
+    options: &ActiveModelOptions,
+    known_models: &[Model],
+    provider_registry: Option<&ProviderRegistry>,
+) -> Result<(), RememberedModelError> {
+    let Some(model_id) = options.model.as_deref() else {
+        return Ok(());
+    };
+
+    if provider_registry.is_some_and(|registry| {
+        registry
+            .qualified_model_ids()
+            .iter()
+            .any(|candidate| candidate == model_id)
+    }) {
+        return Ok(());
+    }
+
+    let Some(model) = known_models.iter().find(|candidate| candidate.id == model_id) else {
+        return Err(RememberedModelError::ModelNotFound {
+            model: model_id.to_string(),
+            available: known_models
+                .iter()
+                .map(|candidate| candidate.id.clone())
+                .collect(),
+        });
+    };
+
+    if let Some(effort) = options.reasoning_effort.as_deref() {
+        let supported = model
+            .supported_reasoning_efforts
+            .clone()
+            .unwrap_or_default();
+        if !supported.iter().any(|candidate| candidate == effort) {
+            return Err(RememberedModelError::ReasoningEffortNotSupported {
+                model: model.id.clone(),
+                effort: effort.to_string(),
+                supported,
+            });
+        }
+    }
+
+    if let Some(tier) = options.context_tier.as_deref() {
+        let supported = crate::config::supported_context_tiers(model);
+        if !supported.iter().any(|candidate| candidate == tier) {
+            return Err(RememberedModelError::ContextTierNotSupported {
+                model: model.id.clone(),
+                tier: tier.to_string(),
+                supported,
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Which config provider (a `providers` key, or `"copilot"`) a just-switched-to model belongs to.
 /// `model` is the id `switch_model` was called with — either a bare Copilot model id, or a
 /// registry-qualified `provider/id` (spec §4). This mirrors `AppRuntime::is_local_model`'s lookup,
@@ -215,9 +363,10 @@ mod tests {
         apply_active_model_options, apply_model_switch_to_config, apply_optional_active_model_options,
         apply_provider_registry, apply_toolset, default_toolset_for_model, discover_provider_registry,
         model_from_history, models_from_session_catalog, provider_owning_model, recovery_backoff,
-        recovery_message, restored_model, should_recompute_default_toolset, toolset_transition,
-        verify_session_identity, ActiveModelOptions, CatalogError, SessionIdentity,
-        ToolsetTransition, RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        recovery_message, remembered_model_options, restored_model, should_recompute_default_toolset,
+        toolset_transition, validate_remembered_model, verify_session_identity, ActiveModelOptions,
+        CatalogError, RememberedModelError, SessionIdentity, ToolsetTransition,
+        RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
     };
     use crate::events::EventUpdate;
     use crate::provider::{ProviderRegistry, ProviderSettings};
@@ -666,6 +815,194 @@ mod tests {
 
         assert_eq!(config.default_provider, "ollama");
         assert_eq!(config.providers["ollama"].default_model.as_deref(), Some("ollama/llama3"));
+    }
+
+    // -- reading remembered defaults back at startup (bugfix: nothing previously consulted what
+    // ticket 5's `apply_model_switch_to_config`/`persist_model_switch` write) ------------------
+
+    fn sample_model(id: &str) -> github_copilot_sdk::types::Model {
+        github_copilot_sdk::types::Model {
+            capabilities: github_copilot_sdk::types::ModelCapabilities::default(),
+            id: id.to_string(),
+            name: id.to_string(),
+            supported_reasoning_efforts: Some(vec!["low".to_string(), "high".to_string()]),
+            supported_context_tiers: Some(vec!["default".to_string(), "long_context".to_string()]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn remembered_model_options_reads_the_copilot_block_when_it_is_the_default_provider() {
+        let config = config_with_copilot_and_two_providers();
+
+        let options = remembered_model_options(&config).expect("copilot block has a remembered model");
+
+        assert_eq!(options.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(options.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(options.context_tier.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn remembered_model_options_reads_a_named_providers_block_when_it_is_the_default() {
+        let mut config = config_with_copilot_and_two_providers();
+        config.default_provider = "openrouter".to_string();
+
+        let options = remembered_model_options(&config).expect("openrouter block has a remembered model");
+
+        assert_eq!(options.model.as_deref(), Some("anthropic/claude-3.5-sonnet"));
+        assert_eq!(options.reasoning_effort, None);
+        assert_eq!(options.context_tier, None);
+    }
+
+    #[test]
+    fn remembered_model_options_is_none_without_a_remembered_default_model() {
+        let mut config = config_with_copilot_and_two_providers();
+        config.default_provider = "ollama".to_string();
+
+        assert!(remembered_model_options(&config).is_none());
+    }
+
+    #[test]
+    fn switching_model_under_copilot_then_a_fresh_startup_picks_it_back_up() {
+        // Simulates ticket 5's persist (`apply_model_switch_to_config` + `provider_config::save`)
+        // followed by what a fresh `connect_inner`-equivalent startup does: `load` the file back
+        // and resolve `remembered_model_options` from it, with no `AppRuntime`/live SDK client
+        // involved, matching how ticket 5's own tests avoided needing one.
+        let directory = std::env::temp_dir().join(format!(
+            "picopilot-runtime-remembered-copilot-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.yaml");
+
+        let mut config = config_with_copilot_and_two_providers();
+        apply_model_switch_to_config(
+            &mut config,
+            "copilot",
+            "gpt-5",
+            Some("high".to_string()),
+            Some("long_context".to_string()),
+        );
+        crate::provider_config::save(&path, &config).expect("persist should succeed");
+
+        let restarted = crate::provider_config::load(&path).unwrap().unwrap();
+        let options =
+            remembered_model_options(&restarted).expect("a fresh startup should see the switch");
+
+        assert_eq!(options.model.as_deref(), Some("gpt-5"));
+        assert_eq!(options.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(options.context_tier.as_deref(), Some("long_context"));
+        validate_remembered_model(&options, &[sample_model("gpt-5")], None)
+            .expect("the remembered model should validate against the resolved catalog");
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn switching_model_under_a_named_provider_then_a_fresh_startup_picks_it_back_up() {
+        let directory = std::env::temp_dir().join(format!(
+            "picopilot-runtime-remembered-provider-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.yaml");
+
+        let mut config = config_with_copilot_and_two_providers();
+        apply_model_switch_to_config(&mut config, "ollama", "ollama/llama3", None, None);
+        crate::provider_config::save(&path, &config).expect("persist should succeed");
+
+        let restarted = crate::provider_config::load(&path).unwrap().unwrap();
+        assert_eq!(restarted.default_provider, "ollama");
+        let options =
+            remembered_model_options(&restarted).expect("a fresh startup should see the switch");
+
+        assert_eq!(options.model.as_deref(), Some("ollama/llama3"));
+        assert_eq!(options.reasoning_effort, None);
+        assert_eq!(options.context_tier, None);
+
+        let registry = registry_with_one_model("ollama", "llama3");
+        validate_remembered_model(&options, &[], Some(&registry))
+            .expect("a registry-owned remembered model should validate by id alone");
+
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn validate_remembered_model_accepts_no_remembered_model() {
+        validate_remembered_model(&ActiveModelOptions::default(), &[], None)
+            .expect("nothing remembered should trivially validate");
+    }
+
+    #[test]
+    fn validate_remembered_model_rejects_a_stale_model_id() {
+        let options = ActiveModelOptions {
+            model: Some("gpt-4-turbo-preview".to_string()),
+            reasoning_effort: None,
+            context_tier: None,
+        };
+
+        let error = validate_remembered_model(&options, &[sample_model("gpt-5")], None)
+            .expect_err("a model no longer in the catalog should be rejected");
+
+        assert!(matches!(
+            error,
+            RememberedModelError::ModelNotFound { model, available }
+                if model == "gpt-4-turbo-preview" && available == vec!["gpt-5".to_string()]
+        ));
+    }
+
+    #[test]
+    fn validate_remembered_model_rejects_an_unsupported_reasoning_effort() {
+        let options = ActiveModelOptions {
+            model: Some("gpt-5".to_string()),
+            reasoning_effort: Some("medium".to_string()),
+            context_tier: None,
+        };
+
+        let error = validate_remembered_model(&options, &[sample_model("gpt-5")], None)
+            .expect_err("an effort the model no longer supports should be rejected");
+
+        assert!(matches!(
+            error,
+            RememberedModelError::ReasoningEffortNotSupported { model, effort, .. }
+                if model == "gpt-5" && effort == "medium"
+        ));
+    }
+
+    #[test]
+    fn validate_remembered_model_rejects_an_unsupported_context_tier() {
+        let options = ActiveModelOptions {
+            model: Some("gpt-5".to_string()),
+            reasoning_effort: None,
+            context_tier: Some("extra_long".to_string()),
+        };
+
+        let error = validate_remembered_model(&options, &[sample_model("gpt-5")], None)
+            .expect_err("a tier the model no longer supports should be rejected");
+
+        assert!(matches!(
+            error,
+            RememberedModelError::ContextTierNotSupported { model, tier, .. }
+                if model == "gpt-5" && tier == "extra_long"
+        ));
+    }
+
+    #[test]
+    fn validate_remembered_model_skips_capability_checks_for_registry_owned_models() {
+        // `ProviderModelConfig` carries no reasoning-effort/context-tier metadata, so a
+        // provider-owned remembered model can only be checked for existence — matching
+        // `switch_model`, which likewise never validates those for local models today.
+        let registry = registry_with_one_model("ollama", "llama3");
+        let options = ActiveModelOptions {
+            model: Some("ollama/llama3".to_string()),
+            reasoning_effort: Some("anything".to_string()),
+            context_tier: Some("anything".to_string()),
+        };
+
+        validate_remembered_model(&options, &[], Some(&registry))
+            .expect("existence in the registry should be sufficient for a provider-owned model");
     }
 
     #[test]
@@ -1449,6 +1786,7 @@ pub enum StartupError {
     Session(SdkError),
     SessionCatalog(SdkError),
     InvalidSessionCatalog(CatalogError),
+    StaleRememberedModel(RememberedModelError),
 }
 
 impl fmt::Display for StartupError {
@@ -1468,6 +1806,7 @@ impl fmt::Display for StartupError {
             Self::InvalidSessionCatalog(error) => {
                 write!(formatter, "could not decode session model catalog: {error}")
             }
+            Self::StaleRememberedModel(error) => write!(formatter, "{error}"),
         }
     }
 }
@@ -1478,6 +1817,7 @@ impl std::error::Error for StartupError {
             Self::CurrentDirectory(error) => Some(error),
             Self::Client(error) | Self::Session(error) | Self::SessionCatalog(error) => Some(error),
             Self::InvalidSessionCatalog(error) => Some(error),
+            Self::StaleRememberedModel(error) => Some(error),
         }
     }
 }
@@ -1688,6 +2028,15 @@ async fn connect_inner(
     let active_toolset = requested_toolset
         .unwrap_or_else(|| default_toolset_for_model(None, provider_registry.as_ref()));
 
+    let active_model_options = match remembered_model_options(provider_config) {
+        Some(options) => {
+            validate_remembered_model(&options, &hosted_models, provider_registry.as_ref())
+                .map_err(StartupError::StaleRememberedModel)?;
+            options
+        }
+        None => ActiveModelOptions::default(),
+    };
+
     let mut session_config = config
         .session_config_in_with_registry_and_toolset(
             &working_directory,
@@ -1696,6 +2045,9 @@ async fn connect_inner(
         )
         .with_permission_handler(permission_handler.clone());
     active_skill_selection.apply_session_config(&skill_catalog, &mut session_config);
+    session_config.model = active_model_options.model.clone();
+    session_config.reasoning_effort = active_model_options.reasoning_effort.clone();
+    session_config.context_tier = active_model_options.context_tier.clone();
     let session = client
         .create_session(session_config)
         .await
@@ -1740,7 +2092,7 @@ async fn connect_inner(
         provider_config: provider_config.clone(),
         provider_config_path: provider_config_path.to_path_buf(),
         session_start_time,
-        active_model_options: ActiveModelOptions::default(),
+        active_model_options,
         active_toolset,
         toolset_provenance: ToolsetProvenance::Default,
         skill_catalog,
