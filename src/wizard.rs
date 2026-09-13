@@ -42,6 +42,7 @@ use crate::screen_model::{enter_main_screen, restore_main_screen, terminal_optio
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Entry,
+    PickProviderPreset,
     AddProvider,
     ConnectingCopilot,
     Finish,
@@ -94,6 +95,67 @@ impl WireApiChoice {
         }
     }
 }
+
+/// One well-known OpenAI-API-compatible provider offered on the provider-picker screen, plus a
+/// trailing "Custom" entry (`name`/`base_url` both `None`) that goes straight to a blank form.
+/// All of the named presets speak the OpenAI `/v1/chat/completions` + `/v1/models` shape, so none
+/// of them need to touch `wire_api` — it keeps its `completions` default either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderPreset {
+    pub display_name: &'static str,
+    pub name: Option<&'static str>,
+    pub base_url: Option<&'static str>,
+}
+
+/// The provider-picker screen's options: 8 well-known presets (researched against each provider's
+/// docs) followed by "Custom", which pre-fills nothing.
+pub const PROVIDER_PRESETS: [ProviderPreset; 9] = [
+    ProviderPreset {
+        display_name: "OpenRouter",
+        name: Some("openrouter"),
+        base_url: Some("https://openrouter.ai/api/v1"),
+    },
+    ProviderPreset {
+        display_name: "Groq",
+        name: Some("groq"),
+        base_url: Some("https://api.groq.com/openai/v1"),
+    },
+    ProviderPreset {
+        display_name: "Together AI",
+        name: Some("together"),
+        base_url: Some("https://api.together.xyz/v1"),
+    },
+    ProviderPreset {
+        display_name: "Mistral AI",
+        name: Some("mistral"),
+        base_url: Some("https://api.mistral.ai/v1"),
+    },
+    ProviderPreset {
+        display_name: "DeepSeek",
+        name: Some("deepseek"),
+        base_url: Some("https://api.deepseek.com/v1"),
+    },
+    ProviderPreset {
+        display_name: "Ollama (local)",
+        name: Some("ollama"),
+        base_url: Some("http://localhost:11434/v1"),
+    },
+    ProviderPreset {
+        display_name: "LM Studio (local)",
+        name: Some("lmstudio"),
+        base_url: Some("http://localhost:1234/v1"),
+    },
+    ProviderPreset {
+        display_name: "vLLM (local)",
+        name: Some("vllm"),
+        base_url: Some("http://localhost:8000/v1"),
+    },
+    ProviderPreset {
+        display_name: "Custom",
+        name: None,
+        base_url: None,
+    },
+];
 
 /// The in-progress add-a-provider form (spec §3.2). `wire_api` defaults to `completions`,
 /// pre-selected, per spec.
@@ -155,6 +217,7 @@ pub struct WizardState {
     draft: Draft,
     errors: FieldErrors,
     connect_error: Option<String>,
+    preset_selection: usize,
 }
 
 impl WizardState {
@@ -170,6 +233,7 @@ impl WizardState {
             draft: Draft::default(),
             errors: FieldErrors::default(),
             connect_error: None,
+            preset_selection: 0,
         }
     }
 
@@ -214,6 +278,12 @@ impl WizardState {
 
     pub fn connect_error(&self) -> Option<&str> {
         self.connect_error.as_deref()
+    }
+
+    /// The currently highlighted row on the provider-picker screen (an index into
+    /// [`PROVIDER_PRESETS`]).
+    pub fn preset_selection(&self) -> usize {
+        self.preset_selection
     }
 
     /// "Finish" only becomes selectable once at least one provider or Copilot is configured this
@@ -281,7 +351,7 @@ impl WizardState {
                 }
             }
             EntrySelection::AddProvider => {
-                self.go_to_add_provider();
+                self.go_to_pick_provider_preset();
                 WizardOutcome::Continue
             }
             EntrySelection::Finish => {
@@ -293,6 +363,61 @@ impl WizardState {
                 }
             }
         }
+    }
+
+    // -- Provider-picker sub-flow (in front of the add-a-provider form) -------------------------
+
+    /// Enters the provider-picker screen, always starting on the first preset row.
+    pub fn go_to_pick_provider_preset(&mut self) {
+        self.screen = Screen::PickProviderPreset;
+        self.preset_selection = 0;
+    }
+
+    pub fn move_preset_selection(&mut self, delta: i32) {
+        let last_index = PROVIDER_PRESETS.len() as i32 - 1;
+        let new_index = (self.preset_selection as i32 + delta).clamp(0, last_index) as usize;
+        self.preset_selection = new_index;
+    }
+
+    /// Handles a key press on the provider-picker screen.
+    pub fn handle_pick_preset_key(&mut self, key: KeyCode) -> WizardOutcome {
+        match key {
+            KeyCode::Up => {
+                self.move_preset_selection(-1);
+                WizardOutcome::Continue
+            }
+            KeyCode::Down => {
+                self.move_preset_selection(1);
+                WizardOutcome::Continue
+            }
+            KeyCode::Esc => {
+                self.screen = Screen::Entry;
+                WizardOutcome::Continue
+            }
+            KeyCode::Enter => {
+                self.select_preset(self.preset_selection);
+                WizardOutcome::Continue
+            }
+            _ => WizardOutcome::Continue,
+        }
+    }
+
+    /// Applies `PROVIDER_PRESETS[index]` (pre-filling `draft.name`/`draft.base_url` through the
+    /// same `Draft` the blank form uses — a preset is just a starting point, not a separate
+    /// representation) and transitions to `Screen::AddProvider`. Focus starts on `Field::Name`:
+    /// the pre-filled name is a *suggestion* (e.g. two OpenRouter accounts would collide on
+    /// "openrouter" already being taken this pass), so the field the user is most likely to want
+    /// to change first should be the one already focused. Selecting "Custom" (`name`/`base_url`
+    /// both `None`) behaves exactly like today's blank `go_to_add_provider`.
+    fn select_preset(&mut self, index: usize) {
+        let preset = PROVIDER_PRESETS
+            .get(index)
+            .copied()
+            .unwrap_or(PROVIDER_PRESETS[PROVIDER_PRESETS.len() - 1]);
+        self.go_to_add_provider();
+        self.draft.name = preset.name.unwrap_or_default().to_string();
+        self.draft.base_url = preset.base_url.unwrap_or_default().to_string();
+        self.draft.focus = Field::Name;
     }
 
     // -- Add-a-provider sub-flow ----------------------------------------------------------------
@@ -548,6 +673,10 @@ pub async fn run_setup_wizard(
                 Some(key) => state.handle_entry_key(key),
                 None => WizardOutcome::Quit,
             },
+            Screen::PickProviderPreset => match next_key() {
+                Some(key) => state.handle_pick_preset_key(key),
+                None => WizardOutcome::Quit,
+            },
             Screen::AddProvider => match next_key() {
                 Some(key) => state.handle_add_provider_key(key),
                 None => WizardOutcome::Quit,
@@ -663,10 +792,47 @@ fn error_style() -> Style {
 fn draw(frame: &mut Frame, state: &WizardState) {
     match state.screen() {
         Screen::Entry => draw_entry(frame, state),
+        Screen::PickProviderPreset => draw_pick_provider_preset(frame, state),
         Screen::AddProvider => draw_add_provider(frame, state),
         Screen::ConnectingCopilot => draw_connecting_copilot(frame),
         Screen::Finish => draw_finish(frame, state),
     }
+}
+
+/// Renders the provider-picker screen: a `List` of the 8 well-known presets plus "Custom", with
+/// the current selection highlighted — same visual style (`focus_style`/highlight symbol) as the
+/// entry screen's own list.
+fn draw_pick_provider_preset(frame: &mut Frame, state: &WizardState) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+
+    frame.render_widget(
+        Paragraph::new("Add a provider — pick a well-known provider, or Custom"),
+        chunks[0],
+    );
+
+    let items: Vec<ListItem> = PROVIDER_PRESETS
+        .iter()
+        .map(|preset| match preset.base_url {
+            Some(base_url) => ListItem::new(format!("{}  ({base_url})", preset.display_name)),
+            None => ListItem::new(preset.display_name),
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.preset_selection()));
+    let list = List::new(items).highlight_style(focus_style()).highlight_symbol("\u{2771} ");
+    frame.render_stateful_widget(list, chunks[2], &mut list_state);
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "  \u{2191}/\u{2193} to select \u{b7} Enter to choose \u{b7} Esc to go back",
+            subtle_style(),
+        )),
+        chunks[3],
+    );
 }
 
 fn draw_entry(frame: &mut Frame, state: &WizardState) {
@@ -954,6 +1120,113 @@ mod tests {
             state.handle_entry_key(KeyCode::Enter),
             WizardOutcome::Continue
         );
+        // Now opens the provider-picker screen first, not the form directly (see
+        // `selecting_add_provider_opens_the_picker_not_the_form_directly` for the picker-specific
+        // assertions, and `selecting_custom_lands_on_the_blank_form` for reaching the form).
+        assert_eq!(state.screen(), Screen::PickProviderPreset);
+    }
+
+    // -- Provider-picker screen --------------------------------------------------------------
+
+    #[test]
+    fn selecting_add_provider_opens_the_picker_not_the_form_directly() {
+        let mut state = WizardState::new();
+        state.entry_selection = EntrySelection::AddProvider;
+        state.handle_entry_key(KeyCode::Enter);
+        assert_eq!(state.screen(), Screen::PickProviderPreset);
+        assert_eq!(state.preset_selection(), 0);
+    }
+
+    #[test]
+    fn picker_selection_moves_up_and_down_and_clamps() {
+        let mut state = WizardState::new();
+        state.go_to_pick_provider_preset();
+        assert_eq!(state.preset_selection(), 0);
+
+        state.move_preset_selection(-1);
+        assert_eq!(state.preset_selection(), 0);
+
+        state.move_preset_selection(1);
+        assert_eq!(state.preset_selection(), 1);
+
+        state.move_preset_selection(100);
+        assert_eq!(state.preset_selection(), PROVIDER_PRESETS.len() - 1);
+    }
+
+    #[test]
+    fn esc_on_picker_returns_to_entry() {
+        let mut state = WizardState::new();
+        state.go_to_pick_provider_preset();
+        assert_eq!(
+            state.handle_pick_preset_key(KeyCode::Esc),
+            WizardOutcome::Continue
+        );
+        assert_eq!(state.screen(), Screen::Entry);
+    }
+
+    #[test]
+    fn selecting_each_named_preset_prefills_name_and_base_url() {
+        for (index, preset) in PROVIDER_PRESETS.iter().enumerate() {
+            let Some(expected_name) = preset.name else {
+                continue;
+            };
+            let expected_base_url = preset.base_url.expect("named presets have a base URL");
+
+            let mut state = WizardState::new();
+            state.go_to_pick_provider_preset();
+            state.preset_selection = index;
+            state.handle_pick_preset_key(KeyCode::Enter);
+
+            assert_eq!(state.screen(), Screen::AddProvider, "preset {expected_name}");
+            assert_eq!(state.draft().name, expected_name, "preset {expected_name}");
+            assert_eq!(
+                state.draft().base_url,
+                expected_base_url,
+                "preset {expected_name}"
+            );
+            assert_eq!(state.draft().focus, Field::Name, "preset {expected_name}");
+            // The wire-api default must stay untouched by a preset.
+            assert_eq!(
+                state.draft().wire_api,
+                WireApiChoice::Completions,
+                "preset {expected_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn selecting_custom_lands_on_the_blank_form() {
+        let custom_index = PROVIDER_PRESETS.len() - 1;
+        assert_eq!(PROVIDER_PRESETS[custom_index].display_name, "Custom");
+
+        let mut state = WizardState::new();
+        state.go_to_pick_provider_preset();
+        state.preset_selection = custom_index;
+        state.handle_pick_preset_key(KeyCode::Enter);
+
+        assert_eq!(state.screen(), Screen::AddProvider);
+        assert_eq!(state.draft(), &Draft::default());
+    }
+
+    #[test]
+    fn a_prefilled_preset_value_can_still_be_edited_and_revalidated() {
+        // Select OpenRouter, then mangle its pre-filled base URL into something invalid, and
+        // confirm the existing validation still catches it exactly as it would for a hand-typed
+        // value — proving the preset is just a starting point, not a bypass.
+        let openrouter_index = PROVIDER_PRESETS
+            .iter()
+            .position(|preset| preset.name == Some("openrouter"))
+            .expect("openrouter preset present");
+
+        let mut state = WizardState::new();
+        state.go_to_pick_provider_preset();
+        state.preset_selection = openrouter_index;
+        state.handle_pick_preset_key(KeyCode::Enter);
+        assert_eq!(state.draft().base_url, "https://openrouter.ai/api/v1");
+
+        state.draft.base_url = "not-a-url".to_string();
+        assert!(!state.submit_provider_form());
+        assert!(state.errors().base_url.is_some());
         assert_eq!(state.screen(), Screen::AddProvider);
     }
 
@@ -1302,6 +1575,28 @@ mod tests {
         assert!(rows
             .iter()
             .any(|row| row.contains("ollama") && row.contains("default")));
+    }
+
+    #[test]
+    fn picker_screen_renders_all_options_and_highlights_the_selection() {
+        let mut state = WizardState::new();
+        state.go_to_pick_provider_preset();
+        state.move_preset_selection(2); // highlight "Together AI"
+
+        let rows = rendered_rows(&state, 100, 22);
+        for preset in PROVIDER_PRESETS.iter() {
+            assert!(
+                rows.iter().any(|row| row.contains(preset.display_name)),
+                "expected to find '{}' rendered",
+                preset.display_name
+            );
+        }
+
+        let selected_row = rows
+            .iter()
+            .find(|row| row.contains("Together AI"))
+            .expect("selected row present");
+        assert!(selected_row.contains('\u{2771}'));
     }
 
     #[test]
