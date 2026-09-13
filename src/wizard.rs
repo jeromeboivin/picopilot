@@ -6,18 +6,25 @@
 //!   — so the screen sequence, inline validation, and the `default_provider` "most-recently-wins"
 //!   tie-break (spec §3.5) can be unit tested without a real terminal.
 //! - [`run_setup_wizard`] is the thin terminal driver: it reuses `tui.rs`'s low-level raw-mode /
-//!   main-screen primitives, renders each screen as plain text, reads key events, and (for the
-//!   Copilot-connect screen) drives the real async Copilot client startup, but it deliberately does
-//!   not reuse `App`'s full draw loop or state machine (out of scope per the ticket).
+//!   main-screen primitives and its `ratatui` rendering technique (real widgets drawn via
+//!   `Terminal::draw`, not hand-rolled `write!`/`execute!` line printing), reads key events, and
+//!   (for the Copilot-connect screen) drives the real async Copilot client startup — but it
+//!   deliberately does not reuse `App`'s full draw loop or state machine (out of scope per the
+//!   ticket).
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
-use crossterm::cursor::MoveTo;
 use crossterm::event::{Event, KeyCode, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::{Frame, Terminal};
 
 use crate::config::AppConfig;
 use crate::provider::{normalize_base_url, validate_provider_name};
@@ -25,7 +32,7 @@ use crate::provider_config::{
     self, CopilotDefaults, ProviderConfigFile, ProviderIdentity, ProviderProfile,
     RESERVED_COPILOT_PROVIDER_NAME,
 };
-use crate::screen_model::{enter_main_screen, restore_main_screen};
+use crate::screen_model::{enter_main_screen, restore_main_screen, terminal_options};
 
 // ============================================================================
 // Pure state machine — unit-testable without a terminal.
@@ -508,8 +515,23 @@ pub async fn run_setup_wizard(
     let mut stdout = io::stdout();
     let _ = enter_main_screen(&mut stdout);
 
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = match Terminal::with_options(backend, terminal_options()) {
+        Ok(terminal) => terminal,
+        Err(_) => {
+            // No usable terminal: fall back to just persisting whatever state we have (mirrors
+            // `tui.rs`'s non-interactive short-circuit) rather than panicking.
+            if raw_mode_enabled {
+                let _ = disable_raw_mode();
+            }
+            let _ = restore_main_screen(&mut io::stdout());
+            return state.to_config_file();
+        }
+    };
+    let _ = reset_visible_viewport(terminal.backend_mut());
+
     loop {
-        render(&mut stdout, &state);
+        let _ = terminal.draw(|frame| draw(frame, &state));
 
         let outcome = match state.screen() {
             Screen::ConnectingCopilot => match connect_to_copilot(config).await {
@@ -544,7 +566,7 @@ pub async fn run_setup_wizard(
             }
             WizardOutcome::Finished => {
                 let _ = provider_config::save(config_path, &state.to_config_file());
-                render(&mut stdout, &state);
+                let _ = terminal.draw(|frame| draw(frame, &state));
                 let _ = next_key();
                 break;
             }
@@ -553,21 +575,37 @@ pub async fn run_setup_wizard(
                 // drives the actual connect.
             }
             WizardOutcome::Quit => {
-                restore_terminal(&mut stdout, raw_mode_enabled);
+                restore_terminal(&mut terminal, raw_mode_enabled);
                 std::process::exit(0);
             }
         }
     }
 
-    restore_terminal(&mut stdout, raw_mode_enabled);
+    restore_terminal(&mut terminal, raw_mode_enabled);
     state.to_config_file()
 }
 
-fn restore_terminal(stdout: &mut io::Stdout, raw_mode_enabled: bool) {
-    let _ = restore_main_screen(stdout);
+/// Clears whatever is currently on screen and homes the cursor before `ratatui` takes over
+/// drawing the viewport, mirroring `tui.rs`'s `clear_visible_viewport` (kept private there, so
+/// reimplemented here rather than reused) — otherwise stale prompt/output from before the wizard
+/// started would bleed into the first frame on a "main screen" (non-alternate-screen) terminal.
+fn reset_visible_viewport<W: io::Write>(writer: &mut W) -> io::Result<()> {
+    crossterm::execute!(
+        writer,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::MoveTo(0, 0),
+    )
+}
+
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    raw_mode_enabled: bool,
+) {
     if raw_mode_enabled {
         let _ = disable_raw_mode();
     }
+    let _ = restore_main_screen(terminal.backend_mut());
+    let _ = terminal.show_cursor();
 }
 
 /// Starts the Copilot client exactly like today's `connect_inner` Copilot branch (spec §3.3): no
@@ -602,75 +640,95 @@ fn next_key() -> Option<KeyCode> {
     }
 }
 
-fn render(stdout: &mut io::Stdout, state: &WizardState) {
-    let _ = execute!(stdout, Clear(ClearType::All), MoveTo(0, 0));
-    for line in render_lines(state) {
-        let _ = write!(stdout, "{line}\r\n");
-    }
-    let _ = stdout.flush();
+/// Style applied to the currently focused field's label/border on the add-provider form, and to
+/// the highlighted entry-screen list item. Bold + accent color rather than reverse video, so it
+/// reads clearly on both light and dark terminal themes.
+fn focus_style() -> Style {
+    Style::default()
+        .fg(crate::palette::CLAUDE)
+        .add_modifier(Modifier::BOLD)
 }
 
-/// Renders the current screen as plain text lines (spec §3.1-§3.4/§3.7). Pure and testable, though
-/// the ticket treats exact wording/layout as unspecified polish (spec "Not Yet Specified").
-fn render_lines(state: &WizardState) -> Vec<String> {
+fn subtle_style() -> Style {
+    Style::default().fg(crate::palette::SUBTLE)
+}
+
+fn error_style() -> Style {
+    Style::default().fg(crate::palette::ERROR)
+}
+
+/// Renders the current screen with real `ratatui` widgets (spec §3.1-§3.4/§3.7). The ticket treats
+/// exact wording/layout as unspecified polish (spec "Not Yet Specified"), so this keeps the same
+/// information as the original plain-text renderer but makes focus/selection actually visible.
+fn draw(frame: &mut Frame, state: &WizardState) {
     match state.screen() {
-        Screen::Entry => render_entry_lines(state),
-        Screen::AddProvider => render_add_provider_lines(state),
-        Screen::ConnectingCopilot => render_connecting_copilot_lines(),
-        Screen::Finish => render_finish_lines(state),
+        Screen::Entry => draw_entry(frame, state),
+        Screen::AddProvider => draw_add_provider(frame, state),
+        Screen::ConnectingCopilot => draw_connecting_copilot(frame),
+        Screen::Finish => draw_finish(frame, state),
     }
 }
 
-fn render_entry_lines(state: &WizardState) -> Vec<String> {
-    let mut lines = Vec::new();
-    if state.can_finish() {
-        lines.push("Setup — add another provider, or finish.".to_string());
-    } else {
-        lines.push("Welcome to picopilot. Let's set up a model provider.".to_string());
-    }
-    lines.push(String::new());
+fn draw_entry(frame: &mut Frame, state: &WizardState) {
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
 
-    let cursor = |selection: EntrySelection| -> &str {
-        if state.entry_selection() == selection {
-            "\u{2771} "
-        } else {
-            "  "
-        }
+    let title = if state.can_finish() {
+        "Setup — add another provider, or finish."
+    } else {
+        "Welcome to picopilot. Let's set up a model provider."
     };
+    frame.render_widget(Paragraph::new(title), chunks[0]);
 
     let copilot_suffix = if state.copilot_connected() {
         "  [connected]"
     } else {
         ""
     };
-    lines.push(format!(
-        "{}1.  Connect to GitHub Copilot{copilot_suffix}",
-        cursor(EntrySelection::ConnectCopilot)
-    ));
-    lines.push(format!(
-        "{}2.  Add a provider (OpenRouter, Ollama, vLLM, LM Studio, \u{2026})",
-        cursor(EntrySelection::AddProvider)
-    ));
-    if state.can_finish() {
-        lines.push(format!("{}3.  Finish", cursor(EntrySelection::Finish)));
+    let finish_suffix = if state.can_finish() {
+        ""
     } else {
-        lines.push(format!(
-            "{}3.  Finish                        (configure at least one to finish)",
-            cursor(EntrySelection::Finish)
-        ));
-    }
+        "   (configure at least one to finish)"
+    };
+    let items = vec![
+        ListItem::new(format!("1.  Connect to GitHub Copilot{copilot_suffix}")),
+        ListItem::new("2.  Add a provider (OpenRouter, Ollama, vLLM, LM Studio, \u{2026})"),
+        ListItem::new(format!("3.  Finish{finish_suffix}")).style(if state.can_finish() {
+            Style::default()
+        } else {
+            subtle_style()
+        }),
+    ];
+    let selected_index = ENTRY_OPTIONS
+        .iter()
+        .position(|option| *option == state.entry_selection())
+        .unwrap_or(0);
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected_index));
+    let list = List::new(items).highlight_style(focus_style()).highlight_symbol("\u{2771} ");
+    frame.render_stateful_widget(list, chunks[2], &mut list_state);
 
+    let mut summary_lines: Vec<Line> = Vec::new();
     if !state.providers().is_empty() || state.copilot_connected() {
-        lines.push(String::new());
-        lines.push("Configured so far:".to_string());
+        summary_lines.push(Line::from("Configured so far:"));
         for (name, profile) in state.providers() {
             let is_default = state.default_provider() == Some(name.as_str());
             let marker = if is_default { "\u{25cf}" } else { "\u{25cb}" };
             let default_label = if is_default { "  \u{2190} default" } else { "" };
-            lines.push(format!(
+            summary_lines.push(Line::from(format!(
                 "   {marker} {name}  ({}){default_label}",
                 profile.base_url
-            ));
+            )));
         }
         if state.copilot_connected() {
             let is_default = state
@@ -679,78 +737,162 @@ fn render_entry_lines(state: &WizardState) -> Vec<String> {
                 .is_some_and(|identity| identity.is_copilot());
             let marker = if is_default { "\u{25cf}" } else { "\u{25cb}" };
             let default_label = if is_default { "  \u{2190} default" } else { "" };
-            lines.push(format!("   {marker} copilot{default_label}"));
+            summary_lines.push(Line::from(format!("   {marker} copilot{default_label}")));
         }
     }
-
     if let Some(error) = state.connect_error() {
-        lines.push(String::new());
-        lines.push(format!("  Could not connect to GitHub Copilot: {error}"));
+        summary_lines.push(Line::from(""));
+        summary_lines.push(Line::styled(
+            format!("  Could not connect to GitHub Copilot: {error}"),
+            error_style(),
+        ));
     }
+    frame.render_widget(Paragraph::new(summary_lines).wrap(Wrap { trim: false }), chunks[4]);
 
-    lines.push(String::new());
-    lines.push("  \u{2191}/\u{2193} to select \u{b7} Enter to choose \u{b7} Esc to quit without saving".to_string());
-    lines
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "  \u{2191}/\u{2193} to select \u{b7} Enter to choose \u{b7} Esc to quit without saving",
+            subtle_style(),
+        )),
+        chunks[5],
+    );
 }
 
-fn render_add_provider_lines(state: &WizardState) -> Vec<String> {
+/// Builds the bordered `Block` for one add-provider field: highlighted (accent, bold) when
+/// focused, subdued otherwise, so focus is actually visible — this is the missing feedback that
+/// made Tab look broken.
+fn field_block(title: &str, focused: bool) -> Block<'static> {
+    let style = if focused { focus_style() } else { subtle_style() };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(style)
+        .title(Span::styled(format!(" {title} "), style))
+}
+
+fn draw_add_provider(frame: &mut Frame, state: &WizardState) {
     let draft = state.draft();
     let errors = state.errors();
-    let mut lines = vec!["Add a provider".to_string(), String::new()];
+    let area = frame.area();
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(4),
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(area);
 
-    lines.push(format!("Name        {}", draft.name));
-    if let Some(error) = &errors.name {
-        lines.push(format!("            {error}"));
-    }
-    lines.push(String::new());
+    frame.render_widget(Paragraph::new("Add a provider"), chunks[0]);
 
-    lines.push(format!("Base URL    {}", draft.base_url));
-    if let Some(error) = &errors.base_url {
-        lines.push(format!("            {error}"));
-    }
-    lines.push(String::new());
+    let name_focused = draft.focus == Field::Name;
+    render_text_field(frame, chunks[2], "Name", &draft.name, errors.name.as_deref(), name_focused);
 
+    let base_url_focused = draft.focus == Field::BaseUrl;
+    render_text_field(
+        frame,
+        chunks[3],
+        "Base URL",
+        &draft.base_url,
+        errors.base_url.as_deref(),
+        base_url_focused,
+    );
+
+    let wire_api_focused = draft.focus == Field::WireApi;
     let (completions_mark, responses_mark) = match draft.wire_api {
         WireApiChoice::Completions => ("\u{25cf}", "\u{25cb}"),
         WireApiChoice::Responses => ("\u{25cb}", "\u{25cf}"),
     };
-    lines.push(format!(
-        "Wire API    [{completions_mark}] completions   [{responses_mark}] responses"
-    ));
-    lines.push(String::new());
+    let wire_api_block = field_block("Wire API", wire_api_focused);
+    let wire_api_inner = wire_api_block.inner(chunks[4]);
+    frame.render_widget(wire_api_block, chunks[4]);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "[{completions_mark}] completions   [{responses_mark}] responses"
+        )),
+        wire_api_inner,
+    );
 
+    let api_key_focused = draft.focus == Field::ApiKey;
     let masked_key = "*".repeat(draft.api_key.chars().count());
-    if masked_key.is_empty() {
-        lines.push("API key     (optional, not echoed)".to_string());
+    let api_key_display = if masked_key.is_empty() {
+        "(optional, not echoed)".to_string()
     } else {
-        lines.push(format!("API key     {masked_key}"));
+        masked_key.clone()
+    };
+    let api_key_block = field_block("API key", api_key_focused);
+    let api_key_inner = api_key_block.inner(chunks[5]);
+    frame.render_widget(api_key_block, chunks[5]);
+    frame.render_widget(Paragraph::new(api_key_display), api_key_inner);
+    if api_key_focused {
+        frame.set_cursor_position((api_key_inner.x + masked_key.chars().count() as u16, api_key_inner.y));
     }
-    lines.push(String::new());
-    lines.push("  Tab between fields \u{b7} Enter to save \u{b7} Esc to cancel".to_string());
-    lines
+
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            "  Tab between fields \u{b7} Enter to save \u{b7} Esc to cancel",
+            subtle_style(),
+        )),
+        chunks[7],
+    );
 }
 
-fn render_connecting_copilot_lines() -> Vec<String> {
-    vec![
-        "Connecting to GitHub Copilot\u{2026}".to_string(),
-        String::new(),
-        "  This runs exactly like picopilot's startup does today: the bundled".to_string(),
-        "  Copilot CLI performs its own ambient/interactive sign-in. picopilot".to_string(),
-        "  builds no custom login screen — whatever that process shows or asks".to_string(),
-        "  for happens here, unmodified.".to_string(),
-    ]
+/// Renders one text field (Name/Base URL) as a bordered block with its value, an inline error line
+/// underneath when present (spec §3.7), and places the terminal cursor at the end of the typed
+/// text when this field has focus.
+fn render_text_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    error: Option<&str>,
+    focused: bool,
+) {
+    let block = field_block(label, focused);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(inner);
+
+    frame.render_widget(Paragraph::new(value), layout[0]);
+    if let Some(error) = error {
+        frame.render_widget(Paragraph::new(Span::styled(error, error_style())), layout[1]);
+    }
+    if focused {
+        frame.set_cursor_position((layout[0].x + value.chars().count() as u16, layout[0].y));
+    }
 }
 
-fn render_finish_lines(state: &WizardState) -> Vec<String> {
+fn draw_connecting_copilot(frame: &mut Frame) {
+    let lines = vec![
+        Line::from("Connecting to GitHub Copilot\u{2026}"),
+        Line::from(""),
+        Line::from("  This runs exactly like picopilot's startup does today: the bundled"),
+        Line::from("  Copilot CLI performs its own ambient/interactive sign-in. picopilot"),
+        Line::from("  builds no custom login screen — whatever that process shows or asks"),
+        Line::from("  for happens here, unmodified."),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), frame.area());
+}
+
+fn draw_finish(frame: &mut Frame, state: &WizardState) {
     let default_provider = state.default_provider().unwrap_or(RESERVED_COPILOT_PROVIDER_NAME);
-    vec![
-        "Setup complete.".to_string(),
-        String::new(),
-        "  config.yaml written. Starting picopilot with default_provider =".to_string(),
-        format!("  '{default_provider}'."),
-        String::new(),
-        "  Press Enter to continue.".to_string(),
-    ]
+    let lines = vec![
+        Line::from("Setup complete."),
+        Line::from(""),
+        Line::from("  config.yaml written. Starting picopilot with default_provider ="),
+        Line::from(format!("  '{default_provider}'.")),
+        Line::from(""),
+        Line::from("  Press Enter to continue."),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), frame.area());
 }
 
 #[cfg(test)]
@@ -1100,5 +1242,149 @@ mod tests {
         assert_eq!(config.default_provider, "ollama");
         assert!(config.providers.contains_key("ollama"));
         assert!(config.copilot.is_none());
+    }
+
+    // -- ratatui rendering (TestBackend) -----------------------------------------------------------
+    //
+    // Mirrors `tui.rs`'s own `TestBackend`-driven rendering tests: draw a screen into an in-memory
+    // terminal buffer and assert on the visible cell contents/styles rather than driving a real
+    // terminal (which isn't possible in a unit test).
+
+    use ratatui::backend::TestBackend;
+
+    fn rendered_rows(state: &WizardState, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::with_options(TestBackend::new(width, height), terminal_options())
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, state))
+            .expect("draw should succeed");
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn entry_screen_renders_options_and_highlights_the_selection() {
+        let state = WizardState::new();
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Connect to GitHub Copilot")));
+        assert!(rows.iter().any(|row| row.contains("Add a provider")));
+        assert!(rows.iter().any(|row| row.contains("Finish")));
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("configure at least one to finish")));
+
+        // Default selection is ConnectCopilot; the highlight symbol should mark its row.
+        let selected_row = rows
+            .iter()
+            .find(|row| row.contains("Connect to GitHub Copilot"))
+            .expect("selected row present");
+        assert!(selected_row.contains('\u{2771}'));
+    }
+
+    #[test]
+    fn entry_screen_shows_configured_providers_and_default_marker() {
+        let mut state = WizardState::new();
+        state.go_to_add_provider();
+        state.draft.name = "ollama".to_string();
+        state.draft.base_url = "http://localhost:11434/v1".to_string();
+        assert!(state.submit_provider_form());
+
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows.iter().any(|row| row.contains("Configured so far")));
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("ollama") && row.contains("default")));
+    }
+
+    #[test]
+    fn add_provider_screen_shows_all_field_labels() {
+        let mut state = WizardState::new();
+        state.go_to_add_provider();
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows.iter().any(|row| row.contains("Name")));
+        assert!(rows.iter().any(|row| row.contains("Base URL")));
+        assert!(rows.iter().any(|row| row.contains("Wire API")));
+        assert!(rows.iter().any(|row| row.contains("API key")));
+        assert!(rows.iter().any(|row| row.contains("completions")));
+    }
+
+    /// The user's original bug report: Tab appeared not to switch focus. The pure `Field` cycle
+    /// (`tab_cycles_focus_through_all_fields_and_wraps` above) was already correct, so this test
+    /// asserts on the piece that was actually missing — the rendered form gave zero visual
+    /// feedback about which field was focused, which is why Tab *looked* broken interactively.
+    #[test]
+    fn add_provider_screen_highlights_the_focused_field_border() {
+        let mut state = WizardState::new();
+        state.go_to_add_provider();
+        assert_eq!(state.draft().focus, Field::Name);
+
+        let mut terminal = Terminal::with_options(TestBackend::new(100, 22), terminal_options())
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("draw should succeed");
+        let name_border_style_before = terminal.backend().buffer()[(0, 2)].style();
+
+        state.handle_add_provider_key(KeyCode::Tab);
+        assert_eq!(state.draft().focus, Field::BaseUrl);
+        terminal
+            .draw(|frame| draw(frame, &state))
+            .expect("draw should succeed");
+        let name_border_style_after = terminal.backend().buffer()[(0, 2)].style();
+        let base_url_border_style_after = terminal.backend().buffer()[(0, 6)].style();
+
+        assert_ne!(name_border_style_before, name_border_style_after);
+        assert_eq!(base_url_border_style_after, name_border_style_before);
+    }
+
+    #[test]
+    fn add_provider_screen_shows_inline_errors_under_offending_fields() {
+        let mut state = WizardState::new();
+        state.go_to_add_provider();
+        assert!(!state.submit_provider_form());
+
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows.iter().any(|row| row.contains("name is required")));
+        assert!(rows.iter().any(|row| row.contains("base URL is required")));
+    }
+
+    #[test]
+    fn connecting_copilot_screen_renders_via_the_entry_transition() {
+        let mut state = WizardState::new();
+        state.entry_selection = EntrySelection::ConnectCopilot;
+        assert_eq!(
+            state.handle_entry_key(KeyCode::Enter),
+            WizardOutcome::ConnectCopilot
+        );
+        assert_eq!(state.screen(), Screen::ConnectingCopilot);
+
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows
+            .iter()
+            .any(|row| row.contains("Connecting to GitHub Copilot")));
+    }
+
+    #[test]
+    fn finish_screen_renders_the_default_provider() {
+        let mut state = WizardState::new();
+        state.confirm_copilot_connected();
+        state.entry_selection = EntrySelection::Finish;
+        assert_eq!(
+            state.handle_entry_key(KeyCode::Enter),
+            WizardOutcome::Finished
+        );
+        assert_eq!(state.screen(), Screen::Finish);
+
+        let rows = rendered_rows(&state, 100, 22);
+        assert!(rows.iter().any(|row| row.contains("Setup complete")));
+        assert!(rows.iter().any(|row| row.contains("'copilot'")));
     }
 }
