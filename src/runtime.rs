@@ -19,8 +19,8 @@ use crate::events::{BannerSeverity, EventUpdate};
 use crate::permissions::{permission_handler, ApprovalRequest};
 use crate::provider::{ProviderRegistry, ProviderSettings};
 use crate::provider_config::{
-    self, CopilotDefaults, ProviderConfigError, ProviderConfigFile, ProviderProfile,
-    RESERVED_COPILOT_PROVIDER_NAME,
+    self, CopilotDefaults, ProviderConfigError, ProviderConfigFile, ProviderIdentity,
+    ProviderProfile, RESERVED_COPILOT_PROVIDER_NAME,
 };
 use crate::skills::{SkillCatalog, SkillSelection};
 use crate::toolset::{Toolset, ToolsetProvenance};
@@ -167,20 +167,23 @@ fn apply_provider_registry(
 /// read-side counterpart to `apply_model_switch_to_config`, which writes into the same blocks.
 fn remembered_model_options(config: &ProviderConfigFile) -> Option<ActiveModelOptions> {
     let (default_model, reasoning_effort, context_tier) =
-        if config.default_provider == RESERVED_COPILOT_PROVIDER_NAME {
-            let defaults = config.copilot.as_ref()?;
-            (
-                defaults.default_model.clone(),
-                defaults.default_reasoning_effort.clone(),
-                defaults.default_context_tier.clone(),
-            )
-        } else {
-            let profile = config.providers.get(&config.default_provider)?;
-            (
-                profile.default_model.clone(),
-                profile.default_reasoning_effort.clone(),
-                profile.default_context_tier.clone(),
-            )
+        match ProviderIdentity::parse(&config.default_provider) {
+            ProviderIdentity::Copilot => {
+                let defaults = config.copilot.as_ref()?;
+                (
+                    defaults.default_model.clone(),
+                    defaults.default_reasoning_effort.clone(),
+                    defaults.default_context_tier.clone(),
+                )
+            }
+            ProviderIdentity::Named(name) => {
+                let profile = config.providers.get(&name)?;
+                (
+                    profile.default_model.clone(),
+                    profile.default_reasoning_effort.clone(),
+                    profile.default_context_tier.clone(),
+                )
+            }
         };
 
     default_model.map(|model| ActiveModelOptions {
@@ -339,20 +342,26 @@ fn apply_model_switch_to_config(
 ) {
     config.default_provider = provider.to_string();
 
-    if provider == RESERVED_COPILOT_PROVIDER_NAME {
-        let defaults = config.copilot.get_or_insert_with(CopilotDefaults::default);
-        defaults.default_model = Some(model.to_string());
-        defaults.default_reasoning_effort = reasoning_effort;
-        defaults.default_context_tier = context_tier;
-    } else if let Some(profile) = config.providers.get_mut(provider) {
-        profile.default_model = Some(model.to_string());
-        profile.default_reasoning_effort = reasoning_effort;
-        profile.default_context_tier = context_tier;
+    match ProviderIdentity::parse(provider) {
+        ProviderIdentity::Copilot => {
+            let defaults = config.copilot.get_or_insert_with(CopilotDefaults::default);
+            defaults.default_model = Some(model.to_string());
+            defaults.default_reasoning_effort = reasoning_effort;
+            defaults.default_context_tier = context_tier;
+        }
+        ProviderIdentity::Named(name) => {
+            if let Some(profile) = config.providers.get_mut(&name) {
+                profile.default_model = Some(model.to_string());
+                profile.default_reasoning_effort = reasoning_effort;
+                profile.default_context_tier = context_tier;
+            }
+        }
     }
-    // else: `provider` names neither `"copilot"` nor a configured profile. Unreachable in
-    // practice (`provider_owning_model` only ever returns a name it read out of the same
-    // `provider_registry` that was itself built from `config.providers`), but silently doing
-    // nothing rather than panicking keeps a startup/config mismatch non-fatal.
+    // `Named(name)` with no matching profile: `provider` names neither `"copilot"` nor a
+    // configured profile. Unreachable in practice (`provider_owning_model` only ever returns a
+    // name it read out of the same `provider_registry` that was itself built from
+    // `config.providers`), but silently doing nothing rather than panicking keeps a
+    // startup/config mismatch non-fatal.
 }
 
 #[cfg(test)]
@@ -1996,12 +2005,11 @@ impl github_copilot_sdk::ListModelsHandler for EmptyModelCatalog {
 /// carries no `github_token`, and never issues the real `models.list` RPC.
 fn client_options_for(config: &AppConfig, working_directory: &Path, default_provider: &str) -> ClientOptions {
     let options = config.client_options_in(working_directory);
-    if default_provider == RESERVED_COPILOT_PROVIDER_NAME {
-        options
-    } else {
-        options
+    match ProviderIdentity::parse(default_provider) {
+        ProviderIdentity::Copilot => options,
+        ProviderIdentity::Named(_) => options
             .with_use_logged_in_user(false)
-            .with_list_models_handler(EmptyModelCatalog)
+            .with_list_models_handler(EmptyModelCatalog),
     }
 }
 

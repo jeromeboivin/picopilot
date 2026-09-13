@@ -22,6 +22,40 @@ use crate::skills::home_directory;
 /// never as a `providers` map key.
 pub const RESERVED_COPILOT_PROVIDER_NAME: &str = "copilot";
 
+/// Which provider a `default_provider` string (or a switched-to provider name) refers to: the
+/// reserved hosted Copilot provider, or a named entry in `providers`. Replaces the repeated
+/// `if name == RESERVED_COPILOT_PROVIDER_NAME { .. } else { .. }` cascade with a real type callers
+/// can match on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderIdentity {
+    Copilot,
+    Named(String),
+}
+
+impl ProviderIdentity {
+    /// Classifies `name` as `Copilot` or `Named`.
+    pub fn parse(name: &str) -> Self {
+        if name == RESERVED_COPILOT_PROVIDER_NAME {
+            Self::Copilot
+        } else {
+            Self::Named(name.to_string())
+        }
+    }
+
+    pub fn is_copilot(&self) -> bool {
+        matches!(self, Self::Copilot)
+    }
+}
+
+impl fmt::Display for ProviderIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Copilot => write!(formatter, "{RESERVED_COPILOT_PROVIDER_NAME}"),
+            Self::Named(name) => write!(formatter, "{name}"),
+        }
+    }
+}
+
 /// The full deserialized shape of `config.yaml`, per spec §1.2.
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct ProviderConfigFile {
@@ -207,12 +241,12 @@ pub fn validate(config: &ProviderConfigFile) -> Result<(), ProviderConfigError> 
         return Err(ProviderConfigError::ReservedProviderName);
     }
 
-    if config.default_provider != RESERVED_COPILOT_PROVIDER_NAME
-        && !config.providers.contains_key(&config.default_provider)
-    {
-        return Err(ProviderConfigError::UnresolvedDefaultProvider {
-            default_provider: config.default_provider.clone(),
-        });
+    if let ProviderIdentity::Named(name) = ProviderIdentity::parse(&config.default_provider) {
+        if !config.providers.contains_key(&name) {
+            return Err(ProviderConfigError::UnresolvedDefaultProvider {
+                default_provider: name,
+            });
+        }
     }
 
     for (name, profile) in &config.providers {

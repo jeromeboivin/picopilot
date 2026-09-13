@@ -22,7 +22,8 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 use crate::config::AppConfig;
 use crate::provider::{normalize_base_url, validate_provider_name};
 use crate::provider_config::{
-    self, CopilotDefaults, ProviderConfigFile, ProviderProfile, RESERVED_COPILOT_PROVIDER_NAME,
+    self, CopilotDefaults, ProviderConfigFile, ProviderIdentity, ProviderProfile,
+    RESERVED_COPILOT_PROVIDER_NAME,
 };
 use crate::screen_model::{enter_main_screen, restore_main_screen};
 
@@ -672,7 +673,10 @@ fn render_entry_lines(state: &WizardState) -> Vec<String> {
             ));
         }
         if state.copilot_connected() {
-            let is_default = state.default_provider() == Some(RESERVED_COPILOT_PROVIDER_NAME);
+            let is_default = state
+                .default_provider()
+                .map(ProviderIdentity::parse)
+                .is_some_and(|identity| identity.is_copilot());
             let marker = if is_default { "\u{25cf}" } else { "\u{25cb}" };
             let default_label = if is_default { "  \u{2190} default" } else { "" };
             lines.push(format!("   {marker} copilot{default_label}"));

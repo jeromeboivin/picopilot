@@ -64,23 +64,37 @@ where
         Ok(Some(config)) => match provider_config::validate(&config) {
             Ok(()) => Ok(StartupOutcome::Continue(config)),
             Err(error) => {
-                warn(&error);
-                backup_existing_file(path)?;
-                let produced = run_wizard(Some(config)).await;
-                provider_config::save(path, &produced)?;
+                let produced =
+                    warn_backup_and_rerun_wizard(path, &error, Some(config), run_wizard).await?;
                 Ok(StartupOutcome::Continue(produced))
             }
         },
         // Case 2 (fails to parse as YAML at all): warn, back up, run the wizard with nothing to
         // seed it from, continue.
         Err(error) => {
-            warn(&error);
-            backup_existing_file(path)?;
-            let produced = run_wizard(None).await;
-            provider_config::save(path, &produced)?;
+            let produced = warn_backup_and_rerun_wizard(path, &error, None, run_wizard).await?;
             Ok(StartupOutcome::Continue(produced))
         }
     }
+}
+
+/// Shared recovery path for both "unusable existing config" cases (spec §2.4 case 2): warn about
+/// `error`, write a `.bak` safety copy of the file at `path` *before* the wizard can touch it,
+/// run the wizard seeded with `seed`, save what it produces, and return that.
+async fn warn_backup_and_rerun_wizard<F>(
+    path: &Path,
+    error: &ProviderConfigError,
+    seed: Option<ProviderConfigFile>,
+    run_wizard: impl FnOnce(Option<ProviderConfigFile>) -> F,
+) -> Result<ProviderConfigFile, ProviderConfigError>
+where
+    F: Future<Output = ProviderConfigFile>,
+{
+    warn(error);
+    backup_existing_file(path)?;
+    let produced = run_wizard(seed).await;
+    provider_config::save(path, &produced)?;
+    Ok(produced)
 }
 
 fn warn(error: &ProviderConfigError) {
