@@ -303,8 +303,31 @@ mod tests {
 
     use super::{
         config_file_path_for, load, save, temp_path_for, validate, CopilotDefaults,
-        ProviderConfigError, ProviderConfigFile, ProviderProfile,
+        ProviderConfigError, ProviderConfigFile, ProviderIdentity, ProviderProfile,
+        RESERVED_COPILOT_PROVIDER_NAME,
     };
+
+    #[test]
+    fn provider_identity_parses_the_reserved_name_as_copilot() {
+        assert_eq!(
+            ProviderIdentity::parse(RESERVED_COPILOT_PROVIDER_NAME),
+            ProviderIdentity::Copilot
+        );
+        assert!(ProviderIdentity::parse("copilot").is_copilot());
+    }
+
+    #[test]
+    fn provider_identity_parses_any_other_name_as_named() {
+        let identity = ProviderIdentity::parse("openrouter");
+        assert_eq!(identity, ProviderIdentity::Named("openrouter".to_string()));
+        assert!(!identity.is_copilot());
+    }
+
+    #[test]
+    fn provider_identity_display_round_trips_the_original_name() {
+        assert_eq!(ProviderIdentity::parse("copilot").to_string(), "copilot");
+        assert_eq!(ProviderIdentity::parse("ollama").to_string(), "ollama");
+    }
 
     fn temp_directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

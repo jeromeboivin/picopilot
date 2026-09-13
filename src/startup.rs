@@ -125,8 +125,8 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{backup_path_for, resolve_startup, StartupOutcome};
-    use crate::provider_config::{load, save, ProviderConfigFile, ProviderProfile};
+    use super::{backup_path_for, resolve_startup, warn_backup_and_rerun_wizard, StartupOutcome};
+    use crate::provider_config::{load, save, ProviderConfigError, ProviderConfigFile, ProviderProfile};
 
     fn temp_directory(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -273,5 +273,56 @@ mod tests {
 
         assert_eq!(outcome, StartupOutcome::ExitAfterConfigure);
         assert!(!backup_path_for(&path).exists());
+    }
+
+    #[tokio::test]
+    async fn warn_backup_and_rerun_wizard_backs_up_before_the_wizard_runs_and_seeds_it() {
+        let directory = temp_directory("helper-direct");
+        let path = directory.join("config.yaml");
+        let existing = ProviderConfigFile::new("does-not-exist");
+        save(&path, &existing).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+        let error = ProviderConfigError::UnresolvedDefaultProvider {
+            default_provider: "does-not-exist".to_string(),
+        };
+
+        let produced = warn_backup_and_rerun_wizard(&path, &error, Some(existing.clone()), |seed| {
+            // The backup must already exist by the time the wizard is invoked, and the wizard
+            // must be seeded with exactly what the caller passed in.
+            assert!(
+                backup_path_for(&path).exists(),
+                ".bak must be written before the wizard runs"
+            );
+            assert_eq!(seed, Some(existing.clone()));
+            async move { ProviderConfigFile::new("copilot") }
+        })
+        .await
+        .expect("the helper should back up, run the wizard, and save its output");
+
+        assert_eq!(produced, ProviderConfigFile::new("copilot"));
+        let backup_bytes = fs::read(backup_path_for(&path)).unwrap();
+        assert_eq!(backup_bytes, original_bytes, "the backup must hold the pre-wizard content");
+        let saved = load(&path).unwrap().unwrap();
+        assert_eq!(saved, ProviderConfigFile::new("copilot"), "the wizard's output must be saved");
+    }
+
+    #[tokio::test]
+    async fn warn_backup_and_rerun_wizard_with_no_seed_passes_none_to_the_wizard() {
+        let directory = temp_directory("helper-direct-no-seed");
+        let path = directory.join("config.yaml");
+        fs::write(&path, "default_provider: [not valid yaml").unwrap();
+        let error = ProviderConfigError::UnresolvedDefaultProvider {
+            default_provider: "unused".to_string(),
+        };
+
+        let produced = warn_backup_and_rerun_wizard(&path, &error, None, |seed| {
+            assert_eq!(seed, None, "an unparseable file has nothing to seed the wizard with");
+            async move { ProviderConfigFile::new("copilot") }
+        })
+        .await
+        .expect("the helper should back up, run the wizard, and save its output");
+
+        assert_eq!(produced, ProviderConfigFile::new("copilot"));
+        assert!(backup_path_for(&path).exists());
     }
 }
