@@ -366,12 +366,15 @@ fn apply_model_switch_to_config(
 
 #[cfg(test)]
 mod tests {
-    use github_copilot_sdk::types::{ResumeSessionConfig, SessionId};
+    use clap::Parser;
+    use github_copilot_sdk::types::{Model, ResumeSessionConfig, SessionId};
 
     use super::{
         apply_active_model_options, apply_model_switch_to_config, apply_optional_active_model_options,
-        apply_provider_registry, apply_toolset, default_toolset_for_model, discover_provider_registry,
-        model_from_history, models_from_session_catalog, provider_owning_model, recovery_backoff,
+        apply_provider_registry, apply_toolset, client_options_for, default_toolset_for_model,
+        discover_provider_registry,
+        merge_hosted_model_metadata, model_from_history, models_from_session_catalog,
+        provider_owning_model, recovery_backoff,
         recovery_message, remembered_model_options, restored_model, should_recompute_default_toolset,
         toolset_transition, validate_remembered_model, verify_session_identity, ActiveModelOptions,
         CatalogError, RememberedModelError, SessionIdentity, ToolsetTransition,
@@ -381,6 +384,44 @@ mod tests {
     use crate::provider::{ProviderRegistry, ProviderSettings};
     use crate::provider_config::{CopilotDefaults, ProviderConfigFile, ProviderProfile};
     use crate::toolset::{Toolset, ToolsetProvenance};
+
+    #[test]
+    fn named_default_keeps_the_hosted_copilot_catalog_when_copilot_is_configured() {
+        let mut config = ProviderConfigFile::new("ollama");
+        config.copilot = Some(CopilotDefaults::default());
+        config
+            .providers
+            .insert("ollama".to_string(), ProviderProfile::new("http://localhost:11434/v1"));
+
+        let options = client_options_for(
+            &crate::config::AppConfig::try_parse_from(["picopilot"]).unwrap(),
+            std::path::Path::new("."),
+            &config,
+        );
+
+        assert_ne!(options.use_logged_in_user, Some(false));
+        assert!(
+            options.on_list_models.is_none(),
+            "Copilot's hosted model discovery must not be replaced by the local-only catalog"
+        );
+    }
+
+    #[test]
+    fn local_only_configuration_keeps_copilot_optional() {
+        let mut config = ProviderConfigFile::new("ollama");
+        config
+            .providers
+            .insert("ollama".to_string(), ProviderProfile::new("http://localhost:11434/v1"));
+
+        let options = client_options_for(
+            &crate::config::AppConfig::try_parse_from(["picopilot"]).unwrap(),
+            std::path::Path::new("."),
+            &config,
+        );
+
+        assert_eq!(options.use_logged_in_user, Some(false));
+        assert!(options.on_list_models.is_some());
+    }
 
     #[test]
     fn resume_configuration_restores_active_model_options() {
@@ -567,6 +608,44 @@ mod tests {
         assert!(models[1].supported_reasoning_efforts.is_none());
         assert!(models[1].supported_context_tiers.is_none());
         assert!(models[1].capabilities.limits.is_none());
+    }
+
+    #[test]
+    fn restores_hosted_metadata_when_external_provider_catalog_omits_it() {
+        let session_models = models_from_session_catalog(vec![
+            serde_json::json!({"id": "gpt-5", "name": "GPT-5", "capabilities": {}}),
+            serde_json::json!({"id": "ollama/qwen3", "name": "ollama/qwen3"}),
+        ])
+        .expect("session catalog should decode");
+        let hosted_models: Vec<Model> = serde_json::from_value(serde_json::json!([
+            {
+                "id": "gpt-5",
+                "name": "GPT-5",
+                "billing": {
+                    "tokenPrices": {
+                        "inputPrice": 2.5,
+                        "outputPrice": 15.0
+                    }
+                },
+                "capabilities": {}
+            }
+        ]))
+        .expect("hosted catalog should decode");
+
+        let merged = merge_hosted_model_metadata(session_models, &hosted_models);
+
+        let hosted = merged
+            .iter()
+            .find(|model| model.id == "gpt-5")
+            .expect("hosted model should remain in the catalog");
+        let prices = hosted
+            .billing
+            .as_ref()
+            .and_then(|billing| billing.token_prices.as_ref())
+            .expect("hosted billing metadata should be restored");
+        assert_eq!(prices.input_price, Some(2.5));
+        assert_eq!(prices.output_price, Some(15.0));
+        assert!(merged.iter().any(|model| model.id == "ollama/qwen3"));
     }
 
     #[test]
@@ -1882,6 +1961,20 @@ fn models_from_session_catalog(entries: Vec<Value>) -> Result<Vec<Model>, Catalo
         .collect()
 }
 
+fn merge_hosted_model_metadata(mut session_models: Vec<Model>, hosted_models: &[Model]) -> Vec<Model> {
+    for hosted_model in hosted_models {
+        if let Some(session_model) = session_models
+            .iter_mut()
+            .find(|session_model| session_model.id == hosted_model.id)
+        {
+            *session_model = hosted_model.clone();
+        } else {
+            session_models.push(hosted_model.clone());
+        }
+    }
+    session_models
+}
+
 fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, CatalogError> {
     let Some(object) = entry.as_object_mut() else {
         let source = serde_json::from_value::<Model>(entry.clone()).unwrap_err();
@@ -2000,16 +2093,23 @@ impl github_copilot_sdk::ListModelsHandler for EmptyModelCatalog {
     }
 }
 
-/// Builds the [`ClientOptions`] for `default_provider` (spec §2.2). `"copilot"` gets today's
-/// unchanged ambient/interactive auto-login path; anything else disables logged-in-user fallback,
-/// carries no `github_token`, and never issues the real `models.list` RPC.
-fn client_options_for(config: &AppConfig, working_directory: &Path, default_provider: &str) -> ClientOptions {
+/// Builds the [`ClientOptions`] for the configured provider set. A named provider may be the
+/// active default while Copilot remains configured, so the hosted catalog must stay available in
+/// that case; only a genuinely local-only configuration disables the Copilot fallback/catalog.
+fn client_options_for(
+    config: &AppConfig,
+    working_directory: &Path,
+    provider_config: &ProviderConfigFile,
+) -> ClientOptions {
     let options = config.client_options_in(working_directory);
-    match ProviderIdentity::parse(default_provider) {
-        ProviderIdentity::Copilot => options,
-        ProviderIdentity::Named(_) => options
+    if provider_config.copilot.is_some()
+        || ProviderIdentity::parse(&provider_config.default_provider).is_copilot()
+    {
+        options
+    } else {
+        options
             .with_use_logged_in_user(false)
-            .with_list_models_handler(EmptyModelCatalog),
+            .with_list_models_handler(EmptyModelCatalog)
     }
 }
 
@@ -2019,14 +2119,13 @@ async fn connect_inner(
     provider_config_path: &Path,
     requested_toolset: Option<Toolset>,
 ) -> Result<AppRuntime, StartupError> {
-    let default_provider = provider_config.default_provider.as_str();
     let working_directory = config
         .working_directory()
         .map_err(StartupError::CurrentDirectory)?;
     let skill_catalog = SkillCatalog::discover(&working_directory);
     let active_skill_selection = SkillSelection::none();
     let (permission_handler, permission_requests) = permission_handler(working_directory.clone());
-    let client_options = client_options_for(config, &working_directory, default_provider);
+    let client_options = client_options_for(config, &working_directory, provider_config);
     let client = Client::start(client_options)
         .await
         .map_err(StartupError::Client)?;
@@ -2070,6 +2169,7 @@ async fn connect_inner(
                 .map_err(StartupError::SessionCatalog)?;
             let models = models_from_session_catalog(catalog.list)
                 .map_err(StartupError::InvalidSessionCatalog)?;
+            let models = merge_hosted_model_metadata(models, &hosted_models);
             for model_id in registry.qualified_model_ids() {
                 if !models.iter().any(|model| model.id == model_id) {
                     return Err(StartupError::InvalidSessionCatalog(

@@ -6695,12 +6695,12 @@ cell_span=0..40 text="                                        " fg=reset bg=rese
 row=8 text="Select a model (1 of 2):                "
 cell_span=0..24 text="Select a model (1 of 2):" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=24..40 text="                " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="❯  1.  GPT-5                         unk"
+row=9 text="❯  1.  GPT-5                         $2."
 cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="1." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=7..40 text="GPT-5                         unk" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=7..40 text="GPT-5                         $2." fg=#b1b9f9 bg=reset modifiers=NONE/NONE
 row=10 text="   2.  Local Model                   loc"
 cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
@@ -6736,22 +6736,22 @@ cell_span=0..80 text="                                                          
 row=8 text="Select a model (1 of 2):                                                        "
 cell_span=0..24 text="Select a model (1 of 2):" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=24..80 text="                                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="❯  1.  GPT-5                         unknown    unknown tokens  ✓               "
+row=9 text="❯  1.  GPT-5                         $2.50 in / $15.00 out  unknown tokens  ✓   "
 cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="1." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=7..62 text="GPT-5                         unknown    unknown tokens" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
-cell_span=62..64 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=64..65 text="✓" fg=#4eba65 bg=reset modifiers=NONE/NONE
-cell_span=65..80 text="               " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="   2.  Local Model                   local      unknown tokens                  "
+cell_span=7..74 text="GPT-5                         $2.50 in / $15.00 out  unknown tokens" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=74..76 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=76..77 text="✓" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=77..80 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="   2.  Local Model                   local                  unknown tokens      "
 cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=7..62 text="Local Model                   local      unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
-cell_span=62..80 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=7..74 text="Local Model                   local                  unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=74..80 text="      " fg=reset bg=reset modifiers=NONE/NONE
 row=11 text="  Reasoning: model default  Context: model default                              "
 cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=13..26 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE
@@ -6783,22 +6783,22 @@ cell_span=0..120 text="                                                         
 row=8 text="Select a model (1 of 2):                                                                                                "
 cell_span=0..24 text="Select a model (1 of 2):" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=24..120 text="                                                                                                " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="❯  1.  GPT-5                         unknown    unknown tokens  ✓                                                       "
+row=9 text="❯  1.  GPT-5                         $2.50 in / $15.00 out  unknown tokens  ✓                                           "
 cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="1." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=7..62 text="GPT-5                         unknown    unknown tokens" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
-cell_span=62..64 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=64..65 text="✓" fg=#4eba65 bg=reset modifiers=NONE/NONE
-cell_span=65..120 text="                                                       " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="   2.  Local Model                   local      unknown tokens                                                          "
+cell_span=7..74 text="GPT-5                         $2.50 in / $15.00 out  unknown tokens" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=74..76 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=76..77 text="✓" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=77..120 text="                                           " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="   2.  Local Model                   local                  unknown tokens                                              "
 cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=3..5 text="2." fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=5..7 text="  " fg=reset bg=reset modifiers=NONE/NONE
-cell_span=7..62 text="Local Model                   local      unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
-cell_span=62..120 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=7..74 text="Local Model                   local                  unknown tokens" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=74..120 text="                                              " fg=reset bg=reset modifiers=NONE/NONE
 row=11 text="  Reasoning: model default  Context: model default                                                                      "
 cell_span=0..13 text="  Reasoning: " fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=13..26 text="model default" fg=#ffffff bg=reset modifiers=NONE/NONE

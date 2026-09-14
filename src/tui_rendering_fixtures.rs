@@ -732,6 +732,14 @@ fn setup_model_picker(app: &mut App) {
     app.set_local_model_ids(["local-model".to_string()]);
     app.set_models(vec![
         Model {
+            billing: Some(serde_json::from_value(json!({
+                "tokenPrices": {
+                    "batchSize": 1000000,
+                    "inputPrice": 250.0,
+                    "outputPrice": 1500.0
+                }
+            }))
+            .expect("model pricing should deserialize")),
             id: "gpt-5".to_string(),
             name: "GPT-5".to_string(),
             supported_context_tiers: Some(vec!["default".to_string(), "long_context".to_string()]),

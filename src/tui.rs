@@ -4713,7 +4713,7 @@ fn truncate_tail(text: &str, width: usize) -> String {
 
 fn model_picker_row_for(model: &Model, is_local: bool) -> String {
     format!(
-        "{:<28}  {:<9}  {} tokens",
+        "{:<28}  {:<21}  {} tokens",
         sanitize_plain(&model.name),
         model_cost_label_for(model, is_local),
         model_context_label(model)
@@ -4723,6 +4723,15 @@ fn model_picker_row_for(model: &Model, is_local: bool) -> String {
 fn model_cost_label_for(model: &Model, is_local: bool) -> String {
     if is_local {
         return "local".to_string();
+    }
+
+    if let Some((input, output)) = model
+        .billing
+        .as_ref()
+        .and_then(|billing| billing.token_prices.as_ref())
+        .and_then(token_prices_usd_per_million)
+    {
+        return format!("${input:.2} in / ${output:.2} out");
     }
 
     let category = serde_json::to_value(model).ok().and_then(|value| {
@@ -4741,6 +4750,18 @@ fn model_cost_label_for(model: &Model, is_local: bool) -> String {
             .map(|multiplier| format!("{multiplier}x"))
             .unwrap_or_else(|| "unknown".to_string()),
     }
+}
+
+fn token_prices_usd_per_million(
+    prices: &github_copilot_sdk::types::ModelBillingTokenPrices,
+) -> Option<(f64, f64)> {
+    let batch_size = prices.batch_size.filter(|batch_size| *batch_size > 0)? as f64;
+    let (input, output) = prices.input_price.zip(prices.output_price)?;
+    let credits_per_million = 1_000_000.0 / batch_size;
+    Some((
+        input * credits_per_million / 100.0,
+        output * credits_per_million / 100.0,
+    ))
 }
 
 fn model_context_label(model: &Model) -> String {
@@ -9469,7 +9490,13 @@ mod tests {
     #[test]
     fn model_picker_formats_cost_and_context_metadata() {
         let model: Model = serde_json::from_value(json!({
-            "billing": { "multiplier": 1.5 },
+            "billing": {
+                "tokenPrices": {
+                    "batchSize": 1000000,
+                    "inputPrice": 250.0,
+                    "outputPrice": 1500.0
+                }
+            },
             "capabilities": {
                 "limits": { "max_context_window_tokens": 200000 }
             },
@@ -9479,12 +9506,31 @@ mod tests {
         }))
         .expect("model metadata should deserialize");
 
-        assert_eq!(model_cost_label_for(&model, false), "high");
+        assert_eq!(model_cost_label_for(&model, false), "$2.50 in / $15.00 out");
         assert_eq!(model_context_label(&model), "200,000");
         assert_eq!(
             model_picker_row_for(&model, false),
-            "GPT-5                         high       200,000 tokens"
+            "GPT-5                         $2.50 in / $15.00 out  200,000 tokens"
         );
+    }
+
+    #[test]
+    fn model_picker_converts_ai_credits_per_batch_to_dollars_per_million_tokens() {
+        let model: Model = serde_json::from_value(json!({
+            "billing": {
+                "tokenPrices": {
+                    "batchSize": 1000000,
+                    "inputPrice": 200.0,
+                    "outputPrice": 1000.0
+                }
+            },
+            "id": "claude-sonnet-5",
+            "name": "Claude Sonnet 5",
+            "capabilities": {}
+        }))
+        .expect("model pricing should deserialize");
+
+        assert_eq!(model_cost_label_for(&model, false), "$2.00 in / $10.00 out");
     }
 
     #[test]
