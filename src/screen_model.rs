@@ -158,6 +158,7 @@ impl LiveEntry {
             | TranscriptPayload::Reasoning { .. }
             | TranscriptPayload::Notice { .. }
             | TranscriptPayload::Subagent(_)
+            | TranscriptPayload::AgentLaunch(_)
             | TranscriptPayload::ToolHeader(_)
             | TranscriptPayload::ToolProgress(_)
             | TranscriptPayload::ToolResult(_) => &[],
@@ -182,6 +183,7 @@ pub enum TranscriptPayload {
     Reasoning { content: String, expanded: bool },
     Notice { kind: NoticeKind, content: String },
     Subagent(SubagentPayload),
+    AgentLaunch(AgentLaunchPayload),
     ToolHeader(ToolHeaderPayload),
     ToolProgress(ToolProgressPayload),
     ToolResult(ToolResultPayload),
@@ -206,6 +208,24 @@ pub struct SubagentPayload {
     pub total_tokens: Option<i64>,
     pub agent_id: Option<String>,
 }
+
+/// A batch of subagents launched through consecutive `task` tool calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLaunchPayload {
+    pub agents: Vec<LaunchedAgentPayload>,
+    pub expanded: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchedAgentPayload {
+    pub agent: String,
+    pub prompt: String,
+    pub state: ToolCallState,
+    pub error: Option<String>,
+    pub response: Option<String>,
+}
+
+const AGENT_RESPONSE_PREVIEW_LINES: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CachedRender {
@@ -268,6 +288,7 @@ impl ScreenEntry {
             | TranscriptPayload::Reasoning { .. }
             | TranscriptPayload::Notice { .. }
             | TranscriptPayload::Subagent(_)
+            | TranscriptPayload::AgentLaunch(_)
             | TranscriptPayload::ToolHeader(_)
             | TranscriptPayload::ToolProgress(_)
             | TranscriptPayload::ToolResult(_) => &[],
@@ -661,6 +682,9 @@ pub fn render_transcript_payload_with_options(
         }
         TranscriptPayload::Notice { kind, content } => render_notice(*kind, content, width),
         TranscriptPayload::Subagent(subagent) => render_subagent(subagent, width, verbose),
+        TranscriptPayload::AgentLaunch(launch) => {
+            render_agent_launch(launch, width, platform, animation_elapsed_ms)
+        }
         TranscriptPayload::ToolHeader(header) => {
             render_tool_header(kind, header, width, platform, animation_elapsed_ms, verbose)
         }
@@ -1862,6 +1886,138 @@ fn render_subagent(subagent: &SubagentPayload, width: usize, _verbose: bool) -> 
         rendered.push(Line::from(spans));
     }
     rendered
+}
+
+fn render_agent_launch(
+    launch: &AgentLaunchPayload,
+    width: usize,
+    platform: ToolPlatform,
+    animation_elapsed_ms: u64,
+) -> Vec<Line<'static>> {
+    let dim = Style::default()
+        .fg(palette::INACTIVE)
+        .add_modifier(ratatui::style::Modifier::DIM);
+    let running = launch
+        .agents
+        .iter()
+        .any(|agent| matches!(agent.state, ToolCallState::Running | ToolCallState::Queued));
+    let failed = launch
+        .agents
+        .iter()
+        .any(|agent| matches!(agent.state, ToolCallState::Error | ToolCallState::Cancelled));
+    let (dot, dot_style) = if running {
+        let dot = if tool_dot_visible(animation_elapsed_ms) {
+            platform.dot()
+        } else {
+            " "
+        };
+        (dot, dim)
+    } else if failed {
+        (platform.dot(), Style::default().fg(palette::ERROR))
+    } else {
+        (platform.dot(), Style::default().fg(palette::SUCCESS))
+    };
+    let count = launch.agents.len();
+    let title = format!("{count} {} launched", if count == 1 { "agent" } else { "agents" });
+    let header = tool_header_prefix(dot, dot_style, &title);
+    let mut lines = vec![Line::default(), truncate_line(Line::from(header), width)];
+
+    for (index, agent) in launch.agents.iter().enumerate() {
+        let last = index + 1 == count;
+        let branch = if last { "  └─ " } else { "  ├─ " };
+        let stem = if last { "     " } else { "  │  " };
+        let mention_style = match agent.state {
+            ToolCallState::Error | ToolCallState::Cancelled => Style::default().fg(palette::ERROR),
+            _ => Style::default().fg(palette::TEXT),
+        }
+        .add_modifier(ratatui::style::Modifier::BOLD);
+        lines.push(truncate_line(
+            Line::from(vec![
+                Span::styled(branch, dim),
+                Span::styled(format!("@{}", agent.agent), mention_style),
+            ]),
+            width,
+        ));
+
+        let body_width = width.saturating_sub(UnicodeWidthStr::width(stem));
+        let prompt_lines: Vec<Line<'static>> = if launch.expanded {
+            wrap_lines(
+                &agent
+                    .prompt
+                    .lines()
+                    .map(|line| Line::from(Span::styled(line.to_string(), dim)))
+                    .collect::<Vec<_>>(),
+                &WrapSpec {
+                    wrap_width: body_width,
+                    fill_width: 0,
+                    first_prefix: Vec::new(),
+                    continuation_prefix: Vec::new(),
+                    fill_style: None,
+                },
+            )
+        } else {
+            let preview = single_line_content(&agent.prompt);
+            if preview.is_empty() {
+                Vec::new()
+            } else {
+                vec![truncate_line_with_ellipsis(
+                    Line::from(Span::styled(preview, dim)),
+                    body_width,
+                )]
+            }
+        };
+        for line in prompt_lines {
+            let mut spans = vec![Span::styled(stem, dim)];
+            spans.extend(line.spans);
+            lines.push(Line::from(spans));
+        }
+        if let Some(response) = agent.response.as_deref() {
+            let response_lines: Vec<&str> = response
+                .trim()
+                .lines()
+                .map(str::trim_end)
+                .collect::<Vec<_>>();
+            let shown = if launch.expanded {
+                response_lines.len()
+            } else {
+                response_lines.len().min(AGENT_RESPONSE_PREVIEW_LINES)
+            };
+            for (line_index, line) in response_lines[..shown].iter().enumerate() {
+                let marker = if line_index == 0 { "⎿  " } else { "   " };
+                lines.push(truncate_line_with_ellipsis(
+                    Line::from(vec![
+                        Span::styled(stem, dim),
+                        Span::styled(marker, dim),
+                        Span::styled(line.to_string(), dim),
+                    ]),
+                    width,
+                ));
+            }
+            let hidden = response_lines.len() - shown;
+            if hidden > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(stem, dim),
+                    Span::styled(
+                        format!("   (+{hidden} {})", if hidden == 1 { "line" } else { "lines" }),
+                        dim,
+                    ),
+                ]));
+            }
+        }
+        if let Some(error) = agent.error.as_deref().filter(|error| !error.is_empty()) {
+            lines.push(truncate_line_with_ellipsis(
+                Line::from(vec![
+                    Span::styled(stem, dim),
+                    Span::styled(
+                        format!("Error: {}", single_line_content(error)),
+                        Style::default().fg(palette::ERROR),
+                    ),
+                ]),
+                width,
+            ));
+        }
+    }
+    lines
 }
 
 fn render_subagent_header(

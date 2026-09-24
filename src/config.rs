@@ -10,6 +10,36 @@ use crate::toolset::{Toolset, CANONICAL_TOOLS, EXCLUDED_TOOLS};
 pub const V1_AVAILABLE_TOOLS: &[&str] = CANONICAL_TOOLS;
 pub const V1_EXCLUDED_TOOLS: &[&str] = EXCLUDED_TOOLS;
 
+/// The SDK's bundled `copilot-runtime` is a standalone server that cannot
+/// resolve custom agent prompts, so `task` calls to custom agents fail on it.
+/// Prefer an installed Copilot CLI, which hosts those session effects.
+/// Returns `None` when `COPILOT_CLI_PATH` already selects a CLI (the SDK
+/// honors it) or when no `copilot` is found on `PATH`.
+pub(crate) fn installed_copilot_cli() -> Option<PathBuf> {
+    if std::env::var_os("COPILOT_CLI_PATH").is_some_and(|path| Path::new(&path).is_file()) {
+        return None;
+    }
+    find_copilot_on_path(std::env::var_os("PATH")?.as_os_str())
+}
+
+pub(crate) fn uses_bundled_runtime() -> bool {
+    installed_copilot_cli().is_none()
+        && !std::env::var_os("COPILOT_CLI_PATH").is_some_and(|path| Path::new(&path).is_file())
+}
+
+fn find_copilot_on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["copilot.exe", "copilot.cmd"]
+    } else {
+        &["copilot"]
+    };
+    names.iter().find_map(|name| {
+        std::env::split_paths(path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 pub(crate) fn system_message_config() -> SystemMessageConfig {
     SystemMessageConfig::new()
         .with_mode("replace")
@@ -51,7 +81,11 @@ impl AppConfig {
     }
 
     pub fn client_options_in(&self, working_directory: &Path) -> ClientOptions {
-        ClientOptions::new().with_cwd(working_directory)
+        let options = ClientOptions::new().with_cwd(working_directory);
+        match installed_copilot_cli() {
+            Some(program) => options.with_program(program),
+            None => options,
+        }
     }
 
     pub fn session_config(&self) -> SessionConfig {
@@ -76,6 +110,7 @@ impl AppConfig {
             .with_available_tools(toolset.available_tools())
             .with_excluded_tools(EXCLUDED_TOOLS.iter().copied())
             .with_system_message(system_message_config());
+        crate::agents::configure_session(&mut session);
         if let Some(registry) = registry {
             session = session
                 .with_providers(registry.providers().to_vec())
@@ -217,6 +252,23 @@ mod tests {
     }
 
     #[test]
+    fn finds_an_installed_copilot_cli_on_path() {
+        let directory =
+            std::env::temp_dir().join(format!("picopilot-cli-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let name = if cfg!(windows) { "copilot.exe" } else { "copilot" };
+        let empty = std::env::join_paths([directory.join("missing")]).unwrap();
+        assert_eq!(super::find_copilot_on_path(&empty), None);
+        std::fs::write(directory.join(name), "").unwrap();
+        let path = std::env::join_paths([directory.join("missing"), directory.clone()]).unwrap();
+        assert_eq!(
+            super::find_copilot_on_path(&path),
+            Some(directory.join(name))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn rejects_both_project_path_forms() {
         let error = AppConfig::try_parse_from([
             "picopilot",
@@ -237,6 +289,7 @@ mod tests {
         let session = config.session_config();
 
         assert_eq!(session.streaming, Some(true));
+        assert_eq!(session.enable_config_discovery, Some(true));
         let shell_tool = if cfg!(windows) { "powershell" } else { "bash" };
         let list_tool = if cfg!(windows) { "list_powershell" } else { "list_bash" };
         let read_tool = if cfg!(windows) { "read_powershell" } else { "read_bash" };

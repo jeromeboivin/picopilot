@@ -27,6 +27,7 @@ use ratatui::Terminal;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use github_copilot_sdk::rpc::{AgentInfo, AgentSelectRequest};
 use github_copilot_sdk::rpc::{FleetStartRequest, FleetStartResult, TasksStartAgentRequest};
 use github_copilot_sdk::subscription::EventSubscription;
 use github_copilot_sdk::subscription::RecvErrorKind;
@@ -43,7 +44,7 @@ use crate::runtime::{
 use crate::screen_model::{
     enter_main_screen, render_transcript_payload_with_options, restore_main_screen,
     terminal_options, LiveEntryKind, NoticeKind, Platform, ScreenChange, ScreenEntry, ScreenModel,
-    SubagentPayload, ToolCallState, ToolHeaderPayload, ToolProgressKind, ToolProgressPayload,
+    AgentLaunchPayload, LaunchedAgentPayload, SubagentPayload, ToolCallState, ToolHeaderPayload, ToolProgressKind, ToolProgressPayload,
     ToolResultPayload, ToolResultState, TranscriptPayload,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
@@ -91,6 +92,8 @@ pub enum UiAction {
     Approval(ApprovalDecision),
     LoadSessions,
     LoadModels,
+    LoadAgents,
+    SelectAgent(Option<String>),
     LoadUsage,
     LoadUsageCommand,
     LoadStatus,
@@ -108,6 +111,7 @@ pub enum UiAction {
 enum PickerKind {
     Sessions,
     Models,
+    Agents,
     Tools,
     Skills,
     Approval,
@@ -181,7 +185,19 @@ pub enum ChatEntry {
         status: ApprovalStatus,
     },
     LocalOutput(Vec<Line<'static>>),
+    AgentLaunch(Vec<LaunchedAgent>),
     Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchedAgent {
+    pub tool_call_id: String,
+    pub agent: String,
+    pub prompt: String,
+    pub state: ToolCallState,
+    pub error: Option<String>,
+    pub response: Option<String>,
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,6 +248,7 @@ struct CompletionState {
 }
 
 const BUILTIN_COMMANDS: &[(&str, &str)] = &[
+    ("/agent", "select an agent"),
     ("/fleet", "run work through Fleet"),
     ("/resume", "open a session to resume"),
     ("/status", "show session and configuration status"),
@@ -500,6 +517,9 @@ pub struct App {
     picker_window_start: usize,
     sessions: Vec<SessionMetadata>,
     models: Vec<Model>,
+    agents: Vec<AgentInfo>,
+    active_agent: Option<String>,
+    open_agent_launch: Option<usize>,
     local_model_ids: HashSet<String>,
     selected_item: usize,
     picker_reasoning_effort: Option<String>,
@@ -797,6 +817,8 @@ impl App {
     }
 
     fn push_entry(&mut self, entry: ChatEntry) {
+        self.open_agent_launch = matches!(entry, ChatEntry::AgentLaunch(_))
+            .then_some(self.entries.len());
         let id = self.allocate_entry_id();
         self.entries.push(entry);
         self.entry_ids.push(id);
@@ -863,6 +885,12 @@ impl App {
                 !matches!(status, ApprovalStatus::Pending),
             ),
             ChatEntry::LocalOutput(_) => (LiveEntryKind::Other, true),
+            ChatEntry::AgentLaunch(agents) => (
+                LiveEntryKind::Tool,
+                !agents.iter().any(|agent| {
+                    matches!(agent.state, ToolCallState::Queued | ToolCallState::Running)
+                }),
+            ),
             ChatEntry::Completed => return None,
         };
         let payload = entry_payload(entry, self.show_internals, self.transcript_expanded)?;
@@ -1000,6 +1028,21 @@ impl App {
         self.reset_picker_options();
         self.completion = None;
         self.open_picker(PickerKind::Models);
+    }
+
+    pub fn set_agents(&mut self, agents: Vec<AgentInfo>, active: Option<String>) {
+        self.agents = agents
+            .into_iter()
+            .filter(|agent| agent.user_invocable != Some(false))
+            .collect();
+        self.active_agent = active;
+        self.open_picker(PickerKind::Agents);
+        self.selected_item = self
+            .agents
+            .iter()
+            .position(|agent| Some(&agent.id) == self.active_agent.as_ref())
+            .map(|index| index + 1)
+            .unwrap_or(0);
     }
 
     pub fn preload_models(&mut self, models: Vec<Model>) {
@@ -1173,6 +1216,7 @@ impl App {
                     self.status.reasoning_effort.as_deref(),
                 ))
             }
+            Some(PickerKind::Agents) => Some("Kept current agent".to_string()),
             Some(PickerKind::Tools) => Some(format!(
                 "Kept tools: {}/{} enabled",
                 self.toolset.len(),
@@ -1194,6 +1238,7 @@ impl App {
         let item_count = match self.picker {
             Some(PickerKind::Sessions) => self.sessions.len(),
             Some(PickerKind::Models) => self.models.len(),
+            Some(PickerKind::Agents) => self.agents.len() + 1,
             Some(PickerKind::Tools) => TOOL_COUNT,
             Some(PickerKind::Skills) => self.skill_catalog.skills().len(),
             Some(PickerKind::Approval) => self.approval_choice_count(),
@@ -1287,6 +1332,11 @@ impl App {
                     context_tier: self.picker_context_tier.clone(),
                 })
             }),
+            Some(PickerKind::Agents) => Some(UiAction::SelectAgent(
+                self.selected_item
+                    .checked_sub(1)
+                    .and_then(|index| self.agents.get(index).map(|agent| agent.id.clone())),
+            )),
             Some(PickerKind::Tools) => Some(UiAction::ApplyToolset(self.picker_toolset)),
             Some(PickerKind::Skills) => {
                 Some(UiAction::ApplySkills(self.picker_skill_selection.clone()))
@@ -1476,6 +1526,8 @@ impl App {
         self.status.context_attribution = None;
         self.reset_context_warning_state();
         self.status.busy = false;
+        self.active_agent = None;
+        self.open_agent_launch = None;
         self.close_picker();
         self.picker_reasoning_effort = None;
         self.picker_context_tier = None;
@@ -1551,6 +1603,17 @@ impl App {
     }
 
     pub fn apply(&mut self, update: EventUpdate) {
+        // A launched agent's answer is already shown in its agent launch block
+        // (from the task result), so skip the subagent's own message stream.
+        if let EventUpdate::AssistantDelta { agent_id: Some(agent_id), .. }
+        | EventUpdate::AssistantMessage { agent_id: Some(agent_id), .. }
+        | EventUpdate::ReasoningDelta { agent_id: Some(agent_id), .. }
+        | EventUpdate::Reasoning { agent_id: Some(agent_id), .. } = &update
+        {
+            if self.is_launched_agent(agent_id) {
+                return;
+            }
+        }
         match update {
             EventUpdate::UserMessage { content } => {
                 let content = sanitize_plain(&content);
@@ -1632,7 +1695,12 @@ impl App {
                 arguments,
                 agent_id,
             } => {
-                if self.tool_header_index(&tool_call_id).is_none() {
+                if agent_id.is_none()
+                    && tool_name == "task"
+                    && self.tool_header_index(&tool_call_id).is_none()
+                {
+                    self.launch_agent(tool_call_id, arguments);
+                } else if self.tool_header_index(&tool_call_id).is_none() {
                     self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id.clone()));
                     let tool_name = sanitize_plain(&tool_name);
                     let arguments = arguments.map(|mut arguments| {
@@ -1723,6 +1791,20 @@ impl App {
                 message,
                 agent_id: _,
             } => self.complete_tool(tool_call_id, false, message, None, true),
+            EventUpdate::SubagentStarted {
+                name,
+                description,
+                display_name,
+                tool_call_id,
+                agent_id,
+            } if self.launched_agent_index(&tool_call_id).is_some() => {
+                let _ = (name, description, display_name);
+                if let Some((index, position)) = self.launched_agent_index(&tool_call_id) {
+                    if let ChatEntry::AgentLaunch(agents) = &mut self.entries[index] {
+                        agents[position].agent_id = agent_id;
+                    }
+                }
+            }
             EventUpdate::SubagentStarted {
                 name,
                 description,
@@ -1856,6 +1938,58 @@ impl App {
         }
     }
 
+    fn launch_agent(&mut self, tool_call_id: String, arguments: Option<serde_json::Value>) {
+        let argument = |key: &str| {
+            arguments
+                .as_ref()
+                .and_then(|arguments| arguments.get(key))
+                .and_then(serde_json::Value::as_str)
+                .map(sanitize_plain)
+                .filter(|value| !value.trim().is_empty())
+        };
+        let agent = LaunchedAgent {
+            tool_call_id,
+            agent: argument("agent_type")
+                .or_else(|| argument("name"))
+                .unwrap_or_else(|| "agent".to_string()),
+            prompt: argument("prompt")
+                .or_else(|| argument("description"))
+                .unwrap_or_default(),
+            state: ToolCallState::Running,
+            error: None,
+            response: None,
+            agent_id: None,
+        };
+        match self.open_agent_launch {
+            Some(index) if index + 1 == self.entries.len() => {
+                if let ChatEntry::AgentLaunch(agents) = &mut self.entries[index] {
+                    agents.push(agent);
+                }
+                self.queue_screen_change(index);
+            }
+            _ => self.push_entry(ChatEntry::AgentLaunch(vec![agent])),
+        }
+    }
+
+    fn is_launched_agent(&self, agent_id: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            matches!(entry, ChatEntry::AgentLaunch(agents)
+                if agents.iter().any(|agent| agent.agent_id.as_deref() == Some(agent_id)))
+        })
+    }
+
+    fn launched_agent_index(&self, tool_call_id: &str) -> Option<(usize, usize)> {
+        self.entries.iter().enumerate().rev().find_map(|(index, entry)| {
+            let ChatEntry::AgentLaunch(agents) = entry else {
+                return None;
+            };
+            agents
+                .iter()
+                .position(|agent| agent.tool_call_id == tool_call_id)
+                .map(|position| (index, position))
+        })
+    }
+
     fn tool_header_index(&self, tool_call_id: &str) -> Option<usize> {
         self.entries.iter().position(|entry| {
             matches!(
@@ -1877,6 +2011,28 @@ impl App {
         cancelled: bool,
     ) {
         self.finish_ansi_stream(AnsiStreamId::ToolOutput(tool_call_id.clone()));
+        if let Some((index, position)) = self.launched_agent_index(&tool_call_id) {
+            if let ChatEntry::AgentLaunch(agents) = &mut self.entries[index] {
+                let agent = &mut agents[position];
+                agent.state = if cancelled {
+                    ToolCallState::Cancelled
+                } else if success {
+                    ToolCallState::Success
+                } else {
+                    ToolCallState::Error
+                };
+                let message = message
+                    .map(|message| sanitize_plain(&message))
+                    .filter(|message| !message.trim().is_empty());
+                if success {
+                    agent.response = message;
+                } else if !cancelled {
+                    agent.error = message;
+                }
+            }
+            self.queue_screen_change(index);
+            return;
+        }
         let Some(index) = self.tool_header_index(&tool_call_id) else {
             return;
         };
@@ -2415,12 +2571,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             } else if input == "/usage" {
                 app.dismiss_startup_surface();
                 UiAction::LoadUsageCommand
+            } else if input == "/agent" {
+                app.dismiss_startup_surface();
+                UiAction::LoadAgents
             } else if input == "/resume" {
                 app.dismiss_startup_surface();
                 UiAction::LoadSessions
             } else if matches!(
                 input.split_whitespace().next(),
-                Some("/status" | "/usage" | "/resume")
+                Some("/status" | "/usage" | "/resume" | "/agent")
             ) {
                 let command = input.split_whitespace().next().unwrap_or_default();
                 UiAction::LocalCommandError(format!(
@@ -2574,7 +2733,9 @@ fn handle_picker_key(app: &mut App, key: KeyEvent) -> UiAction {
                     UiAction::None
                 }
                 Some(PickerKind::Approval) => app.choose_selected(),
-                Some(PickerKind::Sessions) | Some(PickerKind::Models) => app.choose_selected(),
+                Some(PickerKind::Sessions)
+                | Some(PickerKind::Models)
+                | Some(PickerKind::Agents) => app.choose_selected(),
                 None => UiAction::None,
             }
         }
@@ -3071,6 +3232,43 @@ async fn process_terminal_events(
             },
             UiAction::LoadModels => {
                 app.set_models(runtime.models.clone());
+            }
+            UiAction::LoadAgents => match runtime.session.rpc().agent().list().await {
+                Ok(list) => {
+                    let active = runtime
+                        .session
+                        .rpc()
+                        .agent()
+                        .get_current()
+                        .await
+                        .ok()
+                        .map(|result| result.agent.id);
+                    app.set_agents(list.agents, active);
+                }
+                Err(error) => app.add_local_output(format!("Could not list agents: {error}")),
+            },
+            UiAction::SelectAgent(agent) => {
+                let result = if let Some(name) = agent.as_ref() {
+                    runtime
+                        .session
+                        .rpc()
+                        .agent()
+                        .select(AgentSelectRequest { name: name.clone() })
+                        .await
+                        .map(|_| ())
+                } else {
+                    runtime.session.rpc().agent().deselect().await
+                };
+                match result {
+                    Ok(()) => {
+                        app.active_agent = agent.clone();
+                        app.add_local_output(format!(
+                            "Selected agent: {}",
+                            agent.as_deref().unwrap_or("default")
+                        ));
+                    }
+                    Err(error) => app.add_local_output(format!("Could not select agent: {error}")),
+                }
             }
             UiAction::LoadTools => {
                 app.open_tool_picker();
@@ -4348,6 +4546,7 @@ fn picker_item_count(app: &App) -> usize {
         Some(PickerKind::Sessions) => app.sessions.len(),
         Some(PickerKind::Models) => app.models.len(),
         Some(PickerKind::Tools) => TOOL_COUNT,
+        Some(PickerKind::Agents) => app.agents.len() + 1,
         Some(PickerKind::Skills) => app.skill_catalog.skills().len(),
         Some(PickerKind::Approval) => app.approval_choice_count(),
         None => 0,
@@ -4370,6 +4569,7 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
             position, item_count
         ),
         PickerKind::Models => format!("Select a model ({} of {}):", position, item_count),
+        PickerKind::Agents => format!("Select an agent ({} of {}):", position, item_count),
         PickerKind::Tools if item_count > MAX_PICKER_ROWS => {
             format!("Select tools ({} of {}):", position, item_count)
         }
@@ -4482,6 +4682,29 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
                 if app.status.model.as_deref() == Some(model.id.as_str()) {
                     spans.push(Span::raw("  "));
                     spans.push(Span::styled("✓", Style::default().fg(palette::SUCCESS)));
+                }
+            }
+            PickerKind::Agents => {
+                let agent = index.checked_sub(1).and_then(|index| app.agents.get(index));
+                let name = agent
+                    .map(|agent| {
+                        if agent.display_name.is_empty() {
+                            agent.name.as_str()
+                        } else {
+                            agent.display_name.as_str()
+                        }
+                    })
+                    .unwrap_or("default");
+                spans.push(Span::styled(sanitize_plain(name), label_style));
+                if let Some(agent) = agent {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        sanitize_plain(&agent.description),
+                        Style::default().fg(palette::INACTIVE),
+                    ));
+                }
+                if agent.map(|agent| agent.id.as_str()) == app.active_agent.as_deref() {
+                    spans.push(Span::styled("  ✓", Style::default().fg(palette::SUCCESS)));
                 }
             }
             PickerKind::Tools => {
@@ -5661,6 +5884,21 @@ fn entry_payload(
             agent_id: agent_id.clone(),
             cwd: cwd.clone(),
         })),
+        ChatEntry::AgentLaunch(agents) => {
+            Some(TranscriptPayload::AgentLaunch(AgentLaunchPayload {
+                agents: agents
+                    .iter()
+                    .map(|agent| LaunchedAgentPayload {
+                        agent: agent.agent.clone(),
+                        prompt: agent.prompt.clone(),
+                        state: agent.state,
+                        error: agent.error.clone(),
+                        response: agent.response.clone(),
+                    })
+                    .collect(),
+                expanded: transcript_expanded,
+            }))
+        }
         ChatEntry::Subagent {
             name: _,
             tool_call_id,
@@ -5755,6 +5993,7 @@ fn entry_lines(
         ChatEntry::Diagnostic(_)
         | ChatEntry::Reasoning { .. }
         | ChatEntry::Subagent { .. }
+        | ChatEntry::AgentLaunch(_)
         | ChatEntry::Banner { .. }
         | ChatEntry::Approval { .. }
         | ChatEntry::Tool { .. }
@@ -6129,7 +6368,7 @@ mod tests {
     use std::time::Duration;
 
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use github_copilot_sdk::rpc::FleetStartResult;
+    use github_copilot_sdk::rpc::{AgentInfo, FleetStartResult};
     use github_copilot_sdk::types::{ContextTier, Model, SessionId, SessionMetadata};
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier, Style};
@@ -6142,12 +6381,13 @@ mod tests {
         builtin_spinner_verb, chat_lines_at_width_with_clock, clear_visible_viewport,
         consume_terminal_event, displayed_reasoning_effort, draw, draw_live_chat, format_elapsed,
         format_spinner_tokens, handle_key, model_context_label, model_cost_label_for,
-        model_picker_row_for, render_spinner_line_for_platform, run_loop_for_test,
-        run_terminal_startup, send_with_fleet_fallback, skill_selection_for_invocation,
-        spinner_frames, spinner_message_spans, spinner_platform_for, spinner_stall_intensity,
-        thinking_status, App, ChatEntry, ModelSelection, RunLoopSchedule, SendPath, SpinnerMode,
-        SpinnerPlatform, TerminalCapabilities, TerminalStartupOperationAdapter, UiAction,
-        MAX_PICKER_ROWS, SPINNER_STATUS_AFTER_MS, STARTUP_ART_ROWS,
+        model_picker_row_for, picker_item_count, render_spinner_line_for_platform,
+        run_loop_for_test, run_terminal_startup, send_with_fleet_fallback,
+        skill_selection_for_invocation, spinner_frames, spinner_message_spans,
+        spinner_platform_for, spinner_stall_intensity, thinking_status, App, ChatEntry,
+        ModelSelection, RunLoopSchedule, SendPath, SpinnerMode, SpinnerPlatform,
+        TerminalCapabilities, TerminalStartupOperationAdapter, UiAction, MAX_PICKER_ROWS,
+        SPINNER_STATUS_AFTER_MS, STARTUP_ART_ROWS,
     };
     use crate::events::{
         ContextAttributionSnapshot, ContextCategorySnapshot, EventUpdate, TodoDependencySnapshot,
@@ -6640,6 +6880,83 @@ mod tests {
         assert!(completed
             .iter()
             .any(|row| row.contains("Done (3 tool uses · 450 tokens · 1s)")));
+    }
+
+    #[test]
+    fn consecutive_task_calls_render_as_one_agent_launch_tree() {
+        fn rows_contain_exact(text: &str, row: &str) -> bool {
+            text.lines().any(|line| line.trim() == row)
+        }
+        let mut app = post_startup_app(None);
+        for (id, agent, prompt) in [
+            ("task-1", "fact-checker", "Verify the release notes\nagainst the changelog"),
+            ("task-2", "qa", "reply with exactly: pong"),
+        ] {
+            app.apply(EventUpdate::ToolStarted {
+                tool_call_id: id.to_string(),
+                tool_name: "task".to_string(),
+                arguments: Some(json!({
+                    "agent_type": agent,
+                    "description": "raw description",
+                    "name": "ping",
+                    "prompt": prompt,
+                })),
+                agent_id: None,
+            });
+        }
+        app.apply(EventUpdate::SubagentStarted {
+            name: "qa".to_string(),
+            description: "raw description".to_string(),
+            display_name: "QA".to_string(),
+            tool_call_id: "task-2".to_string(),
+            agent_id: Some("qa-agent".to_string()),
+        });
+
+        let rows = rendered_rows(&app, 100, 14);
+        let text = rows.join("\n");
+        assert!(rows_contain_exact(&text, "● 2 agents launched"), "{text}");
+        assert!(!text.contains("ctrl+o"), "{text}");
+        assert!(text.contains("├─ @fact-checker"), "{text}");
+        assert!(text.contains("│  Verify the release notes against the changelog"), "{text}");
+        assert!(text.contains("└─ @qa"), "{text}");
+        assert!(text.contains("   reply with exactly: pong"), "{text}");
+        assert!(!text.contains("Task("), "{text}");
+        assert!(!text.contains("raw description"), "{text}");
+
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "task-1".to_string(),
+            success: false,
+            message: Some("agent unavailable".to_string()),
+            agent_id: None,
+            shell_completion: None,
+        });
+        app.apply(EventUpdate::ToolCompleted {
+            tool_call_id: "task-2".to_string(),
+            success: true,
+            message: Some("pong\nline two\nline three\nline four\nline five".to_string()),
+            agent_id: None,
+            shell_completion: None,
+        });
+        app.apply(EventUpdate::AssistantMessage {
+            message_id: "subagent-message".to_string(),
+            content: "pong\nline two\nline three\nline four\nline five".to_string(),
+            agent_id: Some("qa-agent".to_string()),
+        });
+        let text = rendered_rows(&app, 100, 20).join("\n");
+        assert_eq!(text.matches("line two").count(), 1, "{text}");
+        assert!(text.contains("│  Error: agent unavailable"), "{text}");
+        assert!(rows_contain_exact(&text, "⎿  pong"), "{text}");
+        assert!(rows_contain_exact(&text, "line three"), "{text}");
+        assert!(!text.contains("line four"), "{text}");
+        assert!(rows_contain_exact(&text, "(+2 lines)"), "{text}");
+
+        app.transcript_expanded = true;
+        app.queue_all_screen_changes();
+        let text = rendered_rows(&app, 100, 24).join("\n");
+        assert!(text.contains("line five"), "{text}");
+        assert!(!text.contains("(+2 lines)"), "{text}");
+        assert!(rows_contain_exact(&text, "│  Verify the release notes"), "{text}");
+        assert!(text.contains("│  against the changelog"), "{text}");
     }
 
     #[test]
@@ -9019,7 +9336,9 @@ mod tests {
         app.set_toolset(Toolset::shell_only());
         let lines = super::status_detail_lines(&app);
         let expected = format!("Tools: 1 enabled, {} disabled", TOOL_COUNT - 1);
-        assert!(lines.iter().any(|line| line.to_string().contains(&expected)));
+        assert!(lines
+            .iter()
+            .any(|line| line.to_string().contains(&expected)));
     }
 
     #[test]
@@ -10284,6 +10603,51 @@ mod tests {
             UiAction::None
         );
         assert_eq!(handle_key(&mut app, ctrl_key('x')), UiAction::Quit);
+    }
+
+    #[test]
+    fn agent_command_opens_picker_and_selects_invocable_agents() {
+        let mut app = App::default();
+        for character in "/agent".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character), KeyEventKind::Press));
+        }
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+            UiAction::LoadAgents
+        );
+        app.set_agents(
+            vec![
+                AgentInfo {
+                    id: "helper".into(),
+                    name: "helper".into(),
+                    display_name: "Helper".into(),
+                    user_invocable: Some(true),
+                    ..Default::default()
+                },
+                AgentInfo {
+                    id: "hidden".into(),
+                    name: "hidden".into(),
+                    user_invocable: Some(false),
+                    ..Default::default()
+                },
+            ],
+            None,
+        );
+        assert_eq!(picker_item_count(&app), 2);
+        assert_eq!(app.choose_selected(), UiAction::SelectAgent(None));
+        app.set_agents(
+            vec![AgentInfo {
+                id: "helper".into(),
+                name: "helper".into(),
+                ..Default::default()
+            }],
+            None,
+        );
+        app.move_selection(1);
+        assert_eq!(
+            app.choose_selected(),
+            UiAction::SelectAgent(Some("helper".into()))
+        );
     }
 
     fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {

@@ -257,3 +257,19 @@ cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 cargo build --locked
 ```
+
+## Agents
+
+Type `/agent` to select an agent for the current conversation. The Copilot
+runtime discovers user agents in `~/.copilot/agents/` (on Windows,
+`%USERPROFILE%\.copilot\agents\`) and project agents in `.github/agents/`
+under the project root. Picopilot also loads Markdown agent definitions from
+`~/.agents/agents/` (or `%USERPROFILE%\.agents\agents\` on Windows). Restart
+Picopilot after adding an agent so the session picks it up.
+
+Running custom agents as subagents (for example, an orchestrator agent that
+delegates to other agents with the `task` tool) requires the full Copilot CLI.
+Picopilot uses the `copilot` found on `PATH`, or the one named by
+`COPILOT_CLI_PATH`. Without it, Picopilot falls back to the SDK's bundled
+runtime, which can list and select agents but cannot delegate to custom agents,
+and shows a warning at startup.

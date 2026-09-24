@@ -1862,6 +1862,7 @@ impl AppRuntime {
             apply_toolset(config, toolset),
             self.provider_registry.as_ref(),
         );
+        crate::agents::configure_resume(&mut config);
         skill_selection.apply_resume_config(&self.skill_catalog, &mut config);
         config
     }
@@ -2130,8 +2131,17 @@ async fn connect_inner(
         .await
         .map_err(StartupError::Client)?;
     let hosted_models = client.list_models().await.map_err(StartupError::Client)?;
-    let (provider_registry, startup_banners) =
+    let (provider_registry, mut startup_banners) =
         discover_provider_registry(&provider_config.providers).await;
+    if crate::config::uses_bundled_runtime() {
+        startup_banners.push(EventUpdate::Banner {
+            severity: BannerSeverity::Warning,
+            message: "Copilot CLI not found on PATH; using the bundled runtime, which cannot run \
+                      custom agents as subagents. Install the Copilot CLI or set COPILOT_CLI_PATH."
+                .to_string(),
+            url: None,
+        });
+    }
     let active_toolset = requested_toolset
         .unwrap_or_else(|| default_toolset_for_model(None, provider_registry.as_ref()));
 

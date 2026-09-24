@@ -1,4 +1,5 @@
 pub mod ansi;
+mod agents;
 mod input_editor;
 pub mod markdown;
 
