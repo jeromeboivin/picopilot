@@ -961,7 +961,16 @@ impl App {
     }
 
     pub fn set_model(&mut self, model: Option<String>) {
+        if self.status.model != model {
+            self.clear_context_usage();
+        }
         self.status.model = model;
+    }
+
+    fn clear_context_usage(&mut self) {
+        self.status.usage = None;
+        self.status.context_attribution = None;
+        self.reset_context_warning_state();
     }
 
     pub fn set_session_id(&mut self, session_id: impl Into<String>) {
@@ -1897,7 +1906,12 @@ impl App {
                     url: url.map(|url| sanitize_plain(&url)),
                 });
             }
-            EventUpdate::ModelChanged { model } => self.status.model = Some(model),
+            EventUpdate::ModelChanged { model } => {
+                if self.status.model.as_deref() != Some(&model) {
+                    self.clear_context_usage();
+                }
+                self.status.model = Some(model);
+            }
             EventUpdate::TodosChanged => {
                 if self.fleet_active && self.show_todos {
                     self.todo_refresh_requested = true;
@@ -3380,6 +3394,9 @@ async fn process_terminal_events(
                     }
                 } else {
                     *events = runtime.session.subscribe();
+                    // A context-tier change can keep the same model ID while changing
+                    // the window. Never carry the old session's usage into the new one.
+                    app.clear_context_usage();
                     app.set_session_id(runtime.session.id().to_string());
                     let displayed_reasoning = displayed_reasoning_effort(
                         &runtime.models,
@@ -3759,6 +3776,81 @@ fn context_warning_text(app: &App) -> Option<String> {
     Some(format!("{percent}% until auto-compact"))
 }
 
+fn context_footer_text(app: &App) -> String {
+    let model_id = app.status.model.as_deref();
+    let model = model_id
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "auto".to_string());
+    let effort = app
+        .status
+        .reasoning_effort
+        .as_deref()
+        .map(sanitize_plain)
+        .unwrap_or_else(|| "model default".to_string());
+    let catalog_limit = model_id
+        .and_then(|id| app.models.iter().find(|model| model.id == id))
+        .and_then(|model| model.capabilities.limits.as_ref())
+        .and_then(|limits| limits.max_context_window_tokens)
+        .filter(|limit| *limit > 0);
+    let live_limit = app
+        .status
+        .usage
+        .as_ref()
+        .map(|usage| usage.token_limit)
+        .filter(|limit| *limit > 0);
+    let current = app
+        .status
+        .usage
+        .as_ref()
+        .map(|usage| usage.current_tokens)
+        .or_else(|| {
+            app.status.context_attribution.as_ref().and_then(|context| {
+                (model_id == Some(context.model_id.as_str()))
+                    .then_some(context.total_tokens)
+            })
+        });
+    // The SDK's usage event reports the active session's actual model window,
+    // including any context-tier selection. The catalog is only a pre-answer fallback.
+    let limit = live_limit.or(catalog_limit);
+    let current = current
+        .filter(|tokens| *tokens >= 0)
+        .map(|tokens| format!("{:.1}K", tokens as f64 / 1_000.0))
+        .unwrap_or_else(|| "?.?K".to_string());
+    let limit = limit
+        .map(|tokens| {
+            let whole = tokens / 1_000;
+            let fraction = tokens % 1_000;
+            if fraction == 0 {
+                format!("{whole}K")
+            } else {
+                format!("{whole}.{}K", format!("{fraction:03}").trim_end_matches('0'))
+            }
+        })
+        .unwrap_or_else(|| "?K".to_string());
+    format!("Context: {current}/ {limit} | {model} - {effort}")
+}
+
+fn footer_warning_stacked(app: &App, width: u16) -> bool {
+    let Some(warning) = context_warning_text(app) else {
+        return false;
+    };
+    width < 80
+        || display_width(&warning)
+            + display_width(&context_footer_text(app))
+            + 3
+            > width as usize
+}
+
+fn footer_left_text(app: &App) -> Option<&'static str> {
+    if app.status.busy {
+        Some("  esc to interrupt")
+    } else if app.input().is_empty() {
+        Some("  / for commands")
+    } else {
+        None
+    }
+}
+
 fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     let prompt_budget = area.height.saturating_sub(1);
     if prompt_budget == 0 {
@@ -3791,15 +3883,16 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
             0
         } else if completion_rows.is_some() {
             completion_rows.unwrap_or_default()
-        } else {
-            let left_footer_rows = u16::from(app.status.busy || app.input().is_empty());
+        } else if app.show_startup_surface {
+            // Keep the startup artwork/metadata budget unchanged. The live
+            // context footer starts when the startup surface is dismissed.
+            let left_rows = u16::from(app.status.busy || app.input().is_empty());
             let warning_rows =
-                if context_warning_text(app).is_some() && area.width < 80 && left_footer_rows > 0 {
-                    1
-                } else {
-                    0
-                };
-            (left_footer_rows + warning_rows).max(u16::from(context_warning_text(app).is_some()))
+                u16::from(context_warning_text(app).is_some() && area.width < 80 && left_rows > 0);
+            (left_rows + warning_rows).max(u16::from(context_warning_text(app).is_some()))
+        } else {
+            let stacked_left = area.width < 80 && footer_left_text(app).is_some();
+            1 + u16::from(stacked_left) + u16::from(footer_warning_stacked(app, area.width))
         };
     let wrapped_rows = wrap_input(
         app.input(),
@@ -4001,8 +4094,19 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
         return Vec::new();
     }
 
-    if width >= STARTUP_ART_WIDTH && available_rows >= STARTUP_ART_ROWS {
-        return startup_art_lines(app);
+    if width >= STARTUP_ART_WIDTH {
+        if available_rows >= STARTUP_ART_ROWS {
+            return startup_art_lines(app);
+        }
+        if available_rows >= STARTUP_COMPACT_ART_ROWS {
+            // On shorter terminals keep the logo instead of replacing the
+            // entire artwork with the plain metadata fallback.
+            return startup_art_lines(app)
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, line)| (!matches!(index, 2 | 7)).then_some(line))
+                .collect();
+        }
     }
 
     let model = app.status.model.as_deref().map(|id| {
@@ -4140,6 +4244,7 @@ fn startup_surface_lines(app: &App, width: usize, available_rows: usize) -> Vec<
 
 const STARTUP_ART_WIDTH: usize = 69;
 const STARTUP_ART_ROWS: usize = 15;
+const STARTUP_COMPACT_ART_ROWS: usize = STARTUP_ART_ROWS - 2;
 const STARTUP_ART_INTERIOR_WIDTH: usize = STARTUP_ART_WIDTH - 2;
 const STARTUP_ART: &str = r#"┌───────────────────────────────────────────────────────────────────┐
 │ PICOPILOT.EXE                                                     │
@@ -4793,22 +4898,97 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
-    let left = if app.status.busy {
-        Some("  esc to interrupt".to_string())
-    } else if app.input().is_empty() {
-        Some("  / for commands".to_string())
-    } else {
-        None
-    };
-    let has_left = left.is_some();
+    if app.show_startup_surface {
+        return startup_prompt_footer(app, area);
+    }
+    let left = footer_left_text(app);
     let dim = Style::default().add_modifier(Modifier::DIM);
     let warning = context_warning_text(app);
-
     if area.width < 80 {
+        let mut lines = Vec::new();
+        // Keep the context summary on the last available row. When vertical
+        // space is tight, discard the hint before the compact warning.
+        if area.height >= 2 + u16::from(warning.is_some()) {
+            if let Some(left) = left {
+                lines.push(Line::from(Span::styled(
+                    truncate_tail(left, area.width as usize),
+                    dim,
+                )));
+            }
+        }
+        if area.height >= 2 {
+            if let Some(warning) = warning {
+                lines.push(Line::from(Span::styled(
+                    truncate_tail(&format!("  {warning}"), area.width as usize),
+                    dim,
+                )));
+            }
+        }
+        let right_padding = 2usize.min(area.width as usize);
+        let right = truncate_tail(
+            &context_footer_text(app),
+            (area.width as usize).saturating_sub(right_padding),
+        );
+        let padding = (area.width as usize)
+            .saturating_sub(display_width(&right))
+            .saturating_sub(right_padding);
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(padding)),
+            Span::styled(right, dim),
+            Span::raw(" ".repeat(right_padding)),
+        ]));
+        return Paragraph::new(lines);
+    }
+    let right_padding = 2usize.min(area.width as usize);
+    let right = truncate_tail(
+        &context_footer_text(app),
+        (area.width as usize).saturating_sub(right_padding),
+    );
+    let stacked = footer_warning_stacked(app, area.width);
+    let inline_warning = warning.as_deref().filter(|_| !stacked);
+    let warning_width = inline_warning.map(|text| display_width(text) + 1).unwrap_or_default();
+    let left_budget = (area.width as usize)
+        .saturating_sub(warning_width)
+        .saturating_sub(display_width(&right))
+        .saturating_sub(right_padding);
+    let left = left
+        .map(|left| truncate_tail(left, left_budget.saturating_sub(1)))
+        .unwrap_or_default();
+    let left_width = display_width(&left);
+    let padding = (area.width as usize)
+        .saturating_sub(left_width)
+        .saturating_sub(warning_width)
+        .saturating_sub(display_width(&right))
+        .saturating_sub(right_padding);
+    let mut spans = vec![Span::styled(left, dim), Span::raw(" ".repeat(padding))];
+    if let Some(warning) = inline_warning {
+        spans.push(Span::styled(warning.to_string(), dim));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(right, dim));
+    spans.push(Span::raw(" ".repeat(right_padding)));
+    let mut lines = vec![Line::from(spans)];
+    if stacked && area.height >= 2 {
+        if let Some(warning) = warning {
+            lines.push(Line::from(Span::styled(
+                truncate_tail(&format!("  {warning}"), area.width as usize),
+                dim,
+            )));
+        }
+    }
+    Paragraph::new(lines)
+}
+
+fn startup_prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
+    let left = footer_left_text(app);
+    let warning = context_warning_text(app);
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    if area.width < 80 {
+        let has_left = left.is_some();
         let mut lines = Vec::new();
         if let Some(left) = left {
             lines.push(Line::from(Span::styled(
-                truncate_tail(&left, area.width as usize),
+                truncate_tail(left, area.width as usize),
                 dim,
             )));
         }
@@ -4822,26 +5002,22 @@ fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
     }
 
     let right_padding = 2usize.min(area.width as usize);
-    let warning = warning.map(|warning| {
-        truncate_tail(
-            &warning,
-            (area.width as usize).saturating_sub(right_padding),
-        )
+    let warning = warning.map(|text| {
+        truncate_tail(&text, (area.width as usize).saturating_sub(right_padding))
     });
     let warning_width = warning.as_deref().map(display_width).unwrap_or_default();
     let left = left
-        .map(|left| {
+        .map(|text| {
             truncate_tail(
-                &left,
+                text,
                 (area.width as usize)
                     .saturating_sub(warning_width)
                     .saturating_sub(right_padding),
             )
         })
         .unwrap_or_default();
-    let left_width = display_width(&left);
     let padding = (area.width as usize)
-        .saturating_sub(left_width)
+        .saturating_sub(display_width(&left))
         .saturating_sub(warning_width)
         .saturating_sub(right_padding);
     let mut spans = vec![Span::styled(left, dim), Span::raw(" ".repeat(padding))];
@@ -8888,14 +9064,16 @@ mod tests {
     }
 
     #[test]
-    fn frame_has_no_persistent_status_row_or_status_metadata() {
+    fn frame_has_context_footer_but_no_extra_status_metadata() {
         let mut app = post_startup_app(Some("gpt-5".to_string()));
         app.working_directory = PathBuf::from("C:\\dev\\picopilot");
         app.set_reasoning_effort(Some("high".to_string()));
 
         let rows = rendered_rows(&app, 100, 18);
 
-        assert!(!rows.iter().any(|row| row.contains("gpt-5")));
+        assert!(rows.iter().any(|row| row.contains(
+            "Context: ?.?K/ ?K | gpt-5 - high"
+        )));
         assert!(!rows.iter().any(|row| row.contains("high reasoning")));
         assert!(!rows.iter().any(|row| row.contains("autopilot")));
         assert!(!rows.iter().any(|row| row.contains("tools 7/7")));
@@ -10118,6 +10296,147 @@ mod tests {
     }
 
     #[test]
+    fn footer_shows_live_sdk_tokens_and_selected_model_context_limit() {
+        let mut app = post_startup_app(Some("gpt-5".to_string()));
+        app.preload_models(vec![
+            serde_json::from_value(json!({
+                "id": "gpt-5",
+                "name": "GPT-5",
+                "capabilities": { "limits": { "max_context_window_tokens": 200000 } }
+            }))
+            .unwrap(),
+            serde_json::from_value(json!({
+                "id": "small",
+                "name": "Small",
+                "capabilities": { "limits": { "max_context_window_tokens": 64000 } }
+            }))
+            .unwrap(),
+        ]);
+        app.set_reasoning_effort(Some("high".to_string()));
+        let rows = rendered_rows(&app, 100, 14);
+        assert!(rows.iter().any(|row| row.ends_with(
+            "Context: ?.?K/ 200K | gpt-5 - high  "
+        )));
+
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 12_345,
+            token_limit: 180_000,
+            messages: 1,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        let rows = rendered_rows(&app, 100, 14);
+        assert!(rows.iter().any(|row| row.ends_with(
+            "Context: 12.3K/ 180K | gpt-5 - high  "
+        )));
+
+        app.apply(EventUpdate::ModelChanged {
+            model: "small".to_string(),
+        });
+        app.set_reasoning_effort(None);
+        let rows = rendered_rows(&app, 100, 14);
+        assert!(rows.iter().any(|row| row.ends_with(
+            "Context: ?.?K/ 64K | small - model default  "
+        )));
+        assert!(!rows.iter().any(|row| row.contains("12.3K")));
+    }
+
+    #[test]
+    fn footer_uses_live_limit_for_models_without_catalog_limits_and_stays_visible_while_typing() {
+        let mut app = post_startup_app(Some("local/model".to_string()));
+        app.preload_models(vec![Model {
+            id: "local/model".to_string(),
+            ..Model::default()
+        }]);
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 1_550,
+            token_limit: 32_768,
+            messages: 1,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        app.push_input('h');
+        let rows = rendered_rows(&app, 100, 14);
+        assert!(rows.iter().any(|row| row.ends_with(
+            "Context: 1.6K/ 32.768K | local/model - model default  "
+        )));
+    }
+
+    #[test]
+    fn switching_context_tier_clears_usage_even_when_model_id_is_unchanged() {
+        let mut app = post_startup_app(Some("gpt-5".to_string()));
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: 12_345,
+            token_limit: 100_000,
+            messages: 1,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        // The successful SwitchModel path calls this even for the same model ID.
+        app.clear_context_usage();
+        app.apply(EventUpdate::ModelChanged {
+            model: "gpt-5".to_string(),
+        });
+        assert_eq!(super::context_footer_text(&app),
+            "Context: ?.?K/ ?K | gpt-5 - model default");
+    }
+
+    #[test]
+    fn narrow_footer_stacks_hint_and_context_without_collision() {
+        let app = post_startup_app(Some("gpt-5".to_string()));
+        let rows = rendered_rows(&app, 40, 14);
+        let hint = rows.iter().position(|row| row.contains("/ for commands")).unwrap();
+        assert!(rows[hint + 1].contains("Context:"));
+        assert!(!rows[hint].contains("Context:"));
+    }
+
+    #[test]
+    fn startup_keeps_artwork_and_original_prompt_budget_until_dismissed() {
+        let mut app = App::new(Some("gpt-5".to_string()));
+        let startup = rendered_rows(&app, 70, 22);
+        assert!(startup.iter().any(|row| row.contains("PICOPILOT.EXE")));
+        assert!(startup.iter().any(|row| row.contains("/ for commands")));
+        assert!(!startup.iter().any(|row| row.contains("Context: ?.?K/")));
+
+        app.dismiss_startup_surface();
+        let conversation = rendered_rows(&app, 70, 22);
+        assert!(conversation.iter().any(|row| row.contains("Context: ?.?K/")));
+    }
+
+    #[test]
+    fn live_startup_draw_preserves_ascii_logo_in_inline_viewport() {
+        let app = App::new(Some("gpt-5".to_string()));
+        let mut screen = ScreenModel::default();
+        let mut terminal =
+            Terminal::with_options(TestBackend::new(80, 24), terminal_options()).unwrap();
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .unwrap();
+        let rows = terminal_rows(&terminal);
+        assert!(rows.iter().any(|row| row.contains("PICOPILOT.EXE")));
+        assert!(rows.iter().any(|row| row.contains("██████╗")));
+    }
+
+    #[test]
+    fn live_startup_draw_keeps_logo_on_76_by_20_terminal() {
+        let app = App::new(Some("gpt-5".to_string()));
+        let mut screen = ScreenModel::default();
+        let mut terminal =
+            Terminal::with_options(TestBackend::new(76, 20), terminal_options()).unwrap();
+        terminal
+            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+            .unwrap();
+        let rows = terminal_rows(&terminal);
+        assert!(rows.iter().any(|row| row.contains("PICOPILOT.EXE")));
+        assert!(rows.iter().any(|row| row.contains("██████╗")));
+        assert!(rows.iter().any(|row| row.contains("/ for commands")));
+        assert!(!rows.iter().any(|row| row.contains("Context:")));
+    }
+
+    #[test]
     fn compaction_suppresses_warning_until_the_next_user_turn() {
         let mut app = App::new(None);
         app.apply(EventUpdate::Usage(UsageSnapshot {
@@ -10161,7 +10480,7 @@ mod tests {
     }
 
     fn app_with_context_warning() -> App {
-        let mut app = App::new(None);
+        let mut app = post_startup_app(None);
         app.apply(EventUpdate::Usage(UsageSnapshot {
             current_tokens: 90_000,
             token_limit: 100_000,
@@ -10180,8 +10499,8 @@ mod tests {
             .iter()
             .find(|row| row.contains("10% until auto-compact"))
             .expect("wide warning should render");
-        assert!(wide_warning.ends_with("10% until auto-compact  "));
-        assert!(wide_warning.find("10%").unwrap_or_default() > 60);
+        assert!(wide_warning.contains("10% until auto-compact"));
+        assert!(wide_warning.ends_with("Context: 90.0K/ 100K | auto - model default  "));
 
         let narrow_rows = rendered_rows(&app_with_context_warning(), 60, 14);
         let narrow_warning_index = narrow_rows
@@ -10191,6 +10510,7 @@ mod tests {
         assert!(narrow_warning_index > 0);
         assert!(narrow_rows[narrow_warning_index - 1].contains("/ for commands"));
         assert!(narrow_rows[narrow_warning_index].starts_with("  "));
+        assert!(narrow_rows[narrow_warning_index + 1].contains("Context: 90.0K/ 100K"));
     }
 
     #[test]

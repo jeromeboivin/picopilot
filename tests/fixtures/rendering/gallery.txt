@@ -6220,20 +6220,21 @@ row=6 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="────────────────────"
+row=8 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=10 text="❯ Unicode input: caf"
+row=9 text="❯ Unicode input: caf"
 cell_span=0..20 text="❯ Unicode input: caf" fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="  e\u001b[31m e\u001b[0m 👩‍💻    "
+row=10 text="  e\u001b[31m e\u001b[0m 👩‍💻    "
 cell_span=0..17 text="  e\u001b[31m e\u001b[0m 👩‍💻 " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=17..18 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                    "
+row=11 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="────────────────────"
+row=12 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K…  "
+cell_span=0..18 text="Context: ?.?K/ ?K…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -6251,20 +6252,21 @@ row=6 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="────────────────────────────────────────"
+row=8 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=10 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻      "
+row=9 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻      "
 cell_span=0..35 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻 " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=35..36 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=36..40 text="    " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=11 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="────────────────────────────────────────"
+row=12 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K | gpt-5 - model def…  "
+cell_span=0..38 text="Context: ?.?K/ ?K | gpt-5 - model def…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -6282,20 +6284,22 @@ row=6 text="                                                                    
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="                                                                                "
-cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="────────────────────────────────────────────────────────────────────────────────"
+row=8 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=10 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻                                              "
+row=9 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻                                              "
 cell_span=0..35 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻 " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=35..36 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=36..80 text="                                            " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=11 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                                                                                "
-cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="────────────────────────────────────────────────────────────────────────────────"
+row=12 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=13 text="                                     Context: ?.?K/ ?K | gpt-5 - model default  "
+cell_span=0..37 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=37..78 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=14
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -6313,20 +6317,22 @@ row=6 text="                                                                    
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=7 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="                                                                                                                        "
-cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+row=8 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=10 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻                                                                                      "
+row=9 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻                                                                                      "
 cell_span=0..35 text="❯ Unicode input: cafe\u001b[31m e\u001b[0m 👩‍💻 " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=35..36 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=36..120 text="                                                                                    " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=11 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="                                                                                                                        "
-cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+row=12 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
+row=13 text="                                                                             Context: ?.?K/ ?K | gpt-5 - model default  "
+cell_span=0..77 text="                                                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=77..118 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=completion height=14]
 width=20 rows=14
@@ -7474,23 +7480,24 @@ row=5 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=6 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="────────────────────"
+row=7 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="❯                   "
+row=8 text="❯                   "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="────────────────────"
+row=11 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  / for commands    "
+row=12 text="  / for commands    "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K…  "
+cell_span=0..18 text="Context: ?.?K/ ?K…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -7509,23 +7516,24 @@ row=5 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=6 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="────────────────────────────────────────"
+row=7 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="❯                                       "
+row=8 text="❯                                       "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="────────────────────────────────────────"
+row=11 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  / for commands                        "
+row=12 text="  / for commands                        "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K | gpt-5 - model def…  "
+cell_span=0..38 text="Context: ?.?K/ ?K | gpt-5 - model def…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -7557,9 +7565,11 @@ row=11 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  / for commands                                                                "
+row=13 text="  / for commands                     Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..37 text="                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=37..78 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=14
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -7591,104 +7601,101 @@ row=11 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  / for commands                                                                                                        "
+row=13 text="  / for commands                                                             Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..77 text="                                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=77..118 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=status height=16]
 width=20 rows=16
-row=0 text="❯ /status           "
-cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
-cell_span=2..9 text="/status" fg=#ffffff bg=#373737 modifiers=NONE/NONE
-cell_span=9..20 text="           " fg=reset bg=#373737 modifiers=NONE/NONE
-row=1 text="                    "
+row=0 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=2 text="  ⎿  Version: 0.1.0 "
+row=1 text="  ⎿  Version: 0.1.0 "
 cell_span=0..5 text="  ⎿  " fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=5..13 text="Version:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=13..14 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=14..19 text="0.1.0" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=19..20 text=" " fg=reset bg=reset modifiers=NONE/NONE
-row=3 text="     Session ID: ses"
+row=2 text="     Session ID: ses"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..16 text="Session ID:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=16..17 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=17..20 text="ses" fg=#ffffff bg=reset modifiers=NONE/NONE
-row=4 text="     cwd: WORKSPACE "
+row=3 text="     cwd: WORKSPACE "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..9 text="cwd:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=9..10 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=10..19 text="WORKSPACE" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=19..20 text=" " fg=reset bg=reset modifiers=NONE/NONE
-row=5 text="                    "
+row=4 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=6 text="     Model: gpt-5   "
+row=5 text="     Model: gpt-5   "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..11 text="Model:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=11..12 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=12..17 text="gpt-5" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="     Tools: 17 enabl"
+row=6 text="     Tools: 17 enabl"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..11 text="Tools:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=11..12 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=12..20 text="17 enabl" fg=#4eba65 bg=reset modifiers=NONE/NONE
-row=8 text="     Skills: 0 enabl"
+row=7 text="     Skills: 0 enabl"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..12 text="Skills:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=12..13 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=13..20 text="0 enabl" fg=#4eba65 bg=reset modifiers=NONE/NONE
-row=9 text="                    "
+row=8 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────"
+row=9 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                   "
+row=10 text="❯                   "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────"
+row=13 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands    "
+row=14 text="  / for commands    "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="Context: ?.?K/ ?K…  "
+cell_span=0..18 text="Context: ?.?K/ ?K…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
-row=0 text="❯ /status                               "
-cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
-cell_span=2..9 text="/status" fg=#ffffff bg=#373737 modifiers=NONE/NONE
-cell_span=9..40 text="                               " fg=reset bg=#373737 modifiers=NONE/NONE
-row=1 text="                                        "
+row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=2 text="  ⎿  Version: 0.1.0                     "
+row=1 text="  ⎿  Version: 0.1.0                     "
 cell_span=0..5 text="  ⎿  " fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=5..13 text="Version:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=13..14 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=14..19 text="0.1.0" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=19..40 text="                     " fg=reset bg=reset modifiers=NONE/NONE
-row=3 text="     Session ID: session-gallery        "
+row=2 text="     Session ID: session-gallery        "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..16 text="Session ID:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=16..17 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=17..32 text="session-gallery" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=32..40 text="        " fg=reset bg=reset modifiers=NONE/NONE
-row=4 text="     cwd: WORKSPACE                     "
+row=3 text="     cwd: WORKSPACE                     "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..9 text="cwd:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=9..10 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=10..19 text="WORKSPACE" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=19..40 text="                     " fg=reset bg=reset modifiers=NONE/NONE
-row=5 text="                                        "
+row=4 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=6 text="     Model: gpt-5                       "
+row=5 text="     Model: gpt-5                       "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..11 text="Model:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=11..12 text=" " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=12..17 text="gpt-5" fg=#ffffff bg=reset modifiers=NONE/NONE
 cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="     Tools: 17 enabled, 0 disabled · /to"
+row=6 text="     Tools: 17 enabled, 0 disabled · /to"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..11 text="Tools:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=11..12 text=" " fg=reset bg=reset modifiers=NONE/NONE
@@ -7696,7 +7703,7 @@ cell_span=12..22 text="17 enabled" fg=#4eba65 bg=reset modifiers=NONE/NONE
 cell_span=22..24 text=", " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=24..34 text="0 disabled" fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=34..40 text=" · /to" fg=#999999 bg=reset modifiers=DIM/NONE
-row=8 text="     Skills: 0 enabled, 0 disabled · /sk"
+row=7 text="     Skills: 0 enabled, 0 disabled · /sk"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..12 text="Skills:" fg=#ffffff bg=reset modifiers=BOLD/NONE
 cell_span=12..13 text=" " fg=reset bg=reset modifiers=NONE/NONE
@@ -7704,23 +7711,27 @@ cell_span=13..22 text="0 enabled" fg=#4eba65 bg=reset modifiers=NONE/NONE
 cell_span=22..24 text=", " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=24..34 text="0 disabled" fg=#999999 bg=reset modifiers=NONE/NONE
 cell_span=34..40 text=" · /sk" fg=#999999 bg=reset modifiers=DIM/NONE
-row=9 text="                                        "
+row=8 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────────────────────────"
+row=9 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                                       "
+row=10 text="❯                                       "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────────────────────────"
+row=13 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                        "
+row=14 text="  / for commands                        "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="      Context: ?.?K/ ?K | gpt-5 - high  "
+cell_span=0..6 text="      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=6..38 text="Context: ?.?K/ ?K | gpt-5 - high" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="❯ /status                                                                       "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
@@ -7786,9 +7797,11 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                "
+row=15 text="  / for commands                              Context: ?.?K/ ?K | gpt-5 - high  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..46 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=46..78 text="Context: ?.?K/ ?K | gpt-5 - high" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="❯ /status                                                                                                               "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
@@ -7854,108 +7867,111 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                                                        "
+row=15 text="  / for commands                                                                      Context: ?.?K/ ?K | gpt-5 - high  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..86 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=86..118 text="Context: ?.?K/ ?K | gpt-5 - high" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=usage height=16]
 width=20 rows=16
-row=0 text="  ⎿  Session cost: 1"
-cell_span=0..20 text="  ⎿  Session cost: 1" fg=#999999 bg=reset modifiers=DIM/NONE
-row=1 text="     Premium request"
+row=0 text="     Premium request"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="Premium request" fg=#999999 bg=reset modifiers=DIM/NONE
-row=2 text="     Requests: 7    "
+row=1 text="     Requests: 7    "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..16 text="Requests: 7" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
-row=3 text="     API time: 456 m"
+row=2 text="     API time: 456 m"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="API time: 456 m" fg=#999999 bg=reset modifiers=DIM/NONE
-row=4 text="     Context window:"
+row=3 text="     Context window:"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="Context window:" fg=#999999 bg=reset modifiers=DIM/NONE
-row=5 text="     Attribution: 12"
+row=4 text="     Attribution: 12"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="Attribution: 12" fg=#999999 bg=reset modifiers=DIM/NONE
-row=6 text="       conversation:"
+row=5 text="       conversation:"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="  conversation:" fg=#999999 bg=reset modifiers=DIM/NONE
-row=7 text="       tools: 4,345 "
+row=6 text="       tools: 4,345 "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..20 text="  tools: 4,345 " fg=#999999 bg=reset modifiers=DIM/NONE
-row=8 text="     Compactions: 1 "
+row=7 text="     Compactions: 1 "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..19 text="Compactions: 1" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=19..20 text=" " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="                    "
+row=8 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────"
+row=9 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                   "
+row=10 text="❯                   "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────"
+row=13 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands    "
+row=14 text="  / for commands    "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="Context: 12.3K/ 1…  "
+cell_span=0..18 text="Context: 12.3K/ 1…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
-row=0 text="  ⎿  Session cost: 1.234 AIU            "
-cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
-cell_span=28..40 text="            " fg=reset bg=reset modifiers=NONE/NONE
-row=1 text="     Premium request cost: 2.50         "
+row=0 text="     Premium request cost: 2.50         "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..31 text="Premium request cost: 2.50" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=31..40 text="         " fg=reset bg=reset modifiers=NONE/NONE
-row=2 text="     Requests: 7                        "
+row=1 text="     Requests: 7                        "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..16 text="Requests: 7" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
-row=3 text="     API time: 456 ms                   "
+row=2 text="     API time: 456 ms                   "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..21 text="API time: 456 ms" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=21..40 text="                   " fg=reset bg=reset modifiers=NONE/NONE
-row=4 text="     Context window: 12,345 / 100,000 to"
+row=3 text="     Context window: 12,345 / 100,000 to"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..40 text="Context window: 12,345 / 100,000 to" fg=#999999 bg=reset modifiers=DIM/NONE
-row=5 text="     Attribution: 12,345 / 100,000 token"
+row=4 text="     Attribution: 12,345 / 100,000 token"
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..40 text="Attribution: 12,345 / 100,000 token" fg=#999999 bg=reset modifiers=DIM/NONE
-row=6 text="       conversation: 8,000 (64.8%)      "
+row=5 text="       conversation: 8,000 (64.8%)      "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..34 text="  conversation: 8,000 (64.8%)" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=34..40 text="      " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="       tools: 4,345 (35.2%)             "
+row=6 text="       tools: 4,345 (35.2%)             "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..27 text="  tools: 4,345 (35.2%)" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=27..40 text="             " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="     Compactions: 1                     "
+row=7 text="     Compactions: 1                     "
 cell_span=0..5 text="     " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=5..19 text="Compactions: 1" fg=#999999 bg=reset modifiers=DIM/NONE
 cell_span=19..40 text="                     " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="                                        "
+row=8 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────────────────────────"
+row=9 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                                       "
+row=10 text="❯                                       "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────────────────────────"
+row=13 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                        "
+row=14 text="  / for commands                        "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="Context: 12.3K/ 100K | gpt-5 - model …  "
+cell_span=0..38 text="Context: 12.3K/ 100K | gpt-5 - model …" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="  ⎿  Session cost: 1.234 AIU                                                    "
 cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
@@ -8006,9 +8022,11 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                "
+row=15 text="  / for commands                  Context: 12.3K/ 100K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..34 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=34..78 text="Context: 12.3K/ 100K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="  ⎿  Session cost: 1.234 AIU                                                                                            "
 cell_span=0..28 text="  ⎿  Session cost: 1.234 AIU" fg=#999999 bg=reset modifiers=DIM/NONE
@@ -8059,9 +8077,11 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                                                        "
+row=15 text="  / for commands                                                          Context: 12.3K/ 100K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..74 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=74..118 text="Context: 12.3K/ 100K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=nested-concurrent-tasks height=16]
 width=20 rows=16
@@ -8087,23 +8107,24 @@ row=7 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────"
+row=9 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                   "
+row=10 text="❯                   "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────"
+row=13 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands    "
+row=14 text="  / for commands    "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..20 text="    " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="Context: ?.?K/ ?K…  "
+cell_span=0..18 text="Context: ?.?K/ ?K…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=16
 row=0 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -8127,23 +8148,24 @@ row=7 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=8 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=9 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=10 text="────────────────────────────────────────"
+row=9 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=11 text="❯                                       "
+row=10 text="❯                                       "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=NONE/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=13 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=14 text="────────────────────────────────────────"
+row=13 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                        "
+row=14 text="  / for commands                        "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=16..40 text="                        " fg=reset bg=reset modifiers=NONE/NONE
+row=15 text="Context: ?.?K/ ?K | gpt-5 - model def…  "
+cell_span=0..38 text="Context: ?.?K/ ?K | gpt-5 - model def…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=16
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -8181,9 +8203,11 @@ row=13 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                "
+row=15 text="  / for commands                     Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..80 text="                                                                " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..37 text="                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=37..78 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=16
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -8221,49 +8245,50 @@ row=13 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=14 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=15 text="  / for commands                                                                                                        "
+row=15 text="  / for commands                                                             Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..16 text="  / for commands" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=16..120 text="                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=16..77 text="                                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=77..118 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
 
 [app name=consecutive-user-messages height=14]
 width=20 rows=14
-row=0 text="❯ first user        "
-cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
-cell_span=2..13 text="first user " fg=#ffffff bg=#373737 modifiers=NONE/NONE
-cell_span=13..20 text="       " fg=reset bg=#373737 modifiers=NONE/NONE
-row=1 text="message             "
+row=0 text="message             "
 cell_span=0..7 text="message" fg=#ffffff bg=#373737 modifiers=NONE/NONE
 cell_span=7..20 text="             " fg=reset bg=#373737 modifiers=NONE/NONE
-row=2 text="                    "
+row=1 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=3 text="❯ second user       "
+row=2 text="❯ second user       "
 cell_span=0..2 text="❯ " fg=#505050 bg=#373737 modifiers=NONE/NONE
 cell_span=2..14 text="second user " fg=#ffffff bg=#373737 modifiers=NONE/NONE
 cell_span=14..20 text="      " fg=reset bg=#373737 modifiers=NONE/NONE
-row=4 text="message             "
+row=3 text="message             "
 cell_span=0..7 text="message" fg=#ffffff bg=#373737 modifiers=NONE/NONE
 cell_span=7..20 text="             " fg=reset bg=#373737 modifiers=NONE/NONE
-row=5 text="                    "
+row=4 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=6 text="· Cascading…        "
+row=5 text="· Cascading…        "
 cell_span=0..13 text="· Cascading… " fg=#d77757 bg=reset modifiers=NONE/NONE
 cell_span=13..20 text="       " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="                    "
+row=6 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="────────────────────"
+row=7 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="❯                   "
+row=8 text="❯                   "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=DIM/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..20 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                    "
 cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="                    "
-cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="────────────────────"
+row=11 text="────────────────────"
 cell_span=0..20 text="────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  esc to interrupt  "
+row=12 text="  esc to interrupt  "
 cell_span=0..18 text="  esc to interrupt" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K…  "
+cell_span=0..18 text="Context: ?.?K/ ?K…" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=18..20 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=40 rows=14
 row=0 text="                                        "
@@ -8285,23 +8310,24 @@ cell_span=0..13 text="· Cascading… " fg=#d77757 bg=reset modifiers=NONE/NONE
 cell_span=13..40 text="                           " fg=reset bg=reset modifiers=NONE/NONE
 row=6 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=7 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=8 text="────────────────────────────────────────"
+row=7 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=9 text="❯                                       "
+row=8 text="❯                                       "
 cell_span=0..2 text="❯ " fg=reset bg=reset modifiers=DIM/NONE
 cell_span=2..3 text=" " fg=reset bg=reset modifiers=REVERSED/NONE
 cell_span=3..40 text="                                     " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=10 text="                                        "
 cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=11 text="                                        "
-cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
-row=12 text="────────────────────────────────────────"
+row=11 text="────────────────────────────────────────"
 cell_span=0..40 text="────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  esc to interrupt                      "
+row=12 text="  esc to interrupt                      "
 cell_span=0..18 text="  esc to interrupt" fg=reset bg=reset modifiers=DIM/NONE
 cell_span=18..40 text="                      " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="Context: ?.?K/ ?K | gpt-5 - model def…  "
+cell_span=0..38 text="Context: ?.?K/ ?K | gpt-5 - model def…" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=38..40 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=80 rows=14
 row=0 text="                                                                                "
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
@@ -8336,9 +8362,11 @@ row=11 text="                                                                   
 cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..80 text="────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  esc to interrupt                                                              "
+row=13 text="  esc to interrupt                   Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..18 text="  esc to interrupt" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=18..80 text="                                                              " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=18..37 text="                   " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=37..78 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=78..80 text="  " fg=reset bg=reset modifiers=NONE/NONE
 width=120 rows=14
 row=0 text="                                                                                                                        "
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
@@ -8373,6 +8401,8 @@ row=11 text="                                                                   
 cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
 row=12 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
 cell_span=0..120 text="────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────" fg=#888888 bg=reset modifiers=NONE/NONE
-row=13 text="  esc to interrupt                                                                                                      "
+row=13 text="  esc to interrupt                                                           Context: ?.?K/ ?K | gpt-5 - model default  "
 cell_span=0..18 text="  esc to interrupt" fg=reset bg=reset modifiers=DIM/NONE
-cell_span=18..120 text="                                                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=18..77 text="                                                           " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=77..118 text="Context: ?.?K/ ?K | gpt-5 - model default" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=118..120 text="  " fg=reset bg=reset modifiers=NONE/NONE
