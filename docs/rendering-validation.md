@@ -30,7 +30,7 @@ renderer and `tui::draw` against ratatui `TestBackend` buffers. Each transcript
 row records text, display width, foreground/background color, and modifiers;
 each full-screen app fixture records every buffer row and contiguous style run.
 
-The gallery has 68 named sections:
+The gallery has 91 named sections:
 
 | Group | Sections |
 | --- | --- |
@@ -41,7 +41,14 @@ The gallery has 68 named sections:
 | Tool header states | `tool-header-queued`, `tool-header-running`, `tool-header-success`, `tool-header-error`, plus the four `-macos` variants and `tool-result-ansi-success-macos` |
 | Spinner | `macos`, `windows-linux`, and `ghostty`, with clocks `0`, `120`, `600`, `3000`, and `30000` ms plus reduced motion |
 | Startup surface | `startup-authoritative-artwork`, `startup-two-column-and-vertical`, `startup-wordmark-fallback`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission` |
-| Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `context`, `context-constrained-input`, `context-1m`, `context-all`, `context-missing`, `context-fallback`, `context-partial`, `context-conflict`, `context-stale`, `context-tiny`, `context-over-limit`, `context-invalid`, `context-resolved-model`, `context-different-limits`, `context-refresh-failed-empty`, `context-constrained-picker`, `context-breakpoint`, `nested-concurrent-tasks`, `consecutive-user-messages` |
+| Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `context`, `context-constrained-input`, `context-1m`, `context-all`, `context-missing`, `context-fallback`, `context-partial`, `context-conflict`, `context-stale`, `context-tiny`, `context-over-limit`, `context-invalid`, `context-resolved-model`, `context-different-limits`, `context-refresh-failed-empty`, `context-constrained-picker`, `context-breakpoint`, `context-busy-completion`, `nested-concurrent-tasks`, `consecutive-user-messages` |
+| CT-03 live footer and constrained layouts | `footer-live`, `footer-missing`, `footer-stale`, `footer-over-limit`, `footer-completion`, `footer-picker`, `footer-busy`, `footer-picker-height-3`, `footer-picker-height-8`, `footer-input-height-6`, `footer-input-height-7`, `footer-input-height-8`, `footer-approval-height-5`, `footer-approval-height-6`, `footer-approval-height-7`, `footer-approval-height-8`, `footer-approval-height-9`, `footer-models-constrained`, `footer-sessions-constrained`, `footer-busy-approval`, `footer-busy-completion`, `footer-breakpoint` |
+
+The CT-04 coexistence fixture `context-busy-completion` uses a 32-row gallery
+frame. CT-03 context/footer gallery frames also include 64- and 80-row heights;
+these are inspection artifacts, not production terminal geometry. The integrated
+public redraw test uses the production draw path on a 22-row buffer. None of
+these TestBackend frames is real-terminal smoke evidence.
 
 The gallery is compared during ordinary test runs. Regeneration is opt-in and
 ignored by default so a normal test cannot rewrite the committed artifact.
@@ -167,7 +174,7 @@ sections but still miss at least one specification subcase.
 | Completion rows and replacement behavior | `partial` | `completion`; long-list and all truncation branches are not represented. |
 | Sessions, models, tools, skills, approval, and picker replacement | `partial` | `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`; long-list navigation and every cancel/outcome branch remain manual or unit-only. |
 | `/status` static transcript block | `partial` | `status` app fixture and TUI status tests; empty local output and every count state are not represented together. |
-| `/context` and `/context all` data contract | `automated` | Public input, TestBackend rendering, and visible event-update tests cover default/expanded details, live/snapshot fallback, missing/partial/invalid/zero data, stale retention/recovery and empty refresh failures, discrepancies/conflicts, exact largest-remainder ties including neutral residual, tiny categories, over-limit usage, session/model/limit resets, Auto/provider-qualified resolved models, and stable differing source limits. The 14 added context sections cover 20/40/80/120 plus a 79/80 breakpoint fixture. Independent literal cell counts, distinct neutral style/legend, colors, DIM/ITALIC styles, valid SDK decoding control, width bounds, and constrained input/picker return checks supplement the gallery. CT-03 adds the live footer coverage below; CT-04 full-suite/real-terminal release validation remains pending. |
+| `/context` and `/context all` data contract | `automated` | Public input, TestBackend rendering, and visible event-update tests cover default/expanded details, live/snapshot fallback, missing/partial/invalid/zero data, stale retention/recovery and empty refresh failures, discrepancies/conflicts, exact largest-remainder ties including neutral residual, tiny categories, over-limit usage, session/model/limit resets, Auto/provider-qualified resolved models, and stable differing source limits. The 14 added context sections cover 20/40/80/120 plus a 79/80 breakpoint fixture. Independent literal cell counts, distinct neutral style/legend, colors, DIM/ITALIC styles, valid SDK decoding control, width bounds, and constrained input/picker return checks supplement the gallery. CT-03 adds the live footer coverage below; CT-04 later passed the full suite, while real-terminal release validation remains blocked. |
 | Startup fixed artwork and compact fallback layouts | `gallery` | `startup-authoritative-artwork` serializes the fixed frame at fitting height `24` and gallery widths `20`, `40`, `80`, and `120`; the artwork appears only at widths that fit all 69 columns. `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission`, and `startup-wordmark-fallback` preserve the responsive compact fallback coverage. `startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_live_values` is the corresponding focused structural test. |
 | Picopilot-only reasoning, subagents, notices, and approval | `gallery` | `reasoning-collapsed`, `reasoning-expanded`, notice sections, `subagent-task-top-level`, `subagent-task-nested`, `nested-concurrent-tasks`, `picker-approval`, and `approval-resolved`. |
 
@@ -180,8 +187,38 @@ fixtures pin active hint priority; public key-action tests check Tab acceptance,
 raw Enter submission, and approval Esc denial. Public
 terminal tests independently pin composition colors, neutral/free style, live
 updates, cursor position, transcript stability, percent-only busy layout, and
-emergency hide/restore. CT-04 still owns the full suite and authenticated terminal
-smoke; neither is claimed passed by CT-03.
+emergency hide/restore. At CT-03 handoff, CT-04 owned the full suite and
+authenticated terminal smoke. CT-04 later passed the full suite; real-terminal
+smoke remains blocked, as recorded below.
+
+### CT-04 Integrated Verification (2026-10-05)
+
+The final full `cargo test` run reported **549 passed, 0 failed, 3 ignored**:
+383 library tests, 9 ANSI tests, and 157 screen-model tests passed. The ignored
+tests were the fixture writer and two authenticated tests; they were not run or
+claimed as passed. Focused results were 157 screen-model tests, 138 TUI tests,
+and 2 rendering-fixture tests passed with 1 ignored writer. `cargo check` passed;
+the reviewer also reran Clippy with warnings denied successfully. The focused
+Rust formatting check for `tests/screen_model.rs` passed. Repository-wide
+`cargo fmt --check` fails on unrelated baseline files; those files were not
+reformatted as part of CT-04.
+
+**Real-terminal release gate: BLOCKED.** `cargo run -- --project $project`
+started, but the available terminal tool provided no interactive session to
+drive and no process remained afterward. The run reported unreachable Ollama
+and vLLM model catalogs. This does not establish Copilot authentication failure;
+SDK/provider authentication status is unknown. No real-terminal smoke step below
+is claimed as passed. The gallery, automated suite, and TestBackend checks do
+not substitute for this gate.
+
+Current overlay behavior is characterized, not decided: the context view closes
+only on `Esc`; when completion coexists, the first `Esc` closes the context
+overlay and the next dismisses completion. Submitting a prompt or invoking
+`/status` or `/resume` while the overlay is open does not clear it, so live chat
+output may remain hidden. Whether the overlay should auto-close, and the `Esc` /
+hint behavior when busy, remain unresolved pending a human decision and live
+observation. The existing busy `Esc` hint does not interrupt the active turn;
+this is a known pre-existing limitation, not a CT-04 fix.
 
 Run the narrow checks before the full suite:
 
@@ -247,6 +284,11 @@ compare observations from different commits or different project folders.
 
 | Action | Observe | Pass condition |
 | --- | --- | --- |
+| Run `/context` and `/context all` in the real interactive session | Default view, then expanded source totals, discrepancies, stale explanations, and unavailable per-item costs | Both commands open their documented views without fabricated values. CT-04 result: **BLOCKED / unverified**. |
+| Press `Ctrl+U` from the prompt, then press `Esc` | Context view opens from the shortcut and returns to chat | Shortcut matches `/context`; `Esc` closes the overlay. CT-04 result: **BLOCKED / unverified**. |
+| Keep the context view open while resizing wide to narrow and back | Grid, legend, footer, input, and live rows | Layout adapts without overlap or history mutation. CT-04 result: **BLOCKED / unverified**. |
+| Observe the live footer before and after opening `/context`, after a real usage update, and after closing the overlay | Usage percentage/meter, stale marker if applicable, and footer row | The footer reflects live usage and remains correctly placed through the overlay and redraw. CT-04 result: **BLOCKED / unverified**. |
+| Reproduce busy-turn coexistence with `/con` completion and the context overlay | Completion placement, footer, input cursor, and `Esc` ordering | Record current behavior: first `Esc` closes context, next dismisses completion; the busy hint is not an interrupt. Do not treat this characterization as a product decision. CT-04 result: **BLOCKED / unverified**. |
 | Send a normal prompt and let assistant output stream | Live assistant rows while tokens arrive | No viewport jump; complete rows remain in scrollback and only the partial tail changes. |
 | Request a long-running shell command that emits output in several steps | Bash header and live progress | Progress remains in the live region, shows recent output, and disappears when the final result arrives. |
 | Send several messages, then use normal terminal scrollback selection | Main-screen history | Rows remain selectable and are not replaced by a fullscreen overlay. |
@@ -255,7 +297,7 @@ compare observations from different commits or different project folders.
 | Type `cafe`, CJK, combining characters, `👩‍💻`, and a tab in the prompt | Prompt width and cursor movement | Grapheme clusters stay intact; tabs expand; `❯` and continuation rows keep their intended columns. |
 | Ask the agent to run commands that emit named, indexed, and truecolor SGR plus underline | Tool output colors | Supported colors remain visible, underline is removed, and control bytes do not escape into the terminal. |
 | Press `Ctrl+O`, then `Esc`; press `Ctrl+I` | Expanded details and diagnostics | Details expand/collapse without changing committed history; diagnostics appear only after `Ctrl+I`. |
-| Open `/context`, then submit a prompt and invoke `/status` and `/resume` while it remains open; press `Esc` | Context-view lifecycle and live chat visibility | Record whether each action leaves the view open and whether live chat becomes hidden; verify Esc returns to chat. This real-terminal release-gate observation is pending, and auto-close behavior is undecided. |
+| Open `/context`, then submit a prompt and invoke `/status` and `/resume` while it remains open; press `Esc` | Context-view lifecycle and live chat visibility | Current characterization: these actions do not clear the overlay, so chat output may be hidden; `Esc` closes the overlay. Confirm in a real terminal. Auto-close behavior remains undecided. CT-04 result: **BLOCKED / unverified**. |
 | Trigger a shell permission request | Approval picker | Approval replaces the input area, has self-describing choices, and leaves no picker rows in history after resolution. |
 | Open completion with `/`; open sessions/models/tools/skills with their shortcuts | Picker replacement and navigation | Input is replaced rather than overlaid; focus, cancellation, and confirmation are readable at narrow width. |
 | Exercise the same actions in Windows Terminal, VS Code terminal, and conhost | Cross-terminal glyphs and scrollback | No environment-specific corruption of `❯`, `●`, `⎿`, `⏵⏵`, checkmarks, todo squares, spinner frames, or emoji. |
@@ -298,7 +340,7 @@ does not treat the earlier fallback-fixture commit as the final validation tip.
 | Focused TUI tests | passed | `cargo test --lib tui::tests --quiet`: 135 passed, 0 failed, exit 0. |
 | Library tests | passed | `cargo test --lib --quiet`: 280 passed, 0 failed, 1 ignored, exit 0. |
 | Full `cargo test --all-targets --quiet` | passed | Completed successfully with exit 0. Aggregate counts are intentionally omitted because they change as coverage grows. |
-| `cargo fmt --check` | passed | Completed with exit 0 and no output. |
+| Historical `cargo fmt --check` (startup validation at `5bc6c6f`) | passed at that validation tip | This is an earlier startup-surface result, not the CT-04 baseline. The CT-04 reviewer found repo-wide formatting failures in unrelated baseline files; see CT-04 Integrated Verification above. |
 | Clippy with `-D warnings` | passed | `cargo clippy --all-features --all-targets -- -D warnings` completed with exit 0. |
 | `git diff --check` | passed | Completed with exit 0; its only output was Git's CRLF advisory for the unmodified gallery fixture, not a whitespace error. |
 | VS Code diagnostics | passed | No errors reported for `docs/rendering-validation.md`. |

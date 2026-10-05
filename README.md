@@ -211,7 +211,7 @@ conversation has history, model changes preserve the current tool selection.
 Press `Ctrl+K` to open the full-height tool picker. Use `Space` to toggle the
 highlighted tool, `s` for shell only, `a` for all tools, `Enter` to apply, and
 `Esc` to cancel. Applying a selection reconnects the same session; it is
-available only while idle and failed changes are rolled back. The status bar
+available only while idle and failed changes are rolled back. `/status`
 shows the active count as `tools N/17`. The picker can still be opened during an
 approval or reconnect, but applying a change waits until that work is finished.
 
@@ -253,7 +253,7 @@ when a session starts. Press `Ctrl+S` to open the skill picker. `Space` toggles
 the highlighted skill, `a` selects all discovered skills, `n` clears the
 selection, `Enter` applies it, and `Esc` cancels. The selection lasts for the
 current conversation only; `Ctrl+N` and historical-session resume clear it.
-The status bar shows the active count as `skills N/M`. Applying a selection is
+`/status` shows the active count as `skills N/M`. Applying a selection is
 available while idle and reconnects the current session when it already has
 history.
 
