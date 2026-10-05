@@ -169,6 +169,625 @@ fn measured_context_app() -> App {
 }
 
 #[test]
+fn context_all_shows_live_usage_without_inventing_missing_categories() {
+    let mut app = measured_context_app();
+    app.set_context_attribution(None);
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(&mut app, "/context all");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LoadUsageCommand
+    );
+    let terminal = draw_startup(&app, 120, 50);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("40,000/200,000 tokens (20.0%)"));
+    assert!(text.contains("Breakdown unavailable"));
+    assert!(text.contains("Live source: 40,000/200,000"));
+    assert!(text.contains("Per-item costs unavailable"));
+    assert!(!text.contains("MCP tool definitions: 0"));
+}
+
+fn context_live(app: &mut App, used: i64, limit: i64) {
+    app.apply(EventUpdate::Usage(picopilot::events::UsageSnapshot {
+        current_tokens: used,
+        token_limit: limit,
+        messages: 0,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+}
+
+fn context_snapshot(app: &mut App, total: i64, limit: i64, amounts: &[i64]) {
+    app.set_context_attribution(Some(picopilot::events::ContextAttributionSnapshot {
+        model_id: "test-model".into(),
+        total_tokens: total,
+        prompt_token_limit: limit,
+        compactions: 2,
+        categories: palette::CONTEXT_CATEGORIES
+            .iter()
+            .zip(amounts)
+            .map(
+                |((label, _), tokens)| picopilot::events::ContextCategorySnapshot {
+                    label: (*label).into(),
+                    tokens: *tokens,
+                },
+            )
+            .collect(),
+    }));
+}
+
+fn open_context(app: &mut App, expanded: bool) {
+    picopilot::tui::handle_key(app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(app, if expanded { "/context all" } else { "/context" });
+    assert_eq!(
+        picopilot::tui::handle_key(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LoadUsageCommand
+    );
+}
+
+#[test]
+fn context_reconciles_sources_without_changing_measured_amounts() {
+    let mut app = measured_context_app();
+    context_live(&mut app, 50_000, 200_000);
+    open_context(&mut app, true);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Unattributed usage: 10,000"), "{text}");
+    assert!(text.contains("Attribution source: 40,000/200,000"));
+    assert!(text.contains("Source totals differ"));
+    assert!(text.contains("System instructions: 10,000"));
+    context_live(&mut app, 20_000, 200_000);
+    let terminal = draw_startup(&app, 120, 60);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("Category snapshot exceeds live usage; pending refresh"));
+    assert!(text.contains("System instructions: 10,000"));
+    let colored_used = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .filter(|cell| {
+            matches!(cell.symbol(), "⛁" | "⛀") && cell.fg == palette::CONTEXT_CATEGORIES[1].1
+        })
+        .count();
+    assert_eq!(
+        colored_used, 1,
+        "only the custom-instructions legend may be colored"
+    );
+    open_context(&mut app, false);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(!text.contains("Live source:"));
+    assert!(!text.contains("Per-item costs"));
+    for unsupported in ["Cache", "Savings", "Autocompaction buffer", "Suggestions"] {
+        assert!(!text.contains(unsupported));
+    }
+}
+
+#[test]
+fn context_snapshot_fallback_invalid_and_over_limit_are_honest() {
+    let mut app = measured_context_app();
+    context_live(&mut app, 10, 0);
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    open_context(&mut app, true);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Attribution snapshot"));
+    assert!(text.contains("40,000/200,000"));
+    assert!(text.contains("Live usage unavailable"));
+    for (used, limit) in [(-1, 200_000), (1, -1), (0, 0)] {
+        context_live(&mut app, used, limit);
+        app.set_context_attribution(None);
+        let text = terminal_text(&draw_startup(&app, 120, 60));
+        assert!(
+            text.contains("Context usage unavailable"),
+            "{used}/{limit}: {text}"
+        );
+        assert!(!text.contains("⛁"));
+    }
+    context_live(&mut app, 300_000, 200_000);
+    let terminal = draw_startup(&app, 120, 60);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("300,000/200,000 tokens (150.0%)"));
+    assert!(text.contains("Over limit"));
+    assert!(buffer_rows(&terminal)
+        .iter()
+        .filter(|row| row.starts_with('⛁'))
+        .all(|row| !row.chars().take(20).any(|glyph| glyph == '⛶')));
+    context_live(&mut app, 0, 200_000);
+    context_snapshot(&mut app, 0, 200_000, &[0, 0, 0, 0, 0]);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("MCP tool definitions: 0 tokens"));
+    assert!(!text.contains("Breakdown unavailable"));
+    for amounts in [&[-1, 0, 0, 0, 0][..], &[0, 0][..]] {
+        context_snapshot(&mut app, 0, 200_000, amounts);
+        let text = terminal_text(&draw_startup(&app, 120, 60));
+        assert!(text.contains("Breakdown unavailable"));
+        assert!(!text.contains("MCP tool definitions: 0"));
+    }
+}
+
+fn context_grid_cells(terminal: &Terminal<TestBackend>) -> Vec<ratatui::buffer::Cell> {
+    let buffer = terminal.backend().buffer();
+    (0..buffer.area.height)
+        .filter(|row| {
+            matches!(buffer[(0, *row)].symbol(), "⛁" | "⛀" | "⛶")
+                && matches!(buffer[(2, *row)].symbol(), "⛁" | "⛀" | "⛶")
+        })
+        .flat_map(|row| {
+            (0..buffer.area.width)
+                .step_by(2)
+                .take_while(move |column| {
+                    matches!(buffer[(*column, row)].symbol(), "⛁" | "⛀" | "⛶")
+                })
+                .map(move |column| buffer[(column, row)].clone())
+        })
+        .collect()
+}
+
+#[test]
+fn context_rounds_used_cells_once_and_breaks_remainder_ties_in_palette_order() {
+    for (width, used, amounts, colors) in [
+        (
+            80,
+            103,
+            [51, 51, 1, 0, 0],
+            vec![palette::CONTEXT_CATEGORIES[0].1],
+        ),
+        (
+            40,
+            402,
+            [201, 201, 0, 0, 0],
+            vec![palette::CONTEXT_CATEGORIES[0].1],
+        ),
+        (
+            80,
+            260,
+            [60, 60, 60, 60, 20],
+            vec![
+                palette::CONTEXT_CATEGORIES[0].1,
+                palette::CONTEXT_CATEGORIES[1].1,
+                palette::CONTEXT_CATEGORIES[2].1,
+            ],
+        ),
+    ] {
+        let mut app = measured_context_app();
+        context_live(&mut app, used, 10_000);
+        context_snapshot(&mut app, used, 10_000, &amounts);
+        let terminal = draw_startup(&app, width, 60);
+        let cells = context_grid_cells(&terminal);
+        let actual: Vec<_> = cells
+            .iter()
+            .filter(|cell| cell.symbol() != "⛶")
+            .map(|cell| cell.fg)
+            .collect();
+        assert_eq!(actual, colors, "width={width}");
+        if width == 80 && used == 103 {
+            assert!(terminal_text(&terminal).contains("Tool definitions: 1 tokens"));
+        }
+    }
+}
+
+#[test]
+fn context_session_model_and_limit_changes_do_not_mix_snapshots() {
+    let mut app = measured_context_app();
+    app.set_session_id("first");
+    context_live(&mut app, 40_000, 200_000);
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    app.set_usage_metrics(picopilot::events::UsageMetricsSnapshot {
+        total_nano_aiu: Some(2e9),
+        total_premium_request_cost: 3.0,
+        total_user_requests: 4,
+        total_api_duration_ms: 500,
+        current_model: Some("test-model".into()),
+    });
+    open_context(&mut app, true);
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("40,000/200,000"));
+    app.set_session_id("second");
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Context usage unavailable"));
+    assert!(!text.contains("40,000"));
+    assert!(!text.contains("Session cost: 2.000"));
+    let mut app = measured_context_app();
+    app.apply(EventUpdate::ModelChanged {
+        model: "new-model".into(),
+    });
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Breakdown unavailable"));
+    assert!(!text.contains("System instructions: 10,000"));
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    assert!(
+        terminal_text(&draw_startup(&app, 120, 60)).contains("System instructions: 10,000"),
+        "a successful fresh fetch supplies the new breakdown even when the resolved ID differs"
+    );
+    let mut app = measured_context_app();
+    context_live(&mut app, 40_000, 100_000);
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("Breakdown unavailable"));
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    assert!(
+        terminal_text(&draw_startup(&app, 120, 60)).contains("System instructions: 10,000"),
+        "a fresh prompt limit need not equal the live context-window limit"
+    );
+    context_snapshot(
+        &mut app,
+        40_000,
+        100_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("System instructions: 10,000"));
+    app.set_model(Some("third-model".into()));
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("Breakdown unavailable"));
+}
+
+#[test]
+fn context_refresh_failures_retain_values_and_idle_is_not_stale() {
+    let mut app = measured_context_app();
+    open_context(&mut app, true);
+    app.apply(EventUpdate::Idle);
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("stale"));
+    let entries_before = app.entries().len();
+    app.apply(EventUpdate::ContextRefreshFailed);
+    app.apply(EventUpdate::UsageMetricsRefreshFailed);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Attribution stale: refresh failed; retained last successful snapshot"));
+    assert!(text.contains("Session usage stale: refresh failed"));
+    assert!(text.contains("System instructions: 10,000"));
+    assert!(text.contains("Session cost: 2.000"));
+    context_live(&mut app, 50_000, 200_000);
+    app.apply(EventUpdate::Idle);
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("Attribution stale"));
+    context_snapshot(
+        &mut app,
+        50_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 20_000],
+    );
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(!text.contains("Attribution stale"));
+    assert!(text.contains("Session usage stale"));
+    app.set_usage_metrics(picopilot::events::UsageMetricsSnapshot {
+        total_nano_aiu: Some(3e9),
+        total_premium_request_cost: 4.0,
+        total_user_requests: 5,
+        total_api_duration_ms: 600,
+        current_model: Some("test-model".into()),
+    });
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("stale"));
+    app.apply(EventUpdate::ContextRefreshFailed);
+    app.set_session_id("fresh-session");
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("stale"));
+    assert_eq!(app.entries().len(), entries_before);
+}
+
+#[test]
+fn context_all_exposes_source_availability_and_rejects_nonfinite_costs() {
+    let mut app = measured_context_app();
+    open_context(&mut app, true);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Category source total: 40,000"));
+    context_snapshot(&mut app, 30_000, 100_000, &[5_000, 5_000, 5_000, 0, 15_000]);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Attribution source: 30,000/100,000"));
+    assert!(text.contains("Source totals differ; live usage is authoritative"));
+    assert!(text.contains("40,000/200,000 tokens (20.0%)"));
+    assert!(text.contains("System instructions: 5,000"));
+    for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        app.set_usage_metrics(picopilot::events::UsageMetricsSnapshot {
+            total_nano_aiu: Some(invalid),
+            total_premium_request_cost: invalid,
+            total_user_requests: 1,
+            total_api_duration_ms: 10,
+            current_model: Some("test-model".into()),
+        });
+        let text = terminal_text(&draw_startup(&app, 120, 60));
+        assert!(text.contains("Session cost: unavailable"));
+        assert!(text.contains("Premium request cost: unavailable"));
+        assert!(!text.contains("NaN"));
+        assert!(!text.contains("inf"));
+    }
+}
+
+#[test]
+fn context_accepts_resolved_models_and_stable_differing_source_limits() {
+    for selected in ["auto", "provider/test-model"] {
+        let mut app = measured_context_app();
+        app.set_model(Some(selected.into()));
+        context_snapshot(
+            &mut app,
+            40_000,
+            180_000,
+            &[10_000, 10_000, 10_000, 0, 10_000],
+        );
+        open_context(&mut app, true);
+        for _ in 0..2 {
+            context_live(&mut app, 40_000, 200_000);
+            let text = terminal_text(&draw_startup(&app, 120, 60));
+            assert!(
+                text.contains("test-model · 40,000/200,000"),
+                "{selected}: {text}"
+            );
+            assert!(text.contains("System instructions: 10,000"));
+            assert!(text.contains("Attribution source: 40,000/180,000"));
+            assert!(text.contains("Source totals differ"));
+        }
+    }
+}
+
+#[test]
+fn context_missing_live_and_invalid_token_events_never_invent_live_usage() {
+    let mut app = App::new(None);
+    app.dismiss_startup_surface();
+    open_context(&mut app, true);
+    let valid: github_copilot_sdk::types::SessionEvent =
+        serde_json::from_value(serde_json::json!({
+            "id": "valid-usage", "timestamp": "2026-10-05T12:00:00Z", "type": "session.usage_info",
+            "data": {"currentTokens": 50000, "tokenLimit": 200000, "messagesLength": 0}
+        }))
+        .unwrap();
+    app.apply(picopilot::events::event_update(&valid).expect("valid SDK usage event"));
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("50,000/200,000"));
+    app.set_session_id("decode-test");
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!("NaN"),
+        serde_json::json!(1.5),
+    ] {
+        let event: github_copilot_sdk::types::SessionEvent = serde_json::from_value(serde_json::json!({
+            "id": "invalid-usage", "timestamp": "2026-10-05T12:00:00Z", "type": "session.usage_info",
+            "data": {"currentTokens": value, "tokenLimit": 200000, "messagesLength": 0}
+        })).unwrap();
+        if let Some(update) = picopilot::events::event_update(&event) {
+            app.apply(update);
+        }
+        let text = terminal_text(&draw_startup(&app, 120, 60));
+        assert!(text.contains("Context usage unavailable"));
+        assert!(!text.contains("0/200,000"));
+    }
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Attribution snapshot"));
+    assert!(text.contains("Live usage unavailable"));
+    assert!(text.contains("40,000/200,000"));
+}
+
+#[test]
+fn context_responsive_states_preserve_proportions_styles_and_input() {
+    for width in [20, 40, 79, 80, 120] {
+        let mut app = measured_context_app();
+        context_live(&mut app, 50_000, 200_000);
+        open_context(&mut app, true);
+        type_input(&mut app, "draft");
+        let terminal = draw_startup(&app, width, 80);
+        let grid = context_grid_cells(&terminal);
+        assert_eq!(
+            grid.iter().filter(|cell| cell.symbol() != "⛶").count(),
+            if width < 80 { 6 } else { 25 },
+            "rounded 25% width={width}"
+        );
+        assert!(
+            grid.iter()
+                .filter(|cell| cell.symbol() == "⛶")
+                .all(|cell| cell.fg == palette::PROMPT_BORDER
+                    && cell.modifier.contains(Modifier::DIM))
+        );
+        let rows = buffer_rows(&terminal);
+        assert!(rows.iter().any(|row| row.contains("draft")));
+        assert!(rows
+            .iter()
+            .all(|row| UnicodeWidthStr::width(row.as_str()) <= width as usize));
+        context_live(&mut app, 20_000, 200_000);
+        let terminal = draw_startup(&app, width, 80);
+        let grid = context_grid_cells(&terminal);
+        assert_eq!(
+            grid.iter().filter(|cell| cell.symbol() != "⛶").count(),
+            if width < 80 { 3 } else { 10 }
+        );
+        assert!(grid.iter().all(|cell| cell.fg
+            == if cell.symbol() == "⛶" {
+                palette::PROMPT_BORDER
+            } else {
+                palette::TEXT
+            }));
+        let terminal = draw_startup(&app, width, 8);
+        assert!(terminal_text(&terminal).contains("draft"));
+        app.open_tool_picker();
+        let terminal = draw_startup(&app, width, 12);
+        assert!(terminal_text(&terminal).contains("tools"));
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(terminal_text(&draw_startup(&app, width, 8)).contains("draft"));
+        assert_eq!(app.input(), "draft");
+    }
+}
+
+#[test]
+fn context_neutral_usage_has_a_distinct_style_and_matching_legend() {
+    for (scenario, neutral_cells) in [("missing", 20), ("conflict", 10), ("residual", 5)] {
+        let mut app = measured_context_app();
+        match scenario {
+            "missing" => app.set_context_attribution(None),
+            "conflict" => context_live(&mut app, 20_000, 200_000),
+            _ => context_live(&mut app, 50_000, 200_000),
+        }
+        let terminal = draw_startup(&app, 120, 60);
+        let neutral: Vec<_> = context_grid_cells(&terminal)
+            .into_iter()
+            .filter(|cell| cell.symbol() != "⛶" && cell.fg == palette::TEXT)
+            .collect();
+        assert_eq!(neutral.len(), neutral_cells, "{scenario}");
+        assert!(neutral
+            .iter()
+            .all(|cell| !cell.modifier.contains(Modifier::DIM)));
+        let legend = cell_at_text(&terminal, "⛁ Unattributed usage");
+        assert_eq!(legend.fg, palette::TEXT);
+        assert!(!legend.modifier.contains(Modifier::DIM));
+        assert!(palette::CONTEXT_CATEGORIES
+            .iter()
+            .all(|(_, color)| *color != legend.fg));
+    }
+}
+
+#[test]
+fn context_ctrl_u_returns_to_default_and_unchanged_model_keeps_breakdown() {
+    let mut app = measured_context_app();
+    open_context(&mut app, true);
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("Source details"));
+    app.apply(EventUpdate::ModelChanged {
+        model: "test-model".into(),
+    });
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("System instructions: 10,000"));
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ),
+        picopilot::tui::UiAction::LoadUsage
+    );
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("System instructions: 10,000"));
+    assert!(!text.contains("Source details"));
+    assert!(!text.contains("Per-item costs"));
+}
+
+#[test]
+fn context_exact_remainder_ties_put_measured_categories_before_neutral_residual() {
+    for width in [20, 40, 80, 120] {
+        let mut app = measured_context_app();
+        context_live(&mut app, 300_000, 200_000);
+        context_snapshot(&mut app, 40_000, 200_000, &[8_000, 8_000, 8_000, 0, 16_000]);
+        let terminal = draw_startup(&app, width, 80);
+        let grid = context_grid_cells(&terminal);
+        assert!(grid.iter().all(|cell| cell.symbol() != "⛶"));
+        let colors: Vec<_> = palette::CONTEXT_CATEGORIES
+            .iter()
+            .map(|(_, color)| *color)
+            .chain(std::iter::once(palette::TEXT))
+            .collect();
+        let counts: Vec<_> = colors
+            .iter()
+            .map(|color| grid.iter().filter(|cell| cell.fg == *color).count())
+            .collect();
+        assert_eq!(
+            counts,
+            if width < 80 {
+                vec![1, 1, 1, 0, 1, 21]
+            } else {
+                vec![3, 3, 3, 0, 5, 86]
+            },
+            "width={width}"
+        );
+    }
+}
+
+#[test]
+fn context_all_explains_refresh_failure_even_without_retained_data() {
+    let mut app = App::new(None);
+    open_context(&mut app, true);
+    app.apply(EventUpdate::ContextRefreshFailed);
+    app.apply(EventUpdate::UsageMetricsRefreshFailed);
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Attribution refresh failed; no successful snapshot available"));
+    assert!(text.contains("Session usage refresh failed; no successful metrics available"));
+    assert!(!text.contains("stale"));
+    app.set_context_attribution(None);
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("Attribution refresh failed"));
+    app.set_session_id("new-session");
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("refresh failed"));
+    assert!(app.entries().is_empty());
+}
+
+#[test]
+fn context_model_reset_preserves_existing_compaction_warning_suppression() {
+    let mut app = measured_context_app();
+    context_live(&mut app, 195_000, 200_000);
+    assert!(terminal_text(&draw_startup(&app, 120, 60)).contains("until auto-compact"));
+    let mut compacted = app.status().context_attribution.as_ref().unwrap().clone();
+    compacted.compactions = 3;
+    app.set_context_attribution(Some(compacted));
+    assert!(!terminal_text(&draw_startup(&app, 120, 60)).contains("until auto-compact"));
+    app.apply(EventUpdate::ModelChanged {
+        model: "new-model".into(),
+    });
+    let text = terminal_text(&draw_startup(&app, 120, 60));
+    assert!(text.contains("Breakdown unavailable"));
+    assert!(!text.contains("until auto-compact"));
+}
+
+#[test]
+fn context_invalid_attribution_totals_duplicates_and_overflow_are_unavailable() {
+    let mut app = measured_context_app();
+    open_context(&mut app, true);
+    for (total, limit) in [(-1, 200_000), (40_000, 0), (40_000, -1)] {
+        context_snapshot(&mut app, total, limit, &[10_000, 10_000, 10_000, 0, 10_000]);
+        let text = terminal_text(&draw_startup(&app, 120, 60));
+        assert!(text.contains("Breakdown unavailable"));
+        assert!(text.contains("Attribution total or limit invalid"));
+        assert!(text.contains("40,000/200,000 tokens (20.0%)"));
+    }
+    context_snapshot(
+        &mut app,
+        40_000,
+        200_000,
+        &[10_000, 10_000, 10_000, 0, 10_000],
+    );
+    let mut duplicate = app.status().context_attribution.as_ref().unwrap().clone();
+    duplicate.categories.push(duplicate.categories[0].clone());
+    app.set_context_attribution(Some(duplicate));
+    assert!(
+        terminal_text(&draw_startup(&app, 120, 60)).contains("Category source total unavailable")
+    );
+    context_live(&mut app, i64::MAX, i64::MAX);
+    context_snapshot(&mut app, i64::MAX, i64::MAX, &[i64::MAX, i64::MAX, 0, 0, 0]);
+    let terminal = draw_startup(&app, 120, 60);
+    assert!(terminal_text(&terminal).contains("Breakdown unavailable"));
+    let grid = context_grid_cells(&terminal);
+    assert_eq!(grid.len(), 200);
+    assert!(grid
+        .iter()
+        .all(|cell| cell.symbol() != "⛶" && cell.fg == palette::TEXT));
+}
+
+#[test]
+fn context_all_is_exposed_in_help_completion_and_argument_errors() {
+    use clap::CommandFactory;
+    let help = picopilot::config::AppConfig::command()
+        .render_long_help()
+        .to_string();
+    assert!(help.contains("/context all"));
+    let mut app = App::new(None);
+    type_input(&mut app, "/context");
+    assert!(terminal_text(&draw_startup(&app, 120, 22)).contains("all adds source details"));
+    app.take_input();
+    type_input(&mut app, "/context extra");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LocalCommandError("Use /context or /context all.".into())
+    );
+}
+
+#[test]
 fn context_view_renders_measured_categories_and_live_usage_without_history() {
     use picopilot::events::UsageSnapshot;
     let mut app = measured_context_app();
@@ -191,6 +810,9 @@ fn context_view_renders_measured_categories_and_live_usage_without_history() {
         assert!(text.contains(expected), "missing {expected}");
     }
     assert_eq!(cell_at_text(&terminal, "⛁").fg, palette::PROMPT_BORDER);
+    assert!(cell_at_text(&terminal, "Measured category snapshot")
+        .modifier
+        .contains(Modifier::ITALIC));
     assert!(app.entries().is_empty());
     app.apply(EventUpdate::Usage(UsageSnapshot {
         current_tokens: 50000,
@@ -415,7 +1037,7 @@ fn context_partial_cells_use_reference_threshold_and_dim_free_legend() {
         tool_definitions_tokens: None,
     }));
     app.set_context_attribution(Some(ContextAttributionSnapshot {
-        model_id: "model".into(),
+        model_id: "test-model".into(),
         total_tokens: 3500,
         prompt_token_limit: 100000,
         compactions: 0,
@@ -435,8 +1057,8 @@ fn context_partial_cells_use_reference_threshold_and_dim_free_legend() {
     }));
     let terminal = draw_startup(&app, 80, 35);
     assert!(
-        buffer_rows(&terminal)[1].starts_with("⛀ ⛁ ⛁ ⛁ ⛀ ⛶"),
-        "699/1000 partial; 700/1000 filled; 1101 has one full and one partial cell"
+        buffer_rows(&terminal)[1].starts_with("⛀ ⛁ ⛁ ⛁ ⛶"),
+        "round 3.5 used cells to 4: 699/1000 partial; 700/1000 filled; no extra ceil cell"
     );
     let free = cell_at_text(&terminal, "⛶ Free space");
     assert_eq!(free.fg, palette::PROMPT_BORDER);

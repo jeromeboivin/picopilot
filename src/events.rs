@@ -52,6 +52,37 @@ pub struct ContextAttributionSnapshot {
     pub compactions: i64,
 }
 
+impl UsageSnapshot {
+    pub fn is_valid(&self) -> bool {
+        self.current_tokens >= 0 && self.token_limit > 0
+    }
+}
+
+impl ContextAttributionSnapshot {
+    pub fn has_valid_total(&self) -> bool {
+        self.total_tokens >= 0 && self.prompt_token_limit > 0
+    }
+
+    pub fn measured_categories(&self) -> Option<[i64; 5]> {
+        let mut amounts = [0; 5];
+        for (index, (label, _)) in crate::palette::CONTEXT_CATEGORIES.iter().enumerate() {
+            let mut matches = self
+                .categories
+                .iter()
+                .filter(|category| category.label == *label);
+            let category = matches.next()?;
+            if category.tokens < 0 || matches.next().is_some() {
+                return None;
+            }
+            amounts[index] = category.tokens;
+        }
+        amounts
+            .iter()
+            .try_fold(0i64, |sum, amount| sum.checked_add(*amount))?;
+        Some(amounts)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TodoRowSnapshot {
     pub id: String,
@@ -240,6 +271,8 @@ pub enum EventUpdate {
         agent_id: Option<String>,
     },
     Usage(UsageSnapshot),
+    ContextRefreshFailed,
+    UsageMetricsRefreshFailed,
     Banner {
         severity: BannerSeverity,
         message: String,

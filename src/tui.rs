@@ -231,6 +231,8 @@ pub struct StatusState {
     pub usage: Option<UsageSnapshot>,
     pub usage_metrics: Option<UsageMetricsSnapshot>,
     pub context_attribution: Option<ContextAttributionSnapshot>,
+    pub context_refresh_failed: bool,
+    pub usage_metrics_refresh_failed: bool,
     pub busy: bool,
 }
 
@@ -253,7 +255,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/fleet", "run work through Fleet"),
     ("/resume", "open a session to resume"),
     ("/status", "show session and configuration status"),
-    ("/context", "show context and session usage"),
+    ("/context", "show context; all adds source details"),
 ];
 
 static NEXT_SCREEN_NAMESPACE: AtomicU64 = AtomicU64::new(1);
@@ -535,6 +537,7 @@ pub struct App {
     todos: Option<TodoSnapshot>,
     show_todos: bool,
     show_context: bool,
+    context_expanded: bool,
     context_scroll: u16,
     context_scroll_limit: std::cell::Cell<u16>,
     todo_refresh_requested: bool,
@@ -965,11 +968,24 @@ impl App {
     }
 
     pub fn set_model(&mut self, model: Option<String>) {
+        if self.status.model != model {
+            self.status.context_attribution = None;
+            self.status.context_refresh_failed = false;
+        }
         self.status.model = model;
     }
 
     pub fn set_session_id(&mut self, session_id: impl Into<String>) {
-        self.session_id = Some(sanitize_plain(&session_id.into()));
+        let session_id = sanitize_plain(&session_id.into());
+        if self.session_id.as_deref() != Some(&session_id) {
+            self.status.usage = None;
+            self.status.usage_metrics = None;
+            self.status.context_attribution = None;
+            self.status.context_refresh_failed = false;
+            self.status.usage_metrics_refresh_failed = false;
+            self.reset_context_warning_state();
+        }
+        self.session_id = Some(session_id);
     }
 
     pub fn open_tool_picker(&mut self) {
@@ -1076,9 +1092,8 @@ impl App {
         metrics: UsageMetricsSnapshot,
         context_attribution: Option<ContextAttributionSnapshot>,
     ) {
-        self.status.usage_metrics = Some(metrics);
-        self.observe_context_attribution(context_attribution.as_ref());
-        self.status.context_attribution = context_attribution;
+        self.set_usage_metrics(metrics);
+        self.set_context_attribution(context_attribution);
     }
 
     fn observe_context_attribution(&mut self, context: Option<&ContextAttributionSnapshot>) {
@@ -1096,11 +1111,13 @@ impl App {
 
     pub fn set_usage_metrics(&mut self, metrics: UsageMetricsSnapshot) {
         self.status.usage_metrics = Some(metrics);
+        self.status.usage_metrics_refresh_failed = false;
     }
 
     pub fn set_context_attribution(&mut self, context: Option<ContextAttributionSnapshot>) {
         self.observe_context_attribution(context.as_ref());
         self.status.context_attribution = context;
+        self.status.context_refresh_failed = false;
     }
 
     pub fn set_reasoning_effort(&mut self, reasoning_effort: Option<String>) {
@@ -1529,6 +1546,8 @@ impl App {
         self.status.usage = None;
         self.status.usage_metrics = None;
         self.status.context_attribution = None;
+        self.status.context_refresh_failed = false;
+        self.status.usage_metrics_refresh_failed = false;
         self.reset_context_warning_state();
         self.status.busy = false;
         self.active_agent = None;
@@ -1581,6 +1600,8 @@ impl App {
         self.status.usage = None;
         self.status.usage_metrics = None;
         self.status.context_attribution = None;
+        self.status.context_refresh_failed = false;
+        self.status.usage_metrics_refresh_failed = false;
         self.reset_context_warning_state();
         self.blocked = false;
         self.completion = None;
@@ -1896,7 +1917,22 @@ impl App {
                     self.queue_screen_change(index);
                 }
             }
-            EventUpdate::Usage(usage) => self.status.usage = Some(usage),
+            EventUpdate::ContextRefreshFailed => self.status.context_refresh_failed = true,
+            EventUpdate::UsageMetricsRefreshFailed => {
+                self.status.usage_metrics_refresh_failed = true
+            }
+            EventUpdate::Usage(usage) => {
+                if self
+                    .status
+                    .usage
+                    .as_ref()
+                    .is_some_and(|previous| previous.token_limit != usage.token_limit)
+                {
+                    self.status.context_attribution = None;
+                    self.status.context_refresh_failed = false;
+                }
+                self.status.usage = Some(usage);
+            }
             EventUpdate::Banner {
                 severity,
                 message,
@@ -1914,7 +1950,7 @@ impl App {
                     url: url.map(|url| sanitize_plain(&url)),
                 });
             }
-            EventUpdate::ModelChanged { model } => self.status.model = Some(model),
+            EventUpdate::ModelChanged { model } => self.set_model(Some(model)),
             EventUpdate::TodosChanged => {
                 if self.fleet_active && self.show_todos {
                     self.todo_refresh_requested = true;
@@ -2547,7 +2583,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             UiAction::NewConversation
         }
         KeyCode::Char('p') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadModels,
-        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => UiAction::LoadUsage,
+        KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+            app.context_expanded = false;
+            UiAction::LoadUsage
+        }
         KeyCode::Char('t') if key.modifiers == KeyModifiers::CONTROL && app.fleet_active => {
             if app.show_todos {
                 app.show_todos = false;
@@ -2601,11 +2640,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             } else if input == "/status" {
                 app.dismiss_startup_surface();
                 UiAction::LoadStatus
-            } else if input == "/context" {
+            } else if input == "/context" || input == "/context all" {
                 app.dismiss_startup_surface();
+                app.context_expanded = input == "/context all";
+                app.show_context = true;
+                app.context_scroll = 0;
                 UiAction::LoadUsageCommand
             } else if input.split_whitespace().next() == Some("/usage") {
                 UiAction::LocalCommandError("Unknown command: /usage".to_string())
+            } else if input.split_whitespace().next() == Some("/context") {
+                UiAction::LocalCommandError("Use /context or /context all.".to_string())
             } else if input == "/agent" {
                 app.dismiss_startup_surface();
                 UiAction::LoadAgents
@@ -2614,7 +2658,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 UiAction::LoadSessions
             } else if matches!(
                 input.split_whitespace().next(),
-                Some("/status" | "/context" | "/resume" | "/agent")
+                Some("/status" | "/resume" | "/agent")
             ) {
                 let command = input.split_whitespace().next().unwrap_or_default();
                 UiAction::LocalCommandError(format!(
@@ -3164,9 +3208,10 @@ async fn refresh_status_cost(
     match runtime.session.rpc().usage().get_metrics().await {
         Ok(metrics) => app.set_usage_metrics(usage_metrics_snapshot(&metrics)),
         Err(error) if error.is_transport_failure() => {
+            app.apply(EventUpdate::UsageMetricsRefreshFailed);
             recover_connection(app, runtime, events).await?;
         }
-        Err(_) => {}
+        Err(_) => app.apply(EventUpdate::UsageMetricsRefreshFailed),
     }
     match runtime
         .session
@@ -3177,9 +3222,10 @@ async fn refresh_status_cost(
     {
         Ok(result) => app.set_context_attribution(context_attribution_snapshot(&result)),
         Err(error) if error.is_transport_failure() => {
+            app.apply(EventUpdate::ContextRefreshFailed);
             recover_connection(app, runtime, events).await?;
         }
-        Err(_) => {}
+        Err(_) => app.apply(EventUpdate::ContextRefreshFailed),
     }
     Ok(())
 }
@@ -3328,34 +3374,10 @@ async fn process_terminal_events(
                 app.add_local_output(message);
             }
             UiAction::LoadUsage | UiAction::LoadUsageCommand => {
-                let metrics = match runtime.session.rpc().usage().get_metrics().await {
-                    Ok(metrics) => metrics,
-                    Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
-                        app.add_local_output(format!("Usage unavailable: {error}"));
-                        continue;
-                    }
-                    Err(error) => {
-                        app.add_local_output(format!("Usage unavailable: {error}"));
-                        continue;
-                    }
-                };
-                let context_attribution = match runtime
-                    .session
-                    .rpc()
-                    .metadata()
-                    .get_context_attribution()
-                    .await
-                {
-                    Ok(result) => context_attribution_snapshot(&result),
-                    Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
-                        app.add_local_output(format!("Usage unavailable: {error}"));
-                        continue;
-                    }
-                    Err(_) => None,
-                };
-                app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
+                refresh_status_cost(app, runtime, events).await?;
+                app.dismiss_startup_surface();
+                app.show_context = true;
+                app.context_scroll = 0;
             }
             UiAction::LoadTodos => {
                 load_todos(app, runtime, events).await?;
@@ -5108,19 +5130,61 @@ fn status_count_line(label: &str, enabled: usize, disabled: usize, command: &str
     ])
 }
 
+fn context_cell_allocation(
+    used: i64,
+    limit: i64,
+    amounts: Option<[i64; 5]>,
+    capacity: usize,
+) -> [usize; 6] {
+    let mut tokens = [0; 6];
+    if let Some(amounts) = amounts.filter(|amounts| amounts.iter().sum::<i64>() <= used) {
+        tokens[..5].copy_from_slice(&amounts);
+    }
+    tokens[5] = used - tokens[..5].iter().sum::<i64>();
+    let denominator = i128::from(limit.max(used));
+    let numerators = tokens.map(|tokens| i128::from(tokens) * capacity as i128);
+    let mut counts = numerators.map(|numerator| (numerator / denominator) as usize);
+    let used_cells =
+        ((i128::from(used) * capacity as i128 * 2 + denominator) / (denominator * 2)) as usize;
+    let mut order = [0, 1, 2, 3, 4, 5];
+    order.sort_by(|left, right| {
+        (numerators[*right] % denominator)
+            .cmp(&(numerators[*left] % denominator))
+            .then_with(|| left.cmp(right))
+    });
+    for index in order
+        .into_iter()
+        .take(used_cells.saturating_sub(counts.iter().sum()))
+    {
+        counts[index] += 1;
+    }
+    counts
+}
+
 fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled(
         "Context Usage",
         Style::default().add_modifier(Modifier::BOLD),
     )];
-    if let (Some(usage), Some(context)) = (&app.status.usage, &app.status.context_attribution) {
-        let limit = usage.token_limit.max(1);
+    let live = app.status.usage.as_ref().filter(|usage| usage.is_valid());
+    let context = app.status.context_attribution.as_ref();
+    let snapshot = context.filter(|context| context.has_valid_total());
+    let totals = live
+        .map(|usage| (usage.current_tokens, usage.token_limit))
+        .or_else(|| snapshot.map(|context| (context.total_tokens, context.prompt_token_limit)));
+    if let Some((used, limit)) = totals {
         let metadata = usage_line(format!(
-            "{} · {}/{} tokens ({:.1}%)",
-            sanitize_plain(&context.model_id),
-            format_count(usage.current_tokens),
+            "{} · {}/{} tokens ({:.1}%){}",
+            sanitize_plain(
+                snapshot
+                    .map(|context| context.model_id.as_str())
+                    .or(app.status.model.as_deref())
+                    .unwrap_or("auto")
+            ),
+            format_count(used),
             format_count(limit),
-            usage.current_tokens as f64 * 100.0 / limit as f64
+            used as f64 * 100.0 / limit as f64,
+            if used > limit { " · Over limit" } else { "" }
         ));
         let large = limit >= 1_000_000;
         let (columns, rows) = if width < 80 {
@@ -5129,26 +5193,42 @@ fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             (if large { 20 } else { 10 }, 10)
         };
         let capacity = columns * rows;
-        let tokens_per_cell = limit as f64 / capacity as f64;
+        let tokens_per_cell = limit.max(used) as f64 / capacity as f64;
         let mut cells = Vec::new();
-        let mut legend = vec![
-            metadata,
-            Line::default(),
-            Line::styled(
-                "Measured usage by category",
+        let mut legend = vec![metadata, Line::default()];
+        if app.status.context_refresh_failed && context.is_some() {
+            legend.push(usage_line("Attribution stale"));
+        }
+        if live.is_none() {
+            legend.push(usage_line("Attribution snapshot · Live usage unavailable"));
+        }
+        let amounts = snapshot.and_then(|context| context.measured_categories());
+        let category_total = amounts.map(|amounts| amounts.iter().sum::<i64>());
+        let conflict = category_total.is_some_and(|total| total > used);
+        let allocation = context_cell_allocation(used, limit, amounts, capacity);
+        if amounts.is_none() {
+            legend.push(usage_line("Breakdown unavailable"));
+        } else {
+            legend.push(Line::styled(
+                if conflict {
+                    if live.is_some() {
+                        "Category snapshot exceeds live usage; pending refresh"
+                    } else {
+                        "Category snapshot exceeds attribution total; pending refresh"
+                    }
+                } else {
+                    "Measured category snapshot"
+                },
                 Style::default()
                     .fg(palette::INACTIVE)
                     .add_modifier(Modifier::DIM | Modifier::ITALIC),
-            ),
-        ];
-        for &(label, color) in palette::CONTEXT_CATEGORIES {
-            let tokens = context
-                .categories
-                .iter()
-                .find(|category| category.label == label)
-                .map_or(0, |category| category.tokens);
-            let cell_count = (tokens as f64 / tokens_per_cell).ceil() as usize;
-            for index in 0..cell_count {
+            ));
+        }
+        for (index, &(label, color)) in palette::CONTEXT_CATEGORIES.iter().enumerate() {
+            let Some(tokens) = amounts.map(|amounts| amounts[index]) else {
+                continue;
+            };
+            for index in 0..allocation[index] {
                 let fullness = (tokens as f64 / tokens_per_cell - index as f64).min(1.0);
                 cells.push(Span::styled(
                     if fullness >= 0.7 { "⛁ " } else { "⛀ " },
@@ -5170,6 +5250,29 @@ fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 ),
             ]));
         }
+        let residual = category_total
+            .filter(|_| !conflict)
+            .map_or(used, |total| used - total);
+        let neutral_style = Style::default().fg(palette::TEXT);
+        if residual > 0 {
+            legend.push(Line::from(vec![
+                Span::styled("⛁ ", neutral_style),
+                Span::raw(format!(
+                    "Unattributed usage: {} tokens (unmeasured)",
+                    format_count(residual)
+                )),
+            ]));
+        }
+        for index in 0..allocation[5] {
+            cells.push(Span::styled(
+                if residual as f64 / tokens_per_cell - index as f64 >= 0.7 {
+                    "⛁ "
+                } else {
+                    "⛀ "
+                },
+                neutral_style,
+            ));
+        }
         cells.truncate(capacity);
         while cells.len() < capacity {
             cells.push(Span::styled(
@@ -5190,8 +5293,8 @@ fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Span::styled(
                 format!(
                     "{} ({:.1}%)",
-                    format_count(limit.saturating_sub(usage.current_tokens)),
-                    (limit - usage.current_tokens) as f64 * 100.0 / limit as f64
+                    format_count(limit.saturating_sub(used).max(0)),
+                    limit.saturating_sub(used).max(0) as f64 * 100.0 / limit as f64
                 ),
                 Style::default()
                     .fg(palette::INACTIVE)
@@ -5227,6 +5330,75 @@ fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(spans));
             }
         }
+    } else {
+        lines.push(usage_line("Context usage unavailable"));
+        lines.push(usage_line("Breakdown unavailable"));
+    }
+    if app.context_expanded {
+        lines.push(Line::default());
+        lines.push(usage_line("Source details"));
+        if app.status.context_refresh_failed && context.is_some() {
+            lines.push(usage_line(
+                "Attribution stale: refresh failed; retained last successful snapshot",
+            ));
+        } else if app.status.context_refresh_failed {
+            lines.push(usage_line(
+                "Attribution refresh failed; no successful snapshot available",
+            ));
+        }
+        if app.status.usage_metrics_refresh_failed && app.status.usage_metrics.is_none() {
+            lines.push(usage_line(
+                "Session usage refresh failed; no successful metrics available",
+            ));
+        }
+        if let Some(usage) = &app.status.usage {
+            lines.push(usage_line(format!(
+                "Live source: {}/{}",
+                format_count(usage.current_tokens),
+                format_count(usage.token_limit)
+            )));
+        }
+        if live.is_none() {
+            lines.push(usage_line("Live usage unavailable"));
+        }
+        if let Some(context) = context {
+            lines.push(usage_line(format!(
+                "Attribution source: {}/{}",
+                format_count(context.total_tokens),
+                format_count(context.prompt_token_limit)
+            )));
+            if let Some(amounts) = context.measured_categories() {
+                lines.push(usage_line(format!(
+                    "Category source total: {}",
+                    format_count(amounts.iter().sum())
+                )));
+            } else {
+                lines.push(usage_line(
+                    "Category source total unavailable: incomplete or invalid measurements",
+                ));
+            }
+            lines.push(usage_line(format!(
+                "Attribution model: {}",
+                sanitize_plain(&context.model_id)
+            )));
+            if !context.has_valid_total() {
+                lines.push(usage_line(
+                    "Attribution total or limit invalid; breakdown unavailable",
+                ));
+            }
+            if let Some(usage) = live {
+                if context.total_tokens != usage.current_tokens
+                    || context.prompt_token_limit != usage.token_limit
+                {
+                    lines.push(usage_line("Source totals differ; live usage is authoritative. Categories are snapshot values."));
+                }
+            }
+        } else {
+            lines.push(usage_line("Attribution source unavailable"));
+        }
+        lines.push(usage_line(
+            "Per-item costs unavailable: tools, agents, memory files, skills, slash commands",
+        ));
     }
     lines.push(Line::default());
     lines.push(Line::styled(
@@ -5234,12 +5406,19 @@ fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::BOLD),
     ));
     if let Some(metrics) = &app.status.usage_metrics {
+        if app.status.usage_metrics_refresh_failed {
+            lines.push(usage_line("Session usage stale: refresh failed"));
+        }
         lines.extend([
             usage_line(format!("Session cost: {}", format_cost(metrics))),
-            usage_line(format!(
-                "Premium request cost: {:.2}",
-                metrics.total_premium_request_cost
-            )),
+            usage_line(if valid_cost(metrics.total_premium_request_cost) {
+                format!(
+                    "Premium request cost: {:.2}",
+                    metrics.total_premium_request_cost
+                )
+            } else {
+                "Premium request cost: unavailable".into()
+            }),
             usage_line(format!("Requests: {}", metrics.total_user_requests)),
             usage_line(format!("API time: {} ms", metrics.total_api_duration_ms)),
         ]);
@@ -5271,10 +5450,17 @@ fn usage_line(text: impl Into<String>) -> Line<'static> {
     ))
 }
 
+fn valid_cost(cost: f64) -> bool {
+    cost.is_finite() && cost >= 0.0
+}
+
 fn format_cost(metrics: &UsageMetricsSnapshot) -> String {
     match metrics.total_nano_aiu {
-        Some(cost) => format!("{:.3} AIU", cost / 1_000_000_000.0),
-        None => format!("{:.1} premium", metrics.total_premium_request_cost),
+        Some(cost) if valid_cost(cost) => format!("{:.3} AIU", cost / 1_000_000_000.0),
+        None if valid_cost(metrics.total_premium_request_cost) => {
+            format!("{:.1} premium", metrics.total_premium_request_cost)
+        }
+        _ => "unavailable".into(),
     }
 }
 
@@ -10167,9 +10353,11 @@ mod tests {
 
             assert_eq!(
                 handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
-                UiAction::LocalCommandError(format!(
-                    "{command} does not accept arguments. Use {command} without arguments."
-                ))
+                UiAction::LocalCommandError(if command == "/context" {
+                    "Use /context or /context all.".into()
+                } else {
+                    format!("{command} does not accept arguments. Use {command} without arguments.")
+                })
             );
         }
     }
@@ -10428,7 +10616,7 @@ mod tests {
         );
 
         assert!(app.entries().is_empty());
-        assert!(rendered_rows(&app, 100, 18)
+        assert!(rendered_rows(&app, 100, 35)
             .iter()
             .any(|row| row.contains("Requests: 4")));
 
@@ -10440,7 +10628,7 @@ mod tests {
             current_model: Some("gpt-5".to_string()),
         });
         assert!(app.entries().is_empty());
-        assert!(rendered_rows(&app, 100, 18)
+        assert!(rendered_rows(&app, 100, 35)
             .iter()
             .any(|row| row.contains("Requests: 8")));
     }

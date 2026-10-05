@@ -50,7 +50,8 @@ pub(crate) fn system_message_config() -> SystemMessageConfig {
 #[command(
     name = "picopilot",
     version,
-    about = "A minimalist Copilot coding agent"
+    about = "A minimalist Copilot coding agent",
+    after_help = "In a session: /context shows usage; /context all adds source details. Ctrl+U opens /context. PageUp/PageDown scroll; Esc closes."
 )]
 pub struct AppConfig {
     #[arg(value_name = "PROJECT", conflicts_with = "project")]

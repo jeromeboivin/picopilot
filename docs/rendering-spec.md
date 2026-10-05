@@ -537,9 +537,49 @@ or unsupported rows are added. Grids are 10x10 below 1M and 20x10 at 1M+;
 below 80 columns they become 5x5 and 5x10 with the legend below. Wide legends
 wrap within their own column without displacing the grid.
 
-This baseline is limited to valid live usage and complete measured attribution.
-CT-02 owns unavailable/conflicting/stale data, allocation rounding, expanded
-details and suggestions; CT-03 owns the live footer. Source-derived reference:
+CT-02 adds `/context all`, with available live, attribution, and category source
+totals, mismatch explanations, refresh-failure stale state, and explicit unavailable
+per-item costs. Default output omits those diagnostics. No supported analyzer
+suggestion has the required evidence; no tool/agent/memory/skill/command costs,
+cache-aware totals, compaction reserve, or savings are invented.
+
+Valid live current/limit wins. Complete valid category snapshots retain their
+amounts when their sum is at most live usage; the residual is neutral Unattributed
+usage, explicitly unmeasured. If the sum exceeds live usage, all used cells are
+neutral pending refresh and the legend identifies the category snapshot. Missing,
+incomplete, duplicate, negative, overflowing, or incompatible categories are
+unavailable, never measured zero. A valid attribution total/limit is a labeled
+snapshot fallback when live usage is unavailable. Non-positive limits and negative
+totals are unavailable. SDK token fields are integers; non-finite/non-integer input
+cannot decode into them. Non-finite or negative session costs display unavailable.
+Over-limit cells cap at 100%, retaining actual counts, percentage, and Over limit.
+
+Round total used cells once, then distribute by largest fractional remainder;
+palette order breaks ties and neutral residual follows the five measured categories.
+Tiny nonzero categories may receive no cell; legends retain accurate token counts.
+Rounding uses exact integer numerators/remainders, including ties with residual
+usage. Neutral used cells and their Unattributed usage legend key use the existing
+neutral `text` role (#ffffff) without DIM, distinct from all five measured category
+styles and the gray DIM free cells. This is unmeasured usage, not a sixth category.
+Avoid DIM on neutral used cells: terminal dimming could blend white into the grays
+used by measured categories. Neutral cells and their matching legend remain white.
+Failures retain successful values and mark attribution/session metrics stale
+independently until their respective refresh succeeds. Idle alone is not stale.
+Expanded mode also explains failed refreshes when no successful values exist.
+Session switches clear totals and categories. Model/limit changes clear the old
+breakdown until a fresh successful fetch supplies it. Selected model IDs may be
+`auto` or provider-qualified; attribution identifies the resolved model, which the
+context header shows. Live tokenLimit is the context-window maximum; attribution
+promptTokenLimit is the prompt maximum (the SDK separately exposes a full limit
+including output reserve). Cross-source equality is not assumed. Stable source
+differences remain diagnostics, not grounds for permanently hiding valid categories.
+The RPC refreshes run serially while holding the mutable App; queued model/limit
+events clear the breakdown when applied. Model changes do not reset the existing
+post-compaction warning suppression. CT-03 owns the
+footer meter and must reuse these rules: hide only the meter without live usage,
+preserving normal hints/warnings; use neutral live usage when categories are absent
+or conflicting. CT-04 owns full-suite and real-terminal release validation.
+Source-derived reference:
 Claude revision `6f6f12b37f529488b10e53928dd5508bb93535c7`,
 `ContextVisualization.tsx` and `analyzeContext.ts`. The current Claude binary
 is unavailable locally; binary comparison and pixel-perfect parity are not claimed.

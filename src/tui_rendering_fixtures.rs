@@ -245,6 +245,86 @@ fn append_app_fixtures(output: &mut String) {
             .unwrap()
             .prompt_token_limit = 1_000_000;
     });
+    for scenario in [
+        "all",
+        "missing",
+        "fallback",
+        "partial",
+        "conflict",
+        "stale",
+        "tiny",
+        "over-limit",
+        "invalid",
+        "resolved-model",
+        "different-limits",
+        "refresh-failed-empty",
+    ] {
+        append_app_fixture(output, &format!("context-{scenario}"), 80, |app| {
+            setup_usage(app);
+            app.context_expanded = true;
+            match scenario {
+                "missing" => app.set_context_attribution(None),
+                "fallback" => app.status.usage = None,
+                "partial" => {
+                    app.status
+                        .context_attribution
+                        .as_mut()
+                        .unwrap()
+                        .categories
+                        .pop();
+                }
+                "conflict" => app.status.usage.as_mut().unwrap().current_tokens = 20_000,
+                "stale" => app.apply(crate::events::EventUpdate::ContextRefreshFailed),
+                "tiny" => {
+                    let context = app.status.context_attribution.as_mut().unwrap();
+                    context.total_tokens = 103;
+                    context.prompt_token_limit = 10_000;
+                    for (category, tokens) in context.categories.iter_mut().zip([51, 51, 1, 0, 0]) {
+                        category.tokens = tokens;
+                    }
+                    let usage = app.status.usage.as_mut().unwrap();
+                    usage.current_tokens = 103;
+                    usage.token_limit = 10_000;
+                }
+                "over-limit" => app.status.usage.as_mut().unwrap().current_tokens = 300_000,
+                "invalid" => {
+                    app.status.usage.as_mut().unwrap().token_limit = 0;
+                    app.status
+                        .context_attribution
+                        .as_mut()
+                        .unwrap()
+                        .prompt_token_limit = 0;
+                }
+                "resolved-model" => {
+                    app.status.model = Some("auto".into());
+                    app.status.context_attribution.as_mut().unwrap().model_id =
+                        "resolved-model".into();
+                }
+                "different-limits" => {
+                    app.status
+                        .context_attribution
+                        .as_mut()
+                        .unwrap()
+                        .prompt_token_limit = 180_000;
+                }
+                "refresh-failed-empty" => {
+                    app.status.usage = None;
+                    app.set_context_attribution(None);
+                    app.status.usage_metrics = None;
+                    app.apply(crate::events::EventUpdate::ContextRefreshFailed);
+                    app.apply(crate::events::EventUpdate::UsageMetricsRefreshFailed);
+                }
+                _ => {}
+            }
+        });
+    }
+    append_app_fixture(output, "context-constrained-picker", 12, |app| {
+        setup_usage(app);
+        app.context_expanded = true;
+        app.push_input('x');
+        app.open_tool_picker();
+    });
+    append_app_fixture_at_widths(output, "context-breakpoint", 64, &[79, 80], setup_usage);
     append_app_fixture(
         output,
         "nested-concurrent-tasks",
@@ -300,8 +380,20 @@ fn append_app_fixture<F>(output: &mut String, name: &str, height: u16, setup: F)
 where
     F: Fn(&mut App),
 {
+    append_app_fixture_at_widths(output, name, height, WIDTHS, setup);
+}
+
+fn append_app_fixture_at_widths<F>(
+    output: &mut String,
+    name: &str,
+    height: u16,
+    widths: &[usize],
+    setup: F,
+) where
+    F: Fn(&mut App),
+{
     writeln!(output, "[app name={name} height={height}]").unwrap();
-    for &width in WIDTHS {
+    for &width in widths {
         let mut app = gallery_app();
         setup(&mut app);
         let mut terminal = Terminal::new(TestBackend::new(width as u16, height))

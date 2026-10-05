@@ -77,7 +77,8 @@ Built-in commands are:
 | Command | What it does |
 | --- | --- |
 | `/status` | Shows the active session, model, reasoning level, context tier, tools, and skills. Takes no arguments. |
-| `/context` | Shows measured context categories, used/free grid, and separate Session usage metrics. Ctrl+U also opens it. PageUp/PageDown scroll; Esc closes. Takes no arguments. |
+| `/context` | Shows live used/free context, measured category snapshots when available, and separate Session usage metrics. Ctrl+U also opens it. PageUp/PageDown scroll; Esc closes. |
+| `/context all` | Adds available source totals, discrepancies, stale-state explanations, and explicit unavailable per-item costs. No estimates or invented savings. |
 | `/resume` | Opens the previous-conversation picker. Use `Up`/`Down` or `j`/`k` to select, `Enter` to load, or `Esc` to cancel. Takes no arguments. |
 | `/fleet PROMPT` | Starts a Fleet run for `PROMPT`. A non-empty prompt is required. |
 
@@ -88,8 +89,24 @@ sent as ordinary prompts, except the removed `/usage`, which reports an unknown 
 
 The context screen uses a 10x10 grid below a 1M-token limit and 20x10 at
 1M or above. Below 80 columns, it uses 5x5 or 5x10 and stacks the legend.
-This is the valid measured-data baseline. Missing/conflicting data and
-`/context all` are not delivered yet; the live footer meter is separate work.
+Valid live usage is authoritative. Category amounts are never scaled: remaining
+usage is neutral, unmeasured Unattributed usage. When categories exceed live usage,
+the grid is neutral pending refresh; the legend preserves the measured snapshot.
+Missing or invalid categories are unavailable, not zero. Without valid live usage,
+a valid attribution total/limit can supply a clearly labeled snapshot instead.
+Refresh failures retain successful values and mark them stale; idle alone does not.
+Session switches clear all usage; model/limit changes clear the old breakdown.
+Fresh attribution is accepted after a reset. Selected Auto/provider model IDs and
+live context-window versus attribution prompt limits need not match. Expanded mode
+shows these source values, and the header shows the attribution's resolved model.
+Cells use one rounded used total and largest fractional remainders, with palette
+order breaking exact ties. Neutral cells have a distinct undimmed text-colored legend
+key, not the System instructions color. Tiny values remain accurate in the legend. Over-limit usage
+fills at most 100% of cells but keeps the real counts and percentage.
+Per-item costs, cache-aware totals, compaction reserves, and savings are not measured.
+No analyzer suggestions are supported by the available data. The live footer meter
+remains CT-03 work; its absence is not replaced by a placeholder.
+Expanded mode explains refresh failures even when no successful data exists.
 The current implementation keeps the context view open until Esc. Submitting a
 prompt or invoking `/status` or `/resume` while it is open may leave live chat
 output hidden until Esc. This lifecycle still needs real-terminal release-gate
