@@ -3284,6 +3284,8 @@ async fn process_terminal_events(
             io::Error::other("event subscription is required for this terminal action")
         })?;
 
+        // Session futures are boxed: inline, debug builds add each one to this frame and Ctrl+N
+        // overflowed the 1 MiB Windows main-thread stack.
         match action {
             UiAction::None => {}
             UiAction::Quit => unreachable!("quit actions are handled before runtime dispatch"),
@@ -3295,7 +3297,7 @@ async fn process_terminal_events(
             UiAction::LoadSessions => match runtime.client.list_sessions(None).await {
                 Ok(sessions) => app.set_sessions(sessions),
                 Err(error) if error.is_transport_failure() => {
-                    recover_connection(app, runtime, events).await?;
+                    Box::pin(recover_connection(app, runtime, events)).await?;
                 }
                 Err(error) => app.apply(crate::events::EventUpdate::Banner {
                     severity: crate::events::BannerSeverity::RecoverableError,
@@ -3303,7 +3305,7 @@ async fn process_terminal_events(
                     url: None,
                 }),
             },
-            UiAction::NewConversation => match runtime.new_conversation().await {
+            UiAction::NewConversation => match Box::pin(runtime.new_conversation()).await {
                 Ok(()) => {
                     *events = runtime.session.subscribe();
                     app.reset_for_new_conversation();
@@ -3312,7 +3314,7 @@ async fn process_terminal_events(
                     app.add_diagnostic("new conversation started");
                 }
                 Err(error) if error.is_transport_failure() => {
-                    recover_connection(app, runtime, events).await?;
+                    Box::pin(recover_connection(app, runtime, events)).await?;
                 }
                 Err(error) => app.apply(crate::events::EventUpdate::Banner {
                     severity: crate::events::BannerSeverity::RecoverableError,
@@ -3374,15 +3376,15 @@ async fn process_terminal_events(
                 app.add_local_output(message);
             }
             UiAction::LoadUsage | UiAction::LoadUsageCommand => {
-                refresh_status_cost(app, runtime, events).await?;
+                Box::pin(refresh_status_cost(app, runtime, events)).await?;
                 app.dismiss_startup_surface();
                 app.show_context = true;
                 app.context_scroll = 0;
             }
             UiAction::LoadTodos => {
-                load_todos(app, runtime, events).await?;
+                Box::pin(load_todos(app, runtime, events)).await?;
             }
-            UiAction::Resume(session_id) => match runtime.resume(session_id).await {
+            UiAction::Resume(session_id) => match Box::pin(runtime.resume(session_id)).await {
                 Ok(history) => {
                     *events = runtime.session.subscribe();
                     app.replace_history(&history);
@@ -3403,7 +3405,7 @@ async fn process_terminal_events(
                     app.add_diagnostic("session resumed");
                 }
                 Err(error) if error.is_transport_failure() => {
-                    recover_connection(app, runtime, events).await?;
+                    Box::pin(recover_connection(app, runtime, events)).await?;
                 }
                 Err(error) => app.apply(crate::events::EventUpdate::Banner {
                     severity: crate::events::BannerSeverity::RecoverableError,
@@ -3424,17 +3426,16 @@ async fn process_terminal_events(
                         continue;
                     }
                 };
-                if let Err(error) = runtime
-                    .switch_model(
-                        model.clone(),
-                        options,
-                        selection.reasoning_effort.clone(),
-                        selection.context_tier.clone(),
-                    )
-                    .await
+                if let Err(error) = Box::pin(runtime.switch_model(
+                    model.clone(),
+                    options,
+                    selection.reasoning_effort.clone(),
+                    selection.context_tier.clone(),
+                ))
+                .await
                 {
                     if error.is_transport_failure() {
-                        recover_connection(app, runtime, events).await?;
+                        Box::pin(recover_connection(app, runtime, events)).await?;
                     } else {
                         app.apply(crate::events::EventUpdate::Banner {
                             severity: crate::events::BannerSeverity::RecoverableError,
@@ -3481,7 +3482,7 @@ async fn process_terminal_events(
                 }
 
                 app.set_reconnecting(true);
-                let result = runtime.set_toolset(toolset).await;
+                let result = Box::pin(runtime.set_toolset(toolset)).await;
                 app.set_reconnecting(false);
                 match result {
                     Ok(()) => {
@@ -3495,7 +3496,7 @@ async fn process_terminal_events(
                         ));
                     }
                     Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
+                        Box::pin(recover_connection(app, runtime, events)).await?;
                     }
                     Err(error) => app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::RecoverableError,
@@ -3516,7 +3517,7 @@ async fn process_terminal_events(
                 }
 
                 app.set_reconnecting(true);
-                let result = runtime.set_skills(selection).await;
+                let result = Box::pin(runtime.set_skills(selection)).await;
                 app.set_reconnecting(false);
                 match result {
                     Ok(()) => {
@@ -3529,7 +3530,7 @@ async fn process_terminal_events(
                         ));
                     }
                     Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
+                        Box::pin(recover_connection(app, runtime, events)).await?;
                     }
                     Err(error) => app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::RecoverableError,
@@ -3554,7 +3555,7 @@ async fn process_terminal_events(
                         continue;
                     }
                     app.set_reconnecting(true);
-                    let result = runtime.set_skills(selection).await;
+                    let result = Box::pin(runtime.set_skills(selection)).await;
                     app.set_reconnecting(false);
                     match result {
                         Ok(()) => {
@@ -3563,7 +3564,7 @@ async fn process_terminal_events(
                             app.set_skill_selection(runtime.active_skill_selection.clone());
                         }
                         Err(error) if error.is_transport_failure() => {
-                            recover_connection(app, runtime, events).await?;
+                            Box::pin(recover_connection(app, runtime, events)).await?;
                             continue;
                         }
                         Err(error) => {
@@ -3581,7 +3582,7 @@ async fn process_terminal_events(
                 match runtime.session.send(prompt).await {
                     Ok(_) => app.set_fleet_active(false),
                     Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
+                        Box::pin(recover_connection(app, runtime, events)).await?;
                     }
                     Err(error) => app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::BlockingError,
@@ -3618,7 +3619,7 @@ async fn process_terminal_events(
                     Ok(SendPath::Fleet) => app.set_fleet_active(true),
                     Ok(SendPath::Single) => app.set_fleet_active(false),
                     Err(error) if error.is_transport_failure() => {
-                        recover_connection(app, runtime, events).await?;
+                        Box::pin(recover_connection(app, runtime, events)).await?;
                     }
                     Err(error) => app.apply(crate::events::EventUpdate::Banner {
                         severity: crate::events::BannerSeverity::BlockingError,
@@ -6888,6 +6889,86 @@ mod tests {
     };
     use crate::skills::{Skill, SkillCatalog, SkillRoot, SkillRootSource, SkillSelection};
     use crate::toolset::{Toolset, CANONICAL_TOOLS, TOOL_COUNT};
+
+    /// Windows gives the main thread 1 MiB; in a debug build the frames that enclose
+    /// `process_terminal_events` (`main`, tokio `block_on`, `run`, `run_loop`) take about 288 KiB.
+    const CTRL_N_STACK_BUDGET: usize = (1024 - 288) * 1024;
+
+    #[test]
+    fn idle_ctrl_n_replaces_the_session_within_the_main_thread_stack_budget() {
+        const CHILD: &str = "PICOPILOT_CTRL_N_STACK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // A stack overflow aborts the whole process, so the scenario runs in a child.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tui::tests::idle_ctrl_n_replaces_the_session_within_the_main_thread_stack_budget",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "Ctrl+N child exited with {:?}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "Ctrl+N child did not run the regression test: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+
+        std::thread::Builder::new()
+            .stack_size(CTRL_N_STACK_BUDGET)
+            .spawn(|| {
+                let executor = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                executor.block_on(async {
+                    let (mut runtime, server) = tokio::spawn(crate::runtime::offline::runtime())
+                        .await
+                        .unwrap();
+                    let mut events = runtime.session.subscribe();
+                    let previous_session = runtime.session.id().to_string();
+                    let mut app = App::new(Some("gpt-5".to_string()));
+                    app.set_session_id(previous_session.clone());
+                    app.add_local_output("previous conversation");
+
+                    // Without a console the ambient-input drain after Ctrl+N may fail;
+                    // the reset itself is asserted from the resulting state.
+                    let _ = super::process_terminal_events(
+                        &mut app,
+                        Some(&mut runtime),
+                        Some(&mut events),
+                        Some(Event::Key(KeyEvent::new(
+                            KeyCode::Char('n'),
+                            KeyModifiers::CONTROL,
+                        ))),
+                    )
+                    .await;
+
+                    let new_session = runtime.session.id().to_string();
+                    assert_ne!(new_session, previous_session);
+                    assert_eq!(app.session_id.as_deref(), Some(new_session.as_str()));
+                    assert_eq!(
+                        app.entries(),
+                        &[ChatEntry::Diagnostic(
+                            "new conversation started".to_string()
+                        )]
+                    );
+                    assert_eq!(app.status().model.as_deref(), Some("gpt-5"));
+                    server.abort();
+                });
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     fn test_skill_catalog() -> SkillCatalog {
         let root = SkillRoot {

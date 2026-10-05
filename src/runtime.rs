@@ -364,6 +364,91 @@ fn apply_model_switch_to_config(
     // startup/config mismatch non-fatal.
 }
 
+/// An `AppRuntime` wired to an in-process JSON-RPC responder instead of the Copilot CLI.
+#[cfg(test)]
+pub(crate) mod offline {
+    use clap::Parser;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+
+    use super::{ActiveModelOptions, AppRuntime};
+    use crate::provider_config::ProviderConfigFile;
+    use crate::toolset::{Toolset, ToolsetProvenance};
+
+    /// Answers `session.create`, `session.getMetadata` and `session.detach`; any other RPC panics.
+    pub(crate) async fn runtime() -> (AppRuntime, tokio::task::JoinHandle<()>) {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+        let (reader, writer) = tokio::io::split(client_stream);
+        let client = github_copilot_sdk::Client::from_streams(reader, writer, ".".into())
+            .expect("offline client");
+        let server = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(server_stream);
+            let mut reader = tokio::io::BufReader::new(reader);
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let length: usize = header
+                    .trim()
+                    .strip_prefix("Content-Length: ")
+                    .and_then(|length| length.parse().ok())
+                    .expect("Content-Length header");
+                let mut separator = String::new();
+                reader
+                    .read_line(&mut separator)
+                    .await
+                    .expect("header separator");
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).await.expect("request body");
+                let request: serde_json::Value = serde_json::from_slice(&body).expect("JSON-RPC");
+                let result = match request["method"].as_str().unwrap_or_default() {
+                    "session.create" => {
+                        serde_json::json!({"sessionId": request["params"]["sessionId"]})
+                    }
+                    "session.getMetadata" => serde_json::json!({"session": null}),
+                    "session.detach" => serde_json::json!({"success": true}),
+                    method => panic!("unexpected RPC: {method}"),
+                };
+                let response =
+                    serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result})
+                        .to_string();
+                let frame = format!("Content-Length: {}\r\n\r\n{response}", response.len());
+                if writer.write_all(frame.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let session = client
+            .create_session(Default::default())
+            .await
+            .expect("offline session");
+        let (permission_handler, permission_requests) =
+            crate::permissions::permission_handler(".".into());
+        let runtime = AppRuntime {
+            client,
+            permission_requests,
+            permission_handler,
+            session,
+            models: Vec::new(),
+            provider_registry: None,
+            startup_banners: Vec::new(),
+            working_directory: ".".into(),
+            active_model_options: ActiveModelOptions::default(),
+            active_toolset: Toolset::shell_only(),
+            toolset_provenance: ToolsetProvenance::User,
+            skill_catalog: Default::default(),
+            active_skill_selection: crate::skills::SkillSelection::none(),
+            startup_config: crate::config::AppConfig::try_parse_from(["picopilot"])
+                .expect("default config"),
+            provider_config: ProviderConfigFile::new("copilot"),
+            provider_config_path: ".unused".into(),
+            session_start_time: None,
+            conversation_has_history: false,
+        };
+        (runtime, server)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
