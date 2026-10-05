@@ -325,6 +325,93 @@ fn append_app_fixtures(output: &mut String) {
         app.open_tool_picker();
     });
     append_app_fixture_at_widths(output, "context-breakpoint", 64, &[79, 80], setup_usage);
+    for scenario in [
+        "live",
+        "missing",
+        "stale",
+        "over-limit",
+        "completion",
+        "picker",
+        "busy",
+    ] {
+        append_app_fixture(output, &format!("footer-{scenario}"), 12, |app| {
+            setup_usage(app);
+            app.show_context = false;
+            match scenario {
+                "missing" => app.status.usage = None,
+                "stale" => app.apply(crate::events::EventUpdate::ContextRefreshFailed),
+                "over-limit" => app.status.usage.as_mut().unwrap().current_tokens = 300_000,
+                "completion" => {
+                    app.push_input('/');
+                }
+                "picker" => app.open_tool_picker(),
+                "busy" => app.add_user_message("work".into()),
+                _ => {}
+            }
+        });
+    }
+    for height in [3, 8] {
+        append_app_fixture(
+            output,
+            &format!("footer-picker-height-{height}"),
+            height,
+            |app| {
+                setup_usage(app);
+                app.show_context = false;
+                app.open_tool_picker();
+            },
+        );
+    }
+    for height in [6, 7, 8] {
+        append_app_fixture(
+            output,
+            &format!("footer-input-height-{height}"),
+            height,
+            |app| {
+                setup_usage(app);
+                app.show_context = false;
+                app.push_input('x');
+            },
+        );
+    }
+    for height in [5, 6, 7, 8, 9] {
+        append_app_fixture(
+            output,
+            &format!("footer-approval-height-{height}"),
+            height,
+            |app| {
+                setup_usage(app);
+                app.show_context = false;
+                setup_approval_picker(app);
+            },
+        );
+    }
+    append_app_fixture(output, "footer-models-constrained", 8, |app| {
+        setup_usage(app);
+        app.show_context = false;
+        setup_model_picker(app);
+    });
+    append_app_fixture(output, "footer-sessions-constrained", 7, |app| {
+        setup_usage(app);
+        app.show_context = false;
+        setup_session_picker(app);
+    });
+    append_app_fixture(output, "footer-busy-approval", 9, |app| {
+        setup_usage(app);
+        app.show_context = false;
+        app.add_user_message("work".into());
+        setup_approval_picker(app);
+    });
+    append_app_fixture(output, "footer-busy-completion", 12, |app| {
+        setup_usage(app);
+        app.show_context = false;
+        app.add_user_message("work".into());
+        app.push_input('/');
+    });
+    append_app_fixture_at_widths(output, "footer-breakpoint", 12, &[79, 80], |app| {
+        setup_usage(app);
+        app.show_context = false;
+    });
     append_app_fixture(
         output,
         "nested-concurrent-tasks",

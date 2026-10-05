@@ -3825,6 +3825,11 @@ fn context_warning_text(app: &App) -> Option<String> {
 
 fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
     let prompt_budget = area.height.saturating_sub(1);
+    let live_meter = app
+        .status
+        .usage
+        .as_ref()
+        .is_some_and(|usage| usage.is_valid());
     if prompt_budget == 0 {
         return PromptLayout {
             todo_rows: 0,
@@ -3836,11 +3841,19 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
 
     if app.picker.is_some() {
         let picker_rows = picker_item_count(app).clamp(1, MAX_PICKER_ROWS) as u16;
-        let total_height = (picker_rows + 4).min(prompt_budget);
+        let header_rows = match app.picker {
+            Some(PickerKind::Approval) => 3,
+            Some(PickerKind::Sessions) => 2,
+            _ => 1,
+        };
+        let control_rows = 1 + u16::from(matches!(app.picker, Some(PickerKind::Models)));
+        let minimum_picker_rows = header_rows + 1 + control_rows;
+        let footer_rows = u16::from(live_meter && prompt_budget > minimum_picker_rows);
+        let total_height = (picker_rows + 4 + footer_rows).min(prompt_budget);
         return PromptLayout {
             todo_rows: 0,
             input_rows: 0,
-            footer_rows: 0,
+            footer_rows,
             total_height,
         };
     }
@@ -3854,16 +3867,21 @@ fn prompt_layout(app: &App, area: Rect) -> PromptLayout {
         if app.blocked || app.reconnecting || app.pending_approval().is_some() {
             0
         } else if completion_rows.is_some() {
-            completion_rows.unwrap_or_default()
+            completion_rows.unwrap_or_default() + u16::from(live_meter)
         } else {
             let left_footer_rows = u16::from(app.status.busy || app.input().is_empty());
-            let warning_rows =
-                if context_warning_text(app).is_some() && area.width < 80 && left_footer_rows > 0 {
-                    1
-                } else {
-                    0
-                };
-            (left_footer_rows + warning_rows).max(u16::from(context_warning_text(app).is_some()))
+            let warning_rows = if !live_meter
+                && context_warning_text(app).is_some()
+                && area.width < 80
+                && left_footer_rows > 0
+            {
+                1
+            } else {
+                0
+            };
+            (left_footer_rows + warning_rows)
+                .max(u16::from(context_warning_text(app).is_some()))
+                .max(u16::from(live_meter))
         };
     let wrapped_rows = wrap_input(
         app.input(),
@@ -4476,7 +4494,17 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
     }
 
     if app.picker.is_some() {
-        draw_inline_picker(frame, app, area);
+        let picker_area = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height.saturating_sub(layout.footer_rows),
+        );
+        draw_inline_picker(frame, app, picker_area);
+        if layout.footer_rows > 0 {
+            let footer_area = Rect::new(area.x, picker_area.bottom(), area.width, 1);
+            frame.render_widget(prompt_footer(app, footer_area), footer_area);
+        }
         return;
     }
 
@@ -4515,7 +4543,33 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect, layout: PromptLayout) {
         .as_ref()
         .is_some_and(|completion| !completion.candidates.is_empty())
     {
-        draw_completion(frame, app, footer_area);
+        let has_meter = app
+            .status
+            .usage
+            .as_ref()
+            .is_some_and(|usage| usage.is_valid());
+        let completion_height = footer_area.height.saturating_sub(u16::from(has_meter));
+        if has_meter && completion_height > 0 {
+            draw_completion(
+                frame,
+                app,
+                Rect::new(
+                    footer_area.x,
+                    footer_area.y,
+                    footer_area.width,
+                    completion_height,
+                ),
+            );
+            let hint_area = Rect::new(
+                footer_area.x,
+                footer_area.y + completion_height,
+                footer_area.width,
+                1,
+            );
+            frame.render_widget(prompt_footer(app, hint_area), hint_area);
+        } else {
+            draw_completion(frame, app, footer_area);
+        }
     } else {
         frame.render_widget(prompt_footer(app, footer_area), footer_area);
     }
@@ -4691,9 +4745,19 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Session Title", Style::default().fg(palette::INACTIVE)),
         ]));
     }
-    let visible_count = item_count.clamp(1, MAX_PICKER_ROWS);
+    let trailing_rows = 1 + usize::from(matches!(picker, PickerKind::Models));
+    let visible_count = item_count.clamp(1, MAX_PICKER_ROWS).min(
+        (area.height as usize)
+            .saturating_sub(lines.len() + trailing_rows)
+            .max(1),
+    );
     let first_visible = app
         .picker_window_start
+        .min(app.selected_item)
+        .max(
+            app.selected_item
+                .saturating_sub(visible_count.saturating_sub(1)),
+        )
         .min(item_count.saturating_sub(visible_count));
     let last_visible = (first_visible + visible_count).min(item_count);
     let index_width = item_count.max(1).to_string().len();
@@ -4857,6 +4921,9 @@ fn draw_inline_picker(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
+    if let Some(usage) = app.status.usage.as_ref().filter(|usage| usage.is_valid()) {
+        return live_context_footer(app, area, usage);
+    }
     let left = if app.status.busy {
         Some("  esc to interrupt".to_string())
     } else if app.input().is_empty() {
@@ -4913,6 +4980,93 @@ fn prompt_footer(app: &App, area: Rect) -> Paragraph<'static> {
         spans.push(Span::styled(warning, dim));
     }
     spans.push(Span::raw(" ".repeat(right_padding)));
+    Paragraph::new(Line::from(spans))
+}
+
+fn live_context_footer(app: &App, area: Rect, usage: &UsageSnapshot) -> Paragraph<'static> {
+    let width = area.width as usize;
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let percent = format!(
+        "{:.1}%",
+        usage.current_tokens as f64 * 100.0 / usage.token_limit as f64
+    );
+    let active = if app.picker.is_some() {
+        "Enter/Esc"
+    } else if app.completion.is_some() {
+        "Tab/Esc"
+    } else if app.status.busy {
+        "esc to interrupt"
+    } else {
+        ""
+    };
+    let left = truncate_tail(active, width);
+    let available = width.saturating_sub(display_width(&left) + usize::from(!left.is_empty()));
+    if display_width(&percent) > available {
+        return Paragraph::new(Line::from(Span::styled(left, dim)));
+    }
+    let mut label = percent;
+    if usage.current_tokens > usage.token_limit && available >= display_width(&label) + 5 {
+        label.push_str(" over");
+    }
+    if app.status.context_refresh_failed && app.status.context_attribution.is_some() {
+        if available >= display_width(&label) + 6 {
+            label.push_str(" stale");
+        } else if available > display_width(&label) {
+            label.push('*');
+        }
+    }
+    let capacity = available.saturating_sub(display_width(&label) + 1).min(20);
+    let capacity = if capacity >= 5 { capacity } else { 0 };
+    let mut meter = Vec::new();
+    if capacity > 0 {
+        let amounts = app
+            .status
+            .context_attribution
+            .as_ref()
+            .filter(|context| context.has_valid_total())
+            .and_then(|context| context.measured_categories());
+        let allocation =
+            context_cell_allocation(usage.current_tokens, usage.token_limit, amounts, capacity);
+        for (index, count) in allocation.into_iter().enumerate() {
+            let color = palette::CONTEXT_CATEGORIES
+                .get(index)
+                .map_or(palette::TEXT, |category| category.1);
+            meter.push(Span::styled("⛁".repeat(count), Style::default().fg(color)));
+        }
+        let used = meter.iter().map(|span| span.width()).sum::<usize>();
+        meter.push(Span::styled(
+            "⛶".repeat(capacity - used),
+            Style::default()
+                .fg(palette::PROMPT_BORDER)
+                .add_modifier(Modifier::DIM),
+        ));
+        meter.push(Span::raw(" "));
+    }
+    meter.push(Span::styled(label, dim));
+    let meter_width = meter.iter().map(|span| span.width()).sum::<usize>();
+    let left_budget = width.saturating_sub(meter_width + 1);
+    let mut left = left;
+    if let Some(warning) = context_warning_text(app) {
+        let remaining =
+            left_budget.saturating_sub(display_width(&left) + usize::from(!left.is_empty()));
+        if remaining >= warning.split_whitespace().next().map_or(0, display_width) + 2 {
+            if !left.is_empty() {
+                left.push(' ');
+            }
+            left.push_str(&truncate_tail(&warning, remaining));
+        }
+    }
+    if active.is_empty() && app.input().is_empty() {
+        let hint = "  / for commands";
+        if display_width(&left) + display_width(hint) <= left_budget {
+            left.push_str(hint);
+        } else if left.is_empty() {
+            left = truncate_tail(hint, left_budget);
+        }
+    }
+    let padding = width.saturating_sub(display_width(&left) + meter_width);
+    let mut spans = vec![Span::styled(left, dim), Span::raw(" ".repeat(padding))];
+    spans.extend(meter);
     Paragraph::new(Line::from(spans))
 }
 
@@ -10519,14 +10673,13 @@ mod tests {
     }
 
     #[test]
-    fn context_warning_is_right_aligned_wide_and_stacked_narrow() {
+    fn context_warning_shares_live_meter_row_wide_and_narrow() {
         let wide_rows = rendered_rows(&app_with_context_warning(), 100, 14);
         let wide_warning = wide_rows
             .iter()
             .find(|row| row.contains("10% until auto-compact"))
             .expect("wide warning should render");
-        assert!(wide_warning.ends_with("10% until auto-compact  "));
-        assert!(wide_warning.find("10%").unwrap_or_default() > 60);
+        assert!(wide_warning.ends_with("90.0%"));
 
         let narrow_rows = rendered_rows(&app_with_context_warning(), 60, 14);
         let narrow_warning_index = narrow_rows
@@ -10534,37 +10687,36 @@ mod tests {
             .position(|row| row.contains("10% until auto-compact"))
             .expect("narrow warning should render");
         assert!(narrow_warning_index > 0);
-        assert!(narrow_rows[narrow_warning_index - 1].contains("/ for commands"));
-        assert!(narrow_rows[narrow_warning_index].starts_with("  "));
+        assert!(narrow_rows[narrow_warning_index].ends_with("90.0%"));
     }
 
     #[test]
-    fn context_warning_yields_to_completion_and_picker_surfaces() {
+    fn context_warning_is_retained_with_completion_and_picker_when_it_fits() {
         let mut completion = app_with_context_warning();
         completion.push_input('/');
         let completion_rows = rendered_rows(&completion, 100, 14);
         assert!(completion_rows.iter().any(|row| row.contains("/status")));
-        assert!(!completion_rows
+        assert!(completion_rows
             .iter()
             .any(|row| row.contains("until auto-compact")));
 
         let mut picker = app_with_context_warning();
         picker.open_tool_picker();
         let picker_rows = rendered_rows(&picker, 100, 14);
-        assert!(!picker_rows
+        assert!(picker_rows
             .iter()
             .any(|row| row.contains("until auto-compact")));
     }
 
     #[test]
-    fn narrow_footer_drops_optional_warning_before_three_row_input_minimum() {
+    fn narrow_footer_retains_fitting_warning_without_reducing_input_minimum() {
         let app = app_with_context_warning();
         let layout = super::prompt_layout(&app, ratatui::layout::Rect::new(0, 0, 60, 8));
 
         assert_eq!(layout.input_rows, 3);
         assert_eq!(layout.footer_rows, 1);
         let rows = rendered_rows(&app, 60, 8);
-        assert!(!rows.iter().any(|row| row.contains("until auto-compact")));
+        assert!(rows.iter().any(|row| row.contains("until auto-compact")));
     }
 
     #[test]

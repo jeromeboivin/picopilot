@@ -104,8 +104,14 @@ order breaking exact ties. Neutral cells have a distinct undimmed text-colored l
 key, not the System instructions color. Tiny values remain accurate in the legend. Over-limit usage
 fills at most 100% of cells but keeps the real counts and percentage.
 Per-item costs, cache-aware totals, compaction reserves, and savings are not measured.
-No analyzer suggestions are supported by the available data. The live footer meter
-remains CT-03 work; its absence is not replaced by a placeholder.
+No analyzer suggestions are supported by the available data. The current hint footer
+shows live usage on the right with the same category colors and neutral free space.
+Its bar shrinks from 20 to 5 cells, then shows only the percentage. Missing live data
+hides only the meter. Failed attribution refreshes retain values marked `stale`
+(or `*` in tight space); over-limit percentages remain real. Input, completion,
+picker selection, and interrupt hints take priority. The footer temporarily hides
+when controls need its row, and returns on resize. Near-limit warnings remain when
+space permits. No full status bar is restored.
 Expanded mode explains refresh failures even when no successful data exists.
 The current implementation keeps the context view open until Esc. Submitting a
 prompt or invoking `/status` or `/resume` while it is open may leave live chat

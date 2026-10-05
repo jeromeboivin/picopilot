@@ -167,11 +167,21 @@ sections but still miss at least one specification subcase.
 | Completion rows and replacement behavior | `partial` | `completion`; long-list and all truncation branches are not represented. |
 | Sessions, models, tools, skills, approval, and picker replacement | `partial` | `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`; long-list navigation and every cancel/outcome branch remain manual or unit-only. |
 | `/status` static transcript block | `partial` | `status` app fixture and TUI status tests; empty local output and every count state are not represented together. |
-| `/context` and `/context all` data contract | `automated` | Public input, TestBackend rendering, and visible event-update tests cover default/expanded details, live/snapshot fallback, missing/partial/invalid/zero data, stale retention/recovery and empty refresh failures, discrepancies/conflicts, exact largest-remainder ties including neutral residual, tiny categories, over-limit usage, session/model/limit resets, Auto/provider-qualified resolved models, and stable differing source limits. The 14 added context sections cover 20/40/80/120 plus a 79/80 breakpoint fixture. Independent literal cell counts, distinct neutral style/legend, colors, DIM/ITALIC styles, valid SDK decoding control, width bounds, and constrained input/picker return checks supplement the gallery. CT-03 footer and CT-04 full-suite/real-terminal release validation remain pending. |
+| `/context` and `/context all` data contract | `automated` | Public input, TestBackend rendering, and visible event-update tests cover default/expanded details, live/snapshot fallback, missing/partial/invalid/zero data, stale retention/recovery and empty refresh failures, discrepancies/conflicts, exact largest-remainder ties including neutral residual, tiny categories, over-limit usage, session/model/limit resets, Auto/provider-qualified resolved models, and stable differing source limits. The 14 added context sections cover 20/40/80/120 plus a 79/80 breakpoint fixture. Independent literal cell counts, distinct neutral style/legend, colors, DIM/ITALIC styles, valid SDK decoding control, width bounds, and constrained input/picker return checks supplement the gallery. CT-03 adds the live footer coverage below; CT-04 full-suite/real-terminal release validation remains pending. |
 | Startup fixed artwork and compact fallback layouts | `gallery` | `startup-authoritative-artwork` serializes the fixed frame at fitting height `24` and gallery widths `20`, `40`, `80`, and `120`; the artwork appears only at widths that fit all 69 columns. `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission`, and `startup-wordmark-fallback` preserve the responsive compact fallback coverage. `startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_live_values` is the corresponding focused structural test. |
 | Picopilot-only reasoning, subagents, notices, and approval | `gallery` | `reasoning-collapsed`, `reasoning-expanded`, notice sections, `subagent-task-top-level`, `subagent-task-nested`, `nested-concurrent-tasks`, `picker-approval`, and `approval-resolved`. |
 
 ## Focused Validation Matrix
+
+CT-03 adds footer live/missing/stale/over-limit/completion/picker/busy fixtures at
+20/40/80/120, 79/80 boundary fixtures, input heights 6/7/8, picker heights 3/8,
+approval heights 5-9, and constrained Models/Sessions. Busy approval/completion
+fixtures pin active hint priority; public key-action tests check Tab acceptance,
+raw Enter submission, and approval Esc denial. Public
+terminal tests independently pin composition colors, neutral/free style, live
+updates, cursor position, transcript stability, percent-only busy layout, and
+emergency hide/restore. CT-04 still owns the full suite and authenticated terminal
+smoke; neither is claimed passed by CT-03.
 
 Run the narrow checks before the full suite:
 

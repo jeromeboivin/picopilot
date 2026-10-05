@@ -575,8 +575,8 @@ including output reserve). Cross-source equality is not assumed. Stable source
 differences remain diagnostics, not grounds for permanently hiding valid categories.
 The RPC refreshes run serially while holding the mutable App; queued model/limit
 events clear the breakdown when applied. Model changes do not reset the existing
-post-compaction warning suppression. CT-03 owns the
-footer meter and must reuse these rules: hide only the meter without live usage,
+post-compaction warning suppression. The current hint/warning footer reuses these
+rules: hide only the meter without live usage,
 preserving normal hints/warnings; use neutral live usage when categories are absent
 or conflicting. CT-04 owns full-suite and real-terminal release validation.
 Source-derived reference:
@@ -584,7 +584,32 @@ Claude revision `6f6f12b37f529488b10e53928dd5508bb93535c7`,
 `ContextVisualization.tsx` and `analyzeContext.ts`. The current Claude binary
 is unavailable locally; binary comparison and pixel-perfect parity are not claimed.
 
-The one persistent status is context pressure. Hide it until current usage is within 20,000 tokens of the effective threshold. Then render dim `{percent}% until auto-compact`, right-aligned in the footer and tail-truncated. Below 80 columns stack it under the hint. Suppress it for the rest of a turn after compaction. Picopilot MUST use its own effective token limit; whether that limit already reserves compaction space is Unverified.
+CT-03 supersedes the historical stacked footer for valid live usage. Render a
+right-aligned one-row composition meter with 5-20 filled category cells and dim
+hollow free cells, followed by actual used percent. Reuse CT-02 allocation,
+palette and neutral undimmed used cells. Below five fitting cells render percent
+only. Retained attribution failure is `stale` (or `*` when constrained); over-limit
+is `over` when it fits and the actual percent always exceeds 100%.
+Reserve a row below completions and pickers; reduce visible choices around the
+selection rather than overlap controls. Input and active interaction hints precede
+percent, bar cells, and optional hints. Hide/restore the footer when controls need
+the available rows. Redraw through the existing cycle; no transcript or cursor
+effects. Without valid live usage the existing hint/warning footer remains.
+Picker reservation counts its actual header rows, at least one selected item,
+navigation controls, and the Models Reasoning/Context row. When that minimum
+cannot fit alongside the footer, hide the footer. Preserve the sticky picker
+window when unconstrained. Missing-live pickers/completions keep their original
+layout, without an extra hint row. Keep full active hints before attempting the
+percent; never truncate the percent itself. Warning text has priority over the
+optional empty-input hint, but keep both when they fit.
+Live footer text may start at column 0, unlike the historical two-space hint
+indent, to preserve complete active hints at narrow widths. Active text follows
+key routing: picker `Enter/Esc`, completion `Tab/Esc`, then the existing busy
+interrupt hint. Completion Enter still submits the raw input; Tab accepts a
+candidate. Picker Esc still cancels (or denies an approval), not interrupts.
+The near-limit warning keeps its 20,000-token trigger and turn-level compaction
+suppression. It shares the live meter row when space permits, otherwise truncates
+or hides. Whether the SDK limit already reserves compaction space is Unverified.
 
 ### Picopilot-Only Reasoning, Subagents, Banners, Diagnostics, Approval
 

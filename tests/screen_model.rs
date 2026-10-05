@@ -315,6 +315,7 @@ fn context_grid_cells(terminal: &Terminal<TestBackend>) -> Vec<ratatui::buffer::
     (0..buffer.area.height)
         .filter(|row| {
             matches!(buffer[(0, *row)].symbol(), "⛁" | "⛀" | "⛶")
+                && buffer[(1, *row)].symbol() == " "
                 && matches!(buffer[(2, *row)].symbol(), "⛁" | "⛀" | "⛶")
         })
         .flat_map(|row| {
@@ -880,6 +881,7 @@ fn context_grid_uses_reference_breakpoints_and_preserves_constrained_input() {
             let grid: Vec<_> = rows
                 .iter()
                 .filter(|row| row.starts_with('⛁') || row.starts_with('⛀') || row.starts_with('⛶'))
+                .filter(|row| row.chars().nth(1) == Some(' '))
                 .filter(|row| row.chars().filter(|c| matches!(c, '⛁' | '⛀' | '⛶')).count() > 1)
                 .collect();
             let (columns, height) = match (width < 80, limit >= 1_000_000) {
@@ -1066,6 +1068,402 @@ fn context_partial_cells_use_reference_threshold_and_dim_free_legend() {
     let value = cell_at_text(&terminal, "96,500 (96.5%)");
     assert_eq!(value.fg, palette::INACTIVE);
     assert!(value.modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn footer_live_composition_updates_without_transcript_or_cursor_effects() {
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(&mut app, "draft");
+    let mut before = draw_startup(&app, 80, 22);
+    let row = row_containing(&before, "20.0%");
+    let buffer = before.backend().buffer();
+    let used: Vec<_> = (0..80)
+        .filter(|&x| buffer[(x, row)].symbol() == "⛁")
+        .map(|x| buffer[(x, row)].fg)
+        .collect();
+    assert_eq!(
+        used,
+        vec![
+            palette::CONTEXT_CATEGORIES[0].1,
+            palette::CONTEXT_CATEGORIES[1].1,
+            palette::CONTEXT_CATEGORIES[2].1,
+            palette::CONTEXT_CATEGORIES[4].1
+        ]
+    );
+    assert_eq!(buffer_rows(&before)[row as usize].matches('⛶').count(), 16);
+    let cursor = before.get_cursor_position().unwrap();
+    app.take_screen_changes();
+    app.apply(EventUpdate::Usage(picopilot::events::UsageSnapshot {
+        current_tokens: 80000,
+        token_limit: 200000,
+        messages: 5,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+    let mut after = draw_startup(&app, 80, 22);
+    assert!(terminal_text(&after).contains("40.0%"));
+    assert_eq!(app.input(), "draft");
+    assert_eq!(after.get_cursor_position().unwrap(), cursor);
+    assert!(app.take_screen_changes().is_empty());
+}
+
+#[test]
+fn footer_transient_controls_and_emergency_resize_remain_usable() {
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(&mut app, "/con");
+    let completion = draw_startup(&app, 40, 12);
+    assert!(terminal_text(&completion).contains("20.0%"));
+    assert!(terminal_text(&completion).contains("/context"));
+    assert!(terminal_text(&completion).contains("Tab/Esc"));
+    app.open_tool_picker();
+    for height in [8, 12] {
+        let picker = draw_startup(&app, 40, height);
+        assert!(terminal_text(&picker).contains("20.0%"));
+        assert!(terminal_text(&picker).contains("Enter/Esc"));
+        assert!(terminal_text(&picker).contains('❯'));
+        assert!(row_containing(&picker, "20.0%") > row_containing(&picker, "❯"));
+    }
+    let emergency = draw_startup(&app, 40, 3);
+    assert!(!terminal_text(&emergency).contains("20.0%"));
+    assert!(terminal_text(&emergency).contains('❯'));
+    let restored = draw_startup(&app, 40, 8);
+    assert!(terminal_text(&restored).contains("20.0%"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.add_user_message("work".into());
+    let busy = draw_startup(&app, 22, 12);
+    assert!(terminal_text(&busy).contains("20.0%"));
+    assert!(terminal_text(&busy).contains("esc"));
+    assert!(!buffer_rows(&busy)[row_containing(&busy, "20.0%") as usize].contains('⛁'));
+}
+
+#[test]
+fn footer_availability_stale_over_limit_and_warning_contract() {
+    use picopilot::events::UsageSnapshot;
+    let mut app = App::new(None);
+    assert!(terminal_text(&draw_startup(&app, 80, 22)).contains("/ for commands"));
+    for (used, limit) in [(1, 0), (-1, 100)] {
+        app.apply(EventUpdate::Usage(UsageSnapshot {
+            current_tokens: used,
+            token_limit: limit,
+            messages: 0,
+            conversation_tokens: None,
+            system_tokens: None,
+            tool_definitions_tokens: None,
+        }));
+        assert!(terminal_text(&draw_startup(&app, 80, 22)).contains("/ for commands"));
+    }
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.apply(EventUpdate::ContextRefreshFailed);
+    let stale = draw_startup(&app, 80, 22);
+    assert!(terminal_text(&stale).contains("20.0% stale"));
+    app.apply(EventUpdate::Idle);
+    assert!(terminal_text(&draw_startup(&app, 80, 22)).contains("stale"));
+    app.set_context_attribution(None);
+    let neutral = draw_startup(&app, 80, 22);
+    let row = row_containing(&neutral, "20.0%");
+    assert!(!buffer_rows(&neutral)[row as usize].contains("stale"));
+    for x in 0..80 {
+        let cell = &neutral.backend().buffer()[(x, row)];
+        if cell.symbol() == "⛁" {
+            assert_eq!(cell.fg, palette::TEXT);
+            assert!(!cell.modifier.contains(Modifier::DIM));
+        }
+    }
+    app.apply(EventUpdate::Usage(UsageSnapshot {
+        current_tokens: 300000,
+        token_limit: 200000,
+        messages: 0,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+    let over = draw_startup(&app, 120, 22);
+    assert!(terminal_text(&over).contains("150.0% over"));
+    assert!(terminal_text(&over).contains("0% until auto-compact"));
+    let row = row_containing(&over, "150.0%");
+    assert_eq!(buffer_rows(&over)[row as usize].matches('⛁').count(), 20);
+    assert!(!buffer_rows(&over)[row as usize].contains('⛶'));
+    app.set_session_id("new-session");
+    assert!(!terminal_text(&draw_startup(&app, 80, 22)).contains("150.0%"));
+}
+
+#[test]
+fn footer_preserves_approval_choices_and_complete_active_hints() {
+    for live in [false, true] {
+        let mut app = if live {
+            measured_context_app()
+        } else {
+            App::new(None)
+        };
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let (respond_to, _receiver) = tokio::sync::oneshot::channel();
+        app.enqueue_approval(picopilot::permissions::ApprovalRequest {
+            category: picopilot::permissions::ApprovalCategory::Shell,
+            tool_name: "bash".into(),
+            details: "rm -rf build".into(),
+            respond_to,
+        });
+        for height in 5..=9 {
+            let terminal = draw_startup(&app, 60, height);
+            let rows = buffer_rows(&terminal);
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains('❯') && row.contains("Allow once")),
+                "live={live} height={height}: {rows:?}"
+            );
+            if height == 5 {
+                assert!(!terminal_text(&terminal).contains("20.0%"));
+            }
+        }
+    }
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.add_user_message("work".into());
+    for width in [16, 20, 21, 22] {
+        let terminal = draw_startup(&app, width, 12);
+        assert!(terminal_text(&terminal).contains("esc to interrupt"));
+        assert_eq!(terminal_text(&terminal).contains("20.0%"), width >= 22);
+    }
+}
+
+#[test]
+fn footer_refresh_resets_rounding_and_warning_triggers_are_visible() {
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.apply(EventUpdate::Idle);
+    assert!(!terminal_text(&draw_startup(&app, 80, 22)).contains("stale"));
+    app.apply(EventUpdate::ContextRefreshFailed);
+    context_snapshot(&mut app, 40000, 200000, &[10000, 10000, 10000, 0, 10000]);
+    assert!(!terminal_text(&draw_startup(&app, 80, 22)).contains("stale"));
+    context_live(&mut app, 80000, 200000);
+    let terminal = draw_startup(&app, 80, 22);
+    let row = row_containing(&terminal, "40.0%");
+    let cells: Vec<_> = (0..80)
+        .map(|x| &terminal.backend().buffer()[(x, row)])
+        .filter(|cell| cell.symbol() == "⛁")
+        .collect();
+    assert_eq!(cells.len(), 8);
+    assert_eq!(
+        cells.iter().filter(|cell| cell.fg == palette::TEXT).count(),
+        4
+    );
+    app.set_model(Some("changed".into()));
+    let terminal = draw_startup(&app, 80, 22);
+    let row = row_containing(&terminal, "40.0%");
+    assert!((0..80)
+        .filter(|&x| terminal.backend().buffer()[(x, row)].symbol() == "⛁")
+        .all(|x| terminal.backend().buffer()[(x, row)].fg == palette::TEXT));
+    context_snapshot(&mut app, 40000, 200000, &[10000, 10000, 10000, 0, 10000]);
+    context_live(&mut app, 80000, 400000);
+    let terminal = draw_startup(&app, 80, 22);
+    let row = row_containing(&terminal, "20.0%");
+    assert!((0..80)
+        .filter(|&x| terminal.backend().buffer()[(x, row)].symbol() == "⛁")
+        .all(|x| terminal.backend().buffer()[(x, row)].fg == palette::TEXT));
+    context_live(&mut app, 179999, 200000);
+    assert!(!terminal_text(&draw_startup(&app, 120, 22)).contains("until auto-compact"));
+    context_live(&mut app, 180000, 200000);
+    assert!(terminal_text(&draw_startup(&app, 120, 22)).contains("10% until auto-compact"));
+    app.set_context_attribution(Some(picopilot::events::ContextAttributionSnapshot {
+        model_id: "changed".into(),
+        total_tokens: 180000,
+        prompt_token_limit: 200000,
+        categories: vec![],
+        compactions: 3,
+    }));
+    assert!(!terminal_text(&draw_startup(&app, 120, 22)).contains("until auto-compact"));
+    assert!(terminal_text(&draw_startup(&app, 120, 22)).contains("90.0%"));
+    app.add_user_message("next".into());
+    assert!(terminal_text(&draw_startup(&app, 120, 22)).contains("10% until auto-compact"));
+}
+
+#[test]
+fn footer_missing_live_preserves_completion_picker_and_input_layout() {
+    let mut app = App::new(None);
+    type_input(&mut app, "/con");
+    let terminal = draw_startup(&app, 40, 12);
+    assert!(terminal_text(&terminal).contains("/context"));
+    assert!(!terminal_text(&terminal).contains("Tab/Esc"));
+    app.open_tool_picker();
+    let terminal = draw_startup(&app, 40, 12);
+    assert!(!terminal_text(&terminal).contains("/ for commands"));
+    assert!(!terminal_text(&terminal).contains("Enter/Esc"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    picopilot::tui::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+    );
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(&mut app, "draft");
+    context_live(&mut app, 40000, 200000);
+    for height in [6, 7, 8] {
+        let terminal = draw_startup(&app, 40, height);
+        assert!(terminal_text(&terminal).contains("draft"));
+        assert_eq!(terminal_text(&terminal).contains("20.0%"), height >= 8);
+    }
+}
+
+#[test]
+fn footer_constrained_models_and_sessions_keep_selected_controls() {
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.set_models(
+        (0..8)
+            .map(|index| github_copilot_sdk::types::Model {
+                id: format!("model-{index}"),
+                name: format!("Model {index}"),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    for _ in 0..6 {
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    }
+    let terminal = draw_startup(&app, 80, 8);
+    assert!(terminal_text(&terminal).contains("Reasoning:"));
+    assert!(terminal_text(&terminal).contains("Context:"));
+    assert!(buffer_rows(&terminal)
+        .iter()
+        .any(|row| row.contains('❯') && row.contains("Model 6")));
+    assert!(terminal_text(&terminal).contains("Left/Right"));
+    app.set_sessions(vec![github_copilot_sdk::types::SessionMetadata {
+        session_id: github_copilot_sdk::types::SessionId::from("saved"),
+        summary: Some("Saved conversation".into()),
+        start_time: "2026-10-05T12:00:00Z".into(),
+        modified_time: "2026-10-05T12:00:00Z".into(),
+        is_remote: false,
+    }]);
+    let terminal = draw_startup(&app, 80, 7);
+    assert!(terminal_text(&terminal).contains("Updated"));
+    assert!(buffer_rows(&terminal)
+        .iter()
+        .any(|row| row.contains('❯') && row.contains("Saved conversation")));
+    assert!(terminal_text(&terminal).contains("20.0%"));
+}
+
+#[test]
+fn footer_reuses_literal_reconciliation_and_rounding_expectations() {
+    for (used, limit, amounts, expected) in [
+        (
+            20000,
+            200000,
+            [10000, 10000, 10000, 0, 10000],
+            [0, 0, 0, 0, 0, 2],
+        ),
+        (
+            50000,
+            200000,
+            [10000, 10000, 10000, 0, 10000],
+            [1, 1, 1, 0, 1, 1],
+        ),
+        (103, 10000, [51, 51, 1, 0, 0], [0, 0, 0, 0, 0, 0]),
+        (1500, 10000, [500, 500, 500, 0, 0], [1, 1, 1, 0, 0, 0]),
+        (
+            300000,
+            200000,
+            [8000, 8000, 8000, 0, 16000],
+            [1, 1, 0, 0, 1, 17],
+        ),
+    ] {
+        let mut app = measured_context_app();
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        context_live(&mut app, used, limit);
+        context_snapshot(&mut app, amounts.iter().sum(), limit, &amounts);
+        let terminal = draw_startup(&app, 80, 22);
+        let row = row_containing(
+            &terminal,
+            &format!("{:.1}%", used as f64 * 100.0 / limit as f64),
+        );
+        let colors: Vec<_> = palette::CONTEXT_CATEGORIES
+            .iter()
+            .map(|category| category.1)
+            .chain(std::iter::once(palette::TEXT))
+            .collect();
+        let counts: Vec<_> = colors
+            .iter()
+            .map(|color| {
+                (0..80)
+                    .filter(|&x| {
+                        let cell = &terminal.backend().buffer()[(x, row)];
+                        cell.symbol() == "⛁" && cell.fg == *color
+                    })
+                    .count()
+            })
+            .collect();
+        assert_eq!(counts, expected, "used={used}");
+        assert_eq!(
+            buffer_rows(&terminal)[row as usize].matches('⛶').count(),
+            20 - expected.iter().sum::<usize>()
+        );
+    }
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.set_session_id("no-live");
+    context_snapshot(&mut app, 40000, 200000, &[10000, 10000, 10000, 0, 10000]);
+    assert!(!terminal_text(&draw_startup(&app, 80, 22)).contains("20.0%"));
+}
+
+#[test]
+fn footer_picker_and_completion_hints_fit_before_percentage() {
+    for width in [16, 20, 21, 22] {
+        let mut app = measured_context_app();
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        type_input(&mut app, "/con");
+        let terminal = draw_startup(&app, width, 12);
+        assert!(terminal_text(&terminal).contains("Tab/Esc"));
+        assert!(terminal_text(&terminal).contains("20.0%"));
+        app.open_tool_picker();
+        let terminal = draw_startup(&app, width, 12);
+        assert!(terminal_text(&terminal).contains("Enter/Esc"));
+        assert!(terminal_text(&terminal).contains("20.0%"));
+    }
+}
+
+#[test]
+fn footer_active_hints_follow_busy_picker_and_completion_key_routing() {
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.add_user_message("work".into());
+    let (respond_to, _receiver) = tokio::sync::oneshot::channel();
+    app.enqueue_approval(picopilot::permissions::ApprovalRequest {
+        category: picopilot::permissions::ApprovalCategory::Shell,
+        tool_name: "bash".into(),
+        details: "build".into(),
+        respond_to,
+    });
+    let terminal = draw_startup(&app, 80, 9);
+    assert!(terminal_text(&terminal).contains("Enter/Esc"));
+    assert!(!terminal_text(&terminal).contains("esc to interrupt"));
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::Approval(picopilot::permissions::ApprovalDecision::Deny)
+    );
+    let mut app = measured_context_app();
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.add_user_message("work".into());
+    app.open_tool_picker();
+    assert!(!terminal_text(&draw_startup(&app, 80, 12)).contains("esc to interrupt"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    type_input(&mut app, "/con");
+    let terminal = draw_startup(&app, 80, 12);
+    assert!(terminal_text(&terminal).contains("Tab/Esc"));
+    assert!(!terminal_text(&terminal).contains("esc to interrupt"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.input(), "/context");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LoadUsageCommand
+    );
+    let mut raw = App::new(None);
+    type_input(&mut raw, "/con");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut raw, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::Send("/con".into())
+    );
 }
 
 fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
