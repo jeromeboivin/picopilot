@@ -1539,6 +1539,10 @@ impl App {
 
     pub fn reset_for_new_conversation(&mut self) {
         self.dismiss_startup_surface();
+        self.show_context = false;
+        self.context_expanded = false;
+        self.context_scroll = 0;
+        self.context_scroll_limit.set(0);
         self.reject_pending_approvals();
         self.reset_screen_lifecycle();
         self.pending_user_messages.clear();
@@ -5627,7 +5631,10 @@ fn draw_live_chat(
     platform: Platform,
     animation_elapsed_ms: u64,
 ) {
-    if app.transcript_expanded || app.show_internals {
+    if app.transcript_expanded
+        || app.show_internals
+        || matches!(app.entries.as_slice(), [ChatEntry::Diagnostic(message)] if message == "new conversation started")
+    {
         let lines = chat_lines_at_width_with_clock(app, area.width as usize, animation_elapsed_ms);
         let scroll = lines
             .len()
@@ -6297,10 +6304,14 @@ fn entry_payload(
             content: content.clone(),
             expanded: transcript_expanded,
         }),
-        ChatEntry::Diagnostic(message) if show_internals => Some(TranscriptPayload::Notice {
-            kind: NoticeKind::Diagnostic,
-            content: message.clone(),
-        }),
+        ChatEntry::Diagnostic(message)
+            if show_internals || message == "new conversation started" =>
+        {
+            Some(TranscriptPayload::Notice {
+                kind: NoticeKind::Diagnostic,
+                content: message.clone(),
+            })
+        }
         ChatEntry::Diagnostic(_) => None,
         ChatEntry::Tool {
             tool_call_id,
@@ -6934,34 +6945,76 @@ mod tests {
                         .await
                         .unwrap();
                     let mut events = runtime.session.subscribe();
-                    let previous_session = runtime.session.id().to_string();
-                    let mut app = App::new(Some("gpt-5".to_string()));
-                    app.set_session_id(previous_session.clone());
-                    app.add_local_output("previous conversation");
+                    for context_command in [None, Some("/context"), Some("/context all")] {
+                        let previous_session = runtime.session.id().to_string();
+                        let mut app = App::new(Some("gpt-5".to_string()));
+                        app.set_session_id(previous_session.clone());
+                        app.set_reasoning_effort(Some("high".to_string()));
+                        app.set_toolset(Toolset::shell_only());
+                        app.add_local_output("previous conversation");
+                        let mut screen = ScreenModel::default();
+                        let mut terminal =
+                            Terminal::with_options(TestBackend::new(100, 22), terminal_options())
+                                .unwrap();
+                        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+                        if let Some(command) = context_command {
+                            for character in command.chars() {
+                                handle_key(
+                                    &mut app,
+                                    key(KeyCode::Char(character), KeyEventKind::Press),
+                                );
+                            }
+                            assert_eq!(
+                                handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+                                UiAction::LoadUsageCommand
+                            );
+                            terminal
+                                .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+                                .unwrap();
+                            assert!(terminal_rows(&terminal)
+                                .join("\n")
+                                .contains("Context Usage"));
+                        }
+                        app.push_input('x');
 
-                    // Without a console the ambient-input drain after Ctrl+N may fail;
-                    // the reset itself is asserted from the resulting state.
-                    let _ = super::process_terminal_events(
-                        &mut app,
-                        Some(&mut runtime),
-                        Some(&mut events),
-                        Some(Event::Key(KeyEvent::new(
-                            KeyCode::Char('n'),
-                            KeyModifiers::CONTROL,
-                        ))),
-                    )
-                    .await;
+                        // Without a console the ambient-input drain after Ctrl+N may fail;
+                        // the reset itself is asserted from the resulting state.
+                        let _ = super::process_terminal_events(
+                            &mut app,
+                            Some(&mut runtime),
+                            Some(&mut events),
+                            Some(Event::Key(KeyEvent::new(
+                                KeyCode::Char('n'),
+                                KeyModifiers::CONTROL,
+                            ))),
+                        )
+                        .await;
 
-                    let new_session = runtime.session.id().to_string();
-                    assert_ne!(new_session, previous_session);
-                    assert_eq!(app.session_id.as_deref(), Some(new_session.as_str()));
-                    assert_eq!(
-                        app.entries(),
-                        &[ChatEntry::Diagnostic(
-                            "new conversation started".to_string()
-                        )]
-                    );
-                    assert_eq!(app.status().model.as_deref(), Some("gpt-5"));
+                        let new_session = runtime.session.id().to_string();
+                        assert_ne!(new_session, previous_session);
+                        assert_eq!(app.session_id.as_deref(), Some(new_session.as_str()));
+                        assert_eq!(
+                            app.entries(),
+                            &[ChatEntry::Diagnostic(
+                                "new conversation started".to_string()
+                            )]
+                        );
+                        assert_eq!(app.status().model.as_deref(), Some("gpt-5"));
+                        assert_eq!(app.status().reasoning_effort.as_deref(), Some("high"));
+                        assert_eq!(app.toolset(), Toolset::shell_only());
+                        assert!(app.input().is_empty());
+                        apply_pending_changes(&mut app, &mut screen, &mut terminal);
+                        terminal
+                            .draw(|frame| super::draw_with_screen(frame, &app, &mut screen, 0))
+                            .unwrap();
+                        let visible = terminal_rows(&terminal).join("\n");
+                        assert!(
+                            visible.contains("new conversation started"),
+                            "missing visible confirmation after {context_command:?}: {visible}"
+                        );
+                        assert!(!visible.contains("previous conversation"));
+                        assert!(!visible.contains("Context Usage"));
+                    }
                     server.abort();
                 });
             })
