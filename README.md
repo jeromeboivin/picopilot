@@ -90,6 +90,10 @@ The context screen uses a 10x10 grid below a 1M-token limit and 20x10 at
 1M or above. Below 80 columns, it uses 5x5 or 5x10 and stacks the legend.
 This is the valid measured-data baseline. Missing/conflicting data and
 `/context all` are not delivered yet; the live footer meter is separate work.
+The current implementation keeps the context view open until Esc. Submitting a
+prompt or invoking `/status` or `/resume` while it is open may leave live chat
+output hidden until Esc. This lifecycle still needs real-terminal release-gate
+verification; whether the view should auto-close is undecided.
 The visual reference is Claude source revision
 `6f6f12b37f529488b10e53928dd5508bb93535c7`, not a current Claude binary
 comparison. Pixel-perfect parity is not claimed.

@@ -520,7 +520,11 @@ The view has a bold `Context Usage` heading, model/current/limit/percentage
 metadata, grid, five measured category rows, free space, and a separate
 `Session usage` section retaining cost, premium request cost, requests, API
 duration, model, and compaction count. PageUp/PageDown scroll and Esc closes;
-the input remains usable at constrained heights.
+the input remains usable at constrained heights. The current implementation
+keeps the view open until Esc; submitting a prompt or invoking `/status` or
+`/resume` while it is open may leave live chat output hidden until Esc. This is
+a code-derived observation, not a completed real-terminal release-gate check.
+Whether the view should auto-close remains undecided pending that check.
 
 The shared ordered palette is system instructions `promptBorder`, custom
 instructions `claude`, built-in tool definitions `inactive`, MCP definitions
