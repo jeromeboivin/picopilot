@@ -325,6 +325,25 @@ fn append_app_fixtures(output: &mut String) {
         app.open_tool_picker();
     });
     append_app_fixture_at_widths(output, "context-breakpoint", 64, &[79, 80], setup_usage);
+    append_app_fixture_at_widths(
+        output,
+        "context-busy-completion",
+        32,
+        &[20, 40, 79, 80, 120],
+        |app| {
+            setup_usage(app);
+            app.add_user_message("work".into());
+            for character in "/con".chars() {
+                super::handle_key(
+                    app,
+                    crossterm::event::KeyEvent::new(
+                        crossterm::event::KeyCode::Char(character),
+                        crossterm::event::KeyModifiers::NONE,
+                    ),
+                );
+            }
+        },
+    );
     for scenario in [
         "live",
         "missing",

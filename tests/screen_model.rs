@@ -1075,7 +1075,7 @@ fn footer_live_composition_updates_without_transcript_or_cursor_effects() {
     let mut app = measured_context_app();
     picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     type_input(&mut app, "draft");
-    let mut before = draw_startup(&app, 80, 22);
+    let before = draw_startup(&app, 80, 22);
     let row = row_containing(&before, "20.0%");
     let buffer = before.backend().buffer();
     let used: Vec<_> = (0..80)
@@ -1092,7 +1092,9 @@ fn footer_live_composition_updates_without_transcript_or_cursor_effects() {
         ]
     );
     assert_eq!(buffer_rows(&before)[row as usize].matches('⛶').count(), 16);
-    let cursor = before.get_cursor_position().unwrap();
+    let input_row = row_containing(&before, "❯ draft");
+    let cursor = before.backend().buffer()[(7, input_row)].clone();
+    assert!(cursor.modifier.contains(Modifier::REVERSED));
     app.take_screen_changes();
     app.apply(EventUpdate::Usage(picopilot::events::UsageSnapshot {
         current_tokens: 80000,
@@ -1102,10 +1104,11 @@ fn footer_live_composition_updates_without_transcript_or_cursor_effects() {
         system_tokens: None,
         tool_definitions_tokens: None,
     }));
-    let mut after = draw_startup(&app, 80, 22);
+    let after = draw_startup(&app, 80, 22);
     assert!(terminal_text(&after).contains("40.0%"));
     assert_eq!(app.input(), "draft");
-    assert_eq!(after.get_cursor_position().unwrap(), cursor);
+    assert_eq!(row_containing(&after, "❯ draft"), input_row);
+    assert_eq!(after.backend().buffer()[(7, input_row)], cursor);
     assert!(app.take_screen_changes().is_empty());
 }
 
@@ -1464,6 +1467,85 @@ fn footer_active_hints_follow_busy_picker_and_completion_key_routing() {
         picopilot::tui::handle_key(&mut raw, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
         picopilot::tui::UiAction::Send("/con".into())
     );
+}
+
+#[test]
+fn context_busy_completion_redraw_and_escape_order_preserve_input_and_history() {
+    for width in [20, 40, 79, 80, 120] {
+        let mut app = measured_context_app();
+        app.add_user_message("work".into());
+        type_input(&mut app, "/con");
+        let entries = app.entries().len();
+        let mut terminal = Terminal::new(TestBackend::new(width, FIXED_LIVE_REGION_HEIGHT))
+            .expect("test terminal");
+        let mut screen = ScreenModel::default();
+        draw_live_screen(&mut terminal, &app, &mut screen);
+        let text = terminal_text(&terminal);
+        let completion_label = if width == 20 {
+            "  /conte…"
+        } else {
+            "  /context"
+        };
+        assert!(text.contains("Context Usage"));
+        assert!(text.contains(completion_label));
+        assert!(text.contains("Tab/Esc"));
+        assert!(!text.contains("esc to interrupt"));
+        let input_row = row_containing(&terminal, "❯ /con");
+        let cursor = terminal.backend().buffer()[(6, input_row)].clone();
+        assert!(cursor.modifier.contains(Modifier::REVERSED));
+        let completion_row = row_containing(&terminal, completion_label);
+        let footer_row = row_containing(&terminal, "Tab/Esc");
+        assert!(input_row < completion_row && completion_row < footer_row);
+        let free_cells = buffer_rows(&terminal)[footer_row as usize]
+            .matches('⛶')
+            .count();
+        assert_eq!(free_cells, if width == 20 { 5 } else { 16 });
+        let used_colors: Vec<_> = (0..width)
+            .filter(|&column| terminal.backend().buffer()[(column, footer_row)].symbol() == "⛁")
+            .map(|column| terminal.backend().buffer()[(column, footer_row)].fg)
+            .collect();
+        assert_eq!(
+            used_colors,
+            if width == 20 {
+                vec![Color::Rgb(136, 136, 136)]
+            } else {
+                vec![
+                    Color::Rgb(136, 136, 136),
+                    Color::Rgb(215, 119, 87),
+                    Color::Rgb(153, 153, 153),
+                    Color::Rgb(147, 51, 234),
+                ]
+            }
+        );
+        for column in 0..width {
+            let cell = &terminal.backend().buffer()[(column, footer_row)];
+            if cell.symbol() == "⛶" {
+                assert_eq!(cell.fg, Color::Rgb(136, 136, 136));
+                assert!(cell.modifier.contains(Modifier::DIM));
+            }
+        }
+        context_live(&mut app, 80000, 200000);
+        draw_live_screen(&mut terminal, &app, &mut screen);
+        assert!(buffer_rows(&terminal)[footer_row as usize].contains("40.0%"));
+        assert_eq!(row_containing(&terminal, "❯ /con"), input_row);
+        assert_eq!(terminal.backend().buffer()[(6, input_row)], cursor);
+        assert_eq!(app.entries().len(), entries);
+        assert_eq!(app.input(), "/con");
+
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        draw_live_screen(&mut terminal, &app, &mut screen);
+        assert!(!terminal_text(&terminal).contains("Context Usage"));
+        assert!(terminal_text(&terminal).contains(completion_label));
+        let footer_row = row_containing(&terminal, "Tab/Esc");
+        assert!(buffer_rows(&terminal)[footer_row as usize].contains("40.0%"));
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        draw_live_screen(&mut terminal, &app, &mut screen);
+        assert!(!terminal_text(&terminal).contains(completion_label));
+        assert!(terminal_text(&terminal).contains("esc to interrupt"));
+        assert_eq!(terminal_text(&terminal).contains("40.0%"), width != 20);
+        assert_eq!(app.input(), "/con");
+        assert_eq!(app.entries().len(), entries);
+    }
 }
 
 fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
