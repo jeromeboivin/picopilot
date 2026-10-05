@@ -231,7 +231,20 @@ fn append_app_fixtures(output: &mut String) {
     append_app_fixture(output, "picker-approval", 14, setup_approval_picker);
     append_app_fixture(output, "approval-resolved", 14, setup_resolved_approval);
     append_app_fixture(output, "status", 16, setup_status);
-    append_app_fixture(output, "usage", 16, setup_usage);
+    append_app_fixture(output, "context", 64, setup_usage);
+    append_app_fixture(output, "context-constrained-input", 8, |app| {
+        setup_usage(app);
+        app.push_input('x');
+    });
+    append_app_fixture(output, "context-1m", 64, |app| {
+        setup_usage(app);
+        app.status.usage.as_mut().unwrap().token_limit = 1_000_000;
+        app.status
+            .context_attribution
+            .as_mut()
+            .unwrap()
+            .prompt_token_limit = 1_000_000;
+    });
     append_app_fixture(
         output,
         "nested-concurrent-tasks",
@@ -732,14 +745,16 @@ fn setup_model_picker(app: &mut App) {
     app.set_local_model_ids(["local-model".to_string()]);
     app.set_models(vec![
         Model {
-            billing: Some(serde_json::from_value(json!({
-                "tokenPrices": {
-                    "batchSize": 1000000,
-                    "inputPrice": 250.0,
-                    "outputPrice": 1500.0
-                }
-            }))
-            .expect("model pricing should deserialize")),
+            billing: Some(
+                serde_json::from_value(json!({
+                    "tokenPrices": {
+                        "batchSize": 1000000,
+                        "inputPrice": 250.0,
+                        "outputPrice": 1500.0
+                    }
+                }))
+                .expect("model pricing should deserialize"),
+            ),
             id: "gpt-5".to_string(),
             name: "GPT-5".to_string(),
             supported_context_tiers: Some(vec!["default".to_string(), "long_context".to_string()]),
@@ -817,8 +832,8 @@ fn setup_status(app: &mut App) {
 
 fn setup_usage(app: &mut App) {
     app.status.usage = Some(UsageSnapshot {
-        current_tokens: 12_345,
-        token_limit: 100_000,
+        current_tokens: 40_000,
+        token_limit: 200_000,
         messages: 7,
         conversation_tokens: Some(8_000),
         system_tokens: Some(2_000),
@@ -833,22 +848,24 @@ fn setup_usage(app: &mut App) {
     });
     app.set_context_attribution(Some(ContextAttributionSnapshot {
         model_id: "gpt-5".to_string(),
-        total_tokens: 12_345,
-        prompt_token_limit: 100_000,
-        categories: vec![
-            ContextCategorySnapshot {
-                label: "conversation".to_string(),
-                tokens: 8_000,
-            },
-            ContextCategorySnapshot {
-                label: "tools".to_string(),
-                tokens: 4_345,
-            },
-        ],
+        total_tokens: 40_000,
+        prompt_token_limit: 200_000,
+        categories: [
+            ("System instructions", 8_000),
+            ("Custom instructions", 8_000),
+            ("Tool definitions", 8_000),
+            ("MCP tool definitions", 0),
+            ("Messages and tool results", 16_000),
+        ]
+        .into_iter()
+        .map(|(label, tokens)| ContextCategorySnapshot {
+            label: label.into(),
+            tokens,
+        })
+        .collect(),
         compactions: 1,
     }));
-    app.add_local_command("/usage");
-    app.add_local_output_lines(super::usage_detail_lines(app));
+    app.show_context = true;
 }
 
 fn setup_concurrent_tasks(app: &mut App) {

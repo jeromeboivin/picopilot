@@ -1,5 +1,13 @@
 use ratatui::style::Color;
 
+pub const CONTEXT_CATEGORIES: &[(&str, Color)] = &[
+    ("System instructions", PROMPT_BORDER),
+    ("Custom instructions", CLAUDE),
+    ("Tool definitions", INACTIVE),
+    ("MCP tool definitions", CYAN_FOR_SUBAGENTS_ONLY),
+    ("Messages and tool results", PURPLE_FOR_SUBAGENTS_ONLY),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaletteEntry {
     pub name: &'static str,

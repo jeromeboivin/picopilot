@@ -30,7 +30,7 @@ renderer and `tui::draw` against ratatui `TestBackend` buffers. Each transcript
 row records text, display width, foreground/background color, and modifiers;
 each full-screen app fixture records every buffer row and contiguous style run.
 
-The gallery has 51 named sections:
+The gallery has 54 named sections:
 
 | Group | Sections |
 | --- | --- |
@@ -41,7 +41,7 @@ The gallery has 51 named sections:
 | Tool header states | `tool-header-queued`, `tool-header-running`, `tool-header-success`, `tool-header-error`, plus the four `-macos` variants and `tool-result-ansi-success-macos` |
 | Spinner | `macos`, `windows-linux`, and `ghostty`, with clocks `0`, `120`, `600`, `3000`, and `30000` ms plus reduced motion |
 | Startup surface | `startup-authoritative-artwork`, `startup-two-column-and-vertical`, `startup-wordmark-fallback`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission` |
-| Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `usage`, `nested-concurrent-tasks`, `consecutive-user-messages` |
+| Full app buffers | `input-typed`, `completion`, `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`, `status`, `context`, `context-constrained-input`, `context-1m`, `nested-concurrent-tasks`, `consecutive-user-messages` |
 
 The gallery is compared during ordinary test runs. Regeneration is opt-in and
 ignored by default so a normal test cannot rewrite the committed artifact.
@@ -167,7 +167,7 @@ sections but still miss at least one specification subcase.
 | Completion rows and replacement behavior | `partial` | `completion`; long-list and all truncation branches are not represented. |
 | Sessions, models, tools, skills, approval, and picker replacement | `partial` | `picker-sessions`, `picker-models`, `picker-tools`, `picker-skills`, `picker-approval`, `approval-resolved`; long-list navigation and every cancel/outcome branch remain manual or unit-only. |
 | `/status` static transcript block | `partial` | `status` app fixture and TUI status tests; empty local output and every count state are not represented together. |
-| `/usage` cost, context, attribution, and wrapping | `gallery` | `usage` app fixture renders fixed usage, cost, context, and attribution data at all gallery widths. |
+| `/context` valid-data baseline | `gallery` | `context`, `context-1m`, and `context-constrained-input` fixtures at 20/40/80/120 columns; screen-model tests cover 79/80, grid continuity, category colors, measured zero, command input and live usage events. Missing/conflicting data and footer coverage remain CT-02/03. |
 | Startup fixed artwork and compact fallback layouts | `gallery` | `startup-authoritative-artwork` serializes the fixed frame at fitting height `24` and gallery widths `20`, `40`, `80`, and `120`; the artwork appears only at widths that fit all 69 columns. `startup-two-column-and-vertical`, `startup-wrapped-values`, `startup-bounded-metadata`, `startup-metadata-omission`, and `startup-wordmark-fallback` preserve the responsive compact fallback coverage. `startup_surface_renders_the_authoritative_fixed_artwork_without_widening_for_live_values` is the corresponding focused structural test. |
 | Picopilot-only reasoning, subagents, notices, and approval | `gallery` | `reasoning-collapsed`, `reasoning-expanded`, notice sections, `subagent-task-top-level`, `subagent-task-nested`, `nested-concurrent-tasks`, `picker-approval`, and `approval-resolved`. |
 

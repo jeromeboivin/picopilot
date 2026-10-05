@@ -509,12 +509,36 @@ Field placement is normative:
 | Busy/autopilot ready/working | Dropped. |
 | Tool and skill counts | `/status`. |
 | Current-turn output estimate | Spinner after 30 seconds. |
-| Context current/limit and attribution | `/usage` static block. |
-| Session cost/request counts | `/usage` static block. |
+| Context current/limit and attribution | `/context` live view. |
+| Session cost/request counts | `Session usage` below the `/context` visualization. |
 | Version and Session ID | `/status`. |
 | Session name | Only if a rename feature exists. |
 
-`/usage` MUST use the same user echo plus five-cell local-output gutter. It MUST retain picopilot's existing `Session cost:` and `Context window: current / limit tokens` information and attribution breakdown. It SHOULD be dim like Claude Code `/cost`, with fixed labels where the existing formatter already defines them. Exact additional field wording is Unverified because no resolution enumerated the complete current usage block.
+CT-01 supersedes the historical static `/usage` contract. `/context` and Ctrl+U
+open a live view without transcript entries. `/usage` reports an unknown command.
+The view has a bold `Context Usage` heading, model/current/limit/percentage
+metadata, grid, five measured category rows, free space, and a separate
+`Session usage` section retaining cost, premium request cost, requests, API
+duration, model, and compaction count. PageUp/PageDown scroll and Esc closes;
+the input remains usable at constrained heights.
+
+The shared ordered palette is system instructions `promptBorder`, custom
+instructions `claude`, built-in tool definitions `inactive`, MCP definitions
+`cyan_FOR_SUBAGENTS_ONLY` (#0891b2), messages/tool results
+`purple_FOR_SUBAGENTS_ONLY` (#9333ea), using the existing Claude palette roles.
+Grid glyphs are `⛁` (filled), `⛀` (partial
+below 70% fullness), and `⛶` (free); legend symbols match. A measured-zero
+category keeps its row and receives no colored cells. No unmeasured reserve
+or unsupported rows are added. Grids are 10x10 below 1M and 20x10 at 1M+;
+below 80 columns they become 5x5 and 5x10 with the legend below. Wide legends
+wrap within their own column without displacing the grid.
+
+This baseline is limited to valid live usage and complete measured attribution.
+CT-02 owns unavailable/conflicting/stale data, allocation rounding, expanded
+details and suggestions; CT-03 owns the live footer. Source-derived reference:
+Claude revision `6f6f12b37f529488b10e53928dd5508bb93535c7`,
+`ContextVisualization.tsx` and `analyzeContext.ts`. The current Claude binary
+is unavailable locally; binary comparison and pixel-perfect parity are not claimed.
 
 The one persistent status is context pressure. Hide it until current usage is within 20,000 tokens of the effective threshold. Then render dim `{percent}% until auto-compact`, right-aligned in the footer and tail-truncated. Below 80 columns stack it under the hint. Suppress it for the rest of a turn after compaction. Picopilot MUST use its own effective token limit; whether that limit already reserves compaction space is Unverified.
 
@@ -624,7 +648,7 @@ The implementation MUST remove or replace these current picopilot mechanisms:
 | --- | --- |
 | Alternate screen entry/exit | Main screen with `Viewport::Inline` and `insert_before`. |
 | App-owned transcript scroll offset | Terminal-native scrollback. |
-| Persistent status bar | Spinner status, `/status`, `/usage`, and context footer warning. |
+| Persistent status bar | Spinner status, `/status`, `/context`, and context footer warning. |
 | Persistent shortcut bar | Conditional hint/footer row. |
 | Centered modal areas, `Clear`, full borders, inverse selection | Inline compact pickers or static transcript output. |
 | One scrollable transcript `Paragraph` | Per-event prewrapped lines, explicit committed/live boundary. |
@@ -673,7 +697,7 @@ A later implementation session MUST run unit/property tests and visual fixtures 
 - [ ] Completion: 1/6/>6 rows, selected/unselected, command/resource forms, middle/tail truncation, `Tab` versus `Enter`.
 - [ ] Pickers: sessions/models/tools/skills, 500-item five-row window, arrows/pointer collision, numeric selection, wrap navigation, `[✓]`, cancel outcome, no surviving picker rows.
 - [ ] `/status`: exact echo/gutter, section blank, labels, colored count summary, empty output.
-- [ ] `/usage`: cost, context totals, attribution, long wrapping.
+- [ ] `/context`: cost, context totals, attribution, long wrapping.
 - [ ] Picopilot-only: collapsed/expanded reasoning, nested concurrent Tasks without names/colors, warning/recoverable/blocking/diagnostic rows, approval picker.
 
 ### Windows Terminal
@@ -763,9 +787,9 @@ This section is authoritative: implementations MUST NOT invent values for these 
 
 - Whether picopilot's `token_limit` already excludes a compaction buffer is unknown.
 - The reference context warning's warning-color branch appears unreachable because warning/error thresholds are both 20,000; this was inferred.
-- `/status`, `/usage`, `/tools`, and `/skills` command registration is not specified here.
+- `/status`, `/tools`, and `/skills` command registration is not specified here; CT-01 specifies `/context`.
 - Session name is conditional on a future rename feature.
-- Exact additional `/usage` line wording beyond resolved cost/context/attribution fields was not enumerated.
+- The historical `/usage` wording gap is superseded by the CT-01 contract above.
 - `Clauding` remains in the copied spinner verb list; replacing it with picopilot branding is a product decision, not a rendering fact.
 - The accepted picopilot-only mock-up was not run; its spacing inherits the shared rules.
 

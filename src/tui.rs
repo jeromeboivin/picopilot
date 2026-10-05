@@ -43,9 +43,10 @@ use crate::runtime::{
 };
 use crate::screen_model::{
     enter_main_screen, render_transcript_payload_with_options, restore_main_screen,
-    terminal_options, LiveEntryKind, NoticeKind, Platform, ScreenChange, ScreenEntry, ScreenModel,
-    AgentLaunchPayload, LaunchedAgentPayload, SubagentPayload, ToolCallState, ToolHeaderPayload, ToolProgressKind, ToolProgressPayload,
-    ToolResultPayload, ToolResultState, TranscriptPayload,
+    terminal_options, AgentLaunchPayload, LaunchedAgentPayload, LiveEntryKind, NoticeKind,
+    Platform, ScreenChange, ScreenEntry, ScreenModel, SubagentPayload, ToolCallState,
+    ToolHeaderPayload, ToolProgressKind, ToolProgressPayload, ToolResultPayload, ToolResultState,
+    TranscriptPayload,
 };
 use crate::skills::{Skill, SkillCatalog, SkillSelection};
 use crate::tool_rendering::tool_user_facing_name;
@@ -252,7 +253,7 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/fleet", "run work through Fleet"),
     ("/resume", "open a session to resume"),
     ("/status", "show session and configuration status"),
-    ("/usage", "show session usage and context attribution"),
+    ("/context", "show context and session usage"),
 ];
 
 static NEXT_SCREEN_NAMESPACE: AtomicU64 = AtomicU64::new(1);
@@ -533,6 +534,9 @@ pub struct App {
     fleet_active: bool,
     todos: Option<TodoSnapshot>,
     show_todos: bool,
+    show_context: bool,
+    context_scroll: u16,
+    context_scroll_limit: std::cell::Cell<u16>,
     todo_refresh_requested: bool,
     context_warning_suppressed: bool,
     observed_compactions: Option<i64>,
@@ -817,8 +821,8 @@ impl App {
     }
 
     fn push_entry(&mut self, entry: ChatEntry) {
-        self.open_agent_launch = matches!(entry, ChatEntry::AgentLaunch(_))
-            .then_some(self.entries.len());
+        self.open_agent_launch =
+            matches!(entry, ChatEntry::AgentLaunch(_)).then_some(self.entries.len());
         let id = self.allocate_entry_id();
         self.entries.push(entry);
         self.entry_ids.push(id);
@@ -1061,9 +1065,10 @@ impl App {
         metrics: UsageMetricsSnapshot,
         context_attribution: Option<ContextAttributionSnapshot>,
     ) {
-        self.add_local_command("/usage");
         self.set_usage_snapshot(metrics, context_attribution);
-        self.push_entry(ChatEntry::LocalOutput(usage_detail_lines(self)));
+        self.dismiss_startup_surface();
+        self.show_context = true;
+        self.context_scroll = 0;
     }
 
     fn set_usage_snapshot(
@@ -1605,10 +1610,22 @@ impl App {
     pub fn apply(&mut self, update: EventUpdate) {
         // A launched agent's answer is already shown in its agent launch block
         // (from the task result), so skip the subagent's own message stream.
-        if let EventUpdate::AssistantDelta { agent_id: Some(agent_id), .. }
-        | EventUpdate::AssistantMessage { agent_id: Some(agent_id), .. }
-        | EventUpdate::ReasoningDelta { agent_id: Some(agent_id), .. }
-        | EventUpdate::Reasoning { agent_id: Some(agent_id), .. } = &update
+        if let EventUpdate::AssistantDelta {
+            agent_id: Some(agent_id),
+            ..
+        }
+        | EventUpdate::AssistantMessage {
+            agent_id: Some(agent_id),
+            ..
+        }
+        | EventUpdate::ReasoningDelta {
+            agent_id: Some(agent_id),
+            ..
+        }
+        | EventUpdate::Reasoning {
+            agent_id: Some(agent_id),
+            ..
+        } = &update
         {
             if self.is_launched_agent(agent_id) {
                 return;
@@ -1979,15 +1996,19 @@ impl App {
     }
 
     fn launched_agent_index(&self, tool_call_id: &str) -> Option<(usize, usize)> {
-        self.entries.iter().enumerate().rev().find_map(|(index, entry)| {
-            let ChatEntry::AgentLaunch(agents) = entry else {
-                return None;
-            };
-            agents
-                .iter()
-                .position(|agent| agent.tool_call_id == tool_call_id)
-                .map(|position| (index, position))
-        })
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, entry)| {
+                let ChatEntry::AgentLaunch(agents) = entry else {
+                    return None;
+                };
+                agents
+                    .iter()
+                    .position(|agent| agent.tool_call_id == tool_call_id)
+                    .map(|position| (index, position))
+            })
     }
 
     fn tool_header_index(&self, tool_call_id: &str) -> Option<usize> {
@@ -2444,7 +2465,19 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
     if app.picker.is_some() {
         return handle_picker_key(app, key);
     }
-
+    if app.show_context && key.code == KeyCode::Esc {
+        app.show_context = false;
+        return UiAction::None;
+    }
+    if app.show_context && matches!(key.code, KeyCode::PageDown | KeyCode::PageUp) {
+        let limit = app.context_scroll_limit.get();
+        app.context_scroll = if key.code == KeyCode::PageDown {
+            app.context_scroll.saturating_add(5).min(limit)
+        } else {
+            app.context_scroll.min(limit).saturating_sub(5)
+        };
+        return UiAction::None;
+    }
     if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
         app.transcript_expanded = !app.transcript_expanded;
         app.queue_all_screen_changes();
@@ -2568,9 +2601,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
             } else if input == "/status" {
                 app.dismiss_startup_surface();
                 UiAction::LoadStatus
-            } else if input == "/usage" {
+            } else if input == "/context" {
                 app.dismiss_startup_surface();
                 UiAction::LoadUsageCommand
+            } else if input.split_whitespace().next() == Some("/usage") {
+                UiAction::LocalCommandError("Unknown command: /usage".to_string())
             } else if input == "/agent" {
                 app.dismiss_startup_surface();
                 UiAction::LoadAgents
@@ -2579,7 +2614,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> UiAction {
                 UiAction::LoadSessions
             } else if matches!(
                 input.split_whitespace().next(),
-                Some("/status" | "/usage" | "/resume" | "/agent")
+                Some("/status" | "/context" | "/resume" | "/agent")
             ) {
                 let command = input.split_whitespace().next().unwrap_or_default();
                 UiAction::LocalCommandError(format!(
@@ -2832,7 +2867,16 @@ fn draw_frame(
     if startup_height > 0 {
         frame.render_widget(Paragraph::new(startup_lines), startup_area);
     }
-    if let Some(screen) = screen {
+    if app.show_context {
+        let lines = context_detail_lines(app, chat_area.width as usize);
+        let limit = lines
+            .len()
+            .saturating_sub(chat_area.height as usize)
+            .min(u16::MAX as usize) as u16;
+        app.context_scroll_limit.set(limit);
+        let scroll = app.context_scroll.min(limit);
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), chat_area);
+    } else if let Some(screen) = screen {
         draw_live_chat(
             frame,
             app,
@@ -3284,7 +3328,6 @@ async fn process_terminal_events(
                 app.add_local_output(message);
             }
             UiAction::LoadUsage | UiAction::LoadUsageCommand => {
-                app.add_local_command("/usage");
                 let metrics = match runtime.session.rpc().usage().get_metrics().await {
                     Ok(metrics) => metrics,
                     Err(error) if error.is_transport_failure() => {
@@ -3312,8 +3355,7 @@ async fn process_terminal_events(
                     }
                     Err(_) => None,
                 };
-                app.set_usage_snapshot(usage_metrics_snapshot(&metrics), context_attribution);
-                app.add_local_output_lines(usage_detail_lines(app));
+                app.set_usage(usage_metrics_snapshot(&metrics), context_attribution);
             }
             UiAction::LoadTodos => {
                 load_todos(app, runtime, events).await?;
@@ -5066,54 +5108,158 @@ fn status_count_line(label: &str, enabled: usize, disabled: usize, command: &str
     ])
 }
 
-fn usage_detail_lines(app: &App) -> Vec<Line<'static>> {
-    let Some(metrics) = app.status.usage_metrics.as_ref() else {
-        return vec![usage_line("Usage metrics unavailable.")];
-    };
-
-    let mut lines = vec![
-        usage_line(format!("Session cost: {}", format_cost(metrics))),
-        usage_line(format!(
-            "Premium request cost: {:.2}",
-            metrics.total_premium_request_cost
-        )),
-        usage_line(format!("Requests: {}", metrics.total_user_requests)),
-        usage_line(format!("API time: {} ms", metrics.total_api_duration_ms)),
-    ];
-
-    if let Some(usage) = app.status.usage.as_ref() {
-        lines.push(usage_line(format!(
-            "Context window: {} / {} tokens",
+fn context_detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        "Context Usage",
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if let (Some(usage), Some(context)) = (&app.status.usage, &app.status.context_attribution) {
+        let limit = usage.token_limit.max(1);
+        let metadata = usage_line(format!(
+            "{} · {}/{} tokens ({:.1}%)",
+            sanitize_plain(&context.model_id),
             format_count(usage.current_tokens),
-            format_count(usage.token_limit)
-        )));
-    }
-
-    if let Some(context) = app.status.context_attribution.as_ref() {
-        lines.push(usage_line(format!(
-            "Attribution: {} / {} tokens ({})",
-            format_count(context.total_tokens),
-            format_count(context.prompt_token_limit),
-            sanitize_plain(&context.model_id)
-        )));
-        for category in &context.categories {
-            let percentage = if context.total_tokens > 0 {
-                category.tokens as f64 / context.total_tokens as f64 * 100.0
-            } else {
-                0.0
-            };
-            lines.push(usage_line(format!(
-                "  {}: {} ({percentage:.1}%)",
-                sanitize_plain(&category.label),
-                format_count(category.tokens)
-            )));
+            format_count(limit),
+            usage.current_tokens as f64 * 100.0 / limit as f64
+        ));
+        let large = limit >= 1_000_000;
+        let (columns, rows) = if width < 80 {
+            (5, if large { 10 } else { 5 })
+        } else {
+            (if large { 20 } else { 10 }, 10)
+        };
+        let capacity = columns * rows;
+        let tokens_per_cell = limit as f64 / capacity as f64;
+        let mut cells = Vec::new();
+        let mut legend = vec![
+            metadata,
+            Line::default(),
+            Line::styled(
+                "Measured usage by category",
+                Style::default()
+                    .fg(palette::INACTIVE)
+                    .add_modifier(Modifier::DIM | Modifier::ITALIC),
+            ),
+        ];
+        for &(label, color) in palette::CONTEXT_CATEGORIES {
+            let tokens = context
+                .categories
+                .iter()
+                .find(|category| category.label == label)
+                .map_or(0, |category| category.tokens);
+            let cell_count = (tokens as f64 / tokens_per_cell).ceil() as usize;
+            for index in 0..cell_count {
+                let fullness = (tokens as f64 / tokens_per_cell - index as f64).min(1.0);
+                cells.push(Span::styled(
+                    if fullness >= 0.7 { "⛁ " } else { "⛀ " },
+                    Style::default().fg(color),
+                ));
+            }
+            legend.push(Line::from(vec![
+                Span::styled("⛁ ", Style::default().fg(color)),
+                Span::raw(format!("{label}: ")),
+                Span::styled(
+                    format!(
+                        "{} tokens ({:.1}%)",
+                        format_count(tokens),
+                        tokens as f64 * 100.0 / limit as f64
+                    ),
+                    Style::default()
+                        .fg(palette::INACTIVE)
+                        .add_modifier(Modifier::DIM),
+                ),
+            ]));
         }
-        lines.push(usage_line(format!("Compactions: {}", context.compactions)));
-    } else {
-        lines.push(usage_line("Context attribution unavailable."));
+        cells.truncate(capacity);
+        while cells.len() < capacity {
+            cells.push(Span::styled(
+                "⛶ ",
+                Style::default()
+                    .fg(palette::PROMPT_BORDER)
+                    .add_modifier(Modifier::DIM),
+            ));
+        }
+        legend.push(Line::from(vec![
+            Span::styled(
+                "⛶ ",
+                Style::default()
+                    .fg(palette::PROMPT_BORDER)
+                    .add_modifier(Modifier::DIM),
+            ),
+            Span::raw("Free space: "),
+            Span::styled(
+                format!(
+                    "{} ({:.1}%)",
+                    format_count(limit.saturating_sub(usage.current_tokens)),
+                    (limit - usage.current_tokens) as f64 * 100.0 / limit as f64
+                ),
+                Style::default()
+                    .fg(palette::INACTIVE)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ]));
+        if width < 80 {
+            lines.extend(cells.chunks(columns).map(|row| Line::from(row.to_vec())));
+            lines.push(Line::default());
+            lines.extend(legend);
+        } else {
+            let legend = crate::transcript_wrap::wrap_lines(
+                &legend,
+                &crate::transcript_wrap::WrapSpec {
+                    wrap_width: width.saturating_sub(columns * 2 + 2).max(1),
+                    fill_width: 0,
+                    first_prefix: Vec::new(),
+                    continuation_prefix: Vec::new(),
+                    fill_style: None,
+                },
+            );
+            for index in 0..rows.max(legend.len()) {
+                let mut spans = cells
+                    .get(index * columns..(index + 1) * columns)
+                    .map_or_else(
+                        || vec![Span::raw(" ".repeat(columns * 2))],
+                        |row| row.to_vec(),
+                    );
+                spans.push(Span::raw("  "));
+                if let Some(entry) = legend.get(index) {
+                    spans.extend(entry.spans.clone());
+                }
+                lines.push(Line::from(spans));
+            }
+        }
     }
-
-    lines
+    lines.push(Line::default());
+    lines.push(Line::styled(
+        "Session usage",
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+    if let Some(metrics) = &app.status.usage_metrics {
+        lines.extend([
+            usage_line(format!("Session cost: {}", format_cost(metrics))),
+            usage_line(format!(
+                "Premium request cost: {:.2}",
+                metrics.total_premium_request_cost
+            )),
+            usage_line(format!("Requests: {}", metrics.total_user_requests)),
+            usage_line(format!("API time: {} ms", metrics.total_api_duration_ms)),
+        ]);
+        if let Some(model) = &metrics.current_model {
+            lines.push(usage_line(format!("Model: {}", sanitize_plain(model))));
+        }
+    }
+    if let Some(context) = &app.status.context_attribution {
+        lines.push(usage_line(format!("Compactions: {}", context.compactions)));
+    }
+    crate::transcript_wrap::wrap_lines(
+        &lines,
+        &crate::transcript_wrap::WrapSpec {
+            wrap_width: width.max(1),
+            fill_width: 0,
+            first_prefix: Vec::new(),
+            continuation_prefix: Vec::new(),
+            fill_style: None,
+        },
+    )
 }
 
 fn usage_line(text: impl Into<String>) -> Line<'static> {
@@ -6889,7 +7035,11 @@ mod tests {
         }
         let mut app = post_startup_app(None);
         for (id, agent, prompt) in [
-            ("task-1", "fact-checker", "Verify the release notes\nagainst the changelog"),
+            (
+                "task-1",
+                "fact-checker",
+                "Verify the release notes\nagainst the changelog",
+            ),
             ("task-2", "qa", "reply with exactly: pong"),
         ] {
             app.apply(EventUpdate::ToolStarted {
@@ -6917,7 +7067,10 @@ mod tests {
         assert!(rows_contain_exact(&text, "● 2 agents launched"), "{text}");
         assert!(!text.contains("ctrl+o"), "{text}");
         assert!(text.contains("├─ @fact-checker"), "{text}");
-        assert!(text.contains("│  Verify the release notes against the changelog"), "{text}");
+        assert!(
+            text.contains("│  Verify the release notes against the changelog"),
+            "{text}"
+        );
         assert!(text.contains("└─ @qa"), "{text}");
         assert!(text.contains("   reply with exactly: pong"), "{text}");
         assert!(!text.contains("Task("), "{text}");
@@ -6955,7 +7108,10 @@ mod tests {
         let text = rendered_rows(&app, 100, 24).join("\n");
         assert!(text.contains("line five"), "{text}");
         assert!(!text.contains("(+2 lines)"), "{text}");
-        assert!(rows_contain_exact(&text, "│  Verify the release notes"), "{text}");
+        assert!(
+            rows_contain_exact(&text, "│  Verify the release notes"),
+            "{text}"
+        );
         assert!(text.contains("│  against the changelog"), "{text}");
     }
 
@@ -7142,7 +7298,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_is_static_transcript_output_without_a_picker_overlay() {
+    fn context_renders_session_usage_without_transcript_output() {
         let mut app = post_startup_app(Some("gpt-5".to_string()));
         app.set_usage(
             UsageMetricsSnapshot {
@@ -7158,7 +7314,7 @@ mod tests {
 
         terminal
             .draw(|frame| draw(frame, &app))
-            .expect("usage should render in the transcript");
+            .expect("context view should render");
 
         let rows = (0..terminal.backend().buffer().area.height)
             .map(|y| {
@@ -7167,11 +7323,12 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(rows.iter().any(|row| row.contains("/usage")));
-        assert!(rows.iter().any(|row| row.contains("⎿")));
+        assert!(rows.iter().any(|row| row.contains("Context Usage")));
+        assert!(rows.iter().any(|row| row.contains("Session usage")));
         assert!(rows.iter().any(|row| row.contains("Session cost:")));
         assert!(!rows.iter().any(|row| row.contains("usage and context")));
         assert!(!app.picker_is_open());
+        assert!(app.entries().is_empty());
     }
 
     #[test]
@@ -9980,7 +10137,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_status_and_usage_commands_are_local_actions() {
+    fn exact_status_and_context_commands_are_local_actions() {
         let mut status = App::new(None);
         for character in "/status".chars() {
             status.push_input(character);
@@ -9991,7 +10148,7 @@ mod tests {
         );
 
         let mut usage = App::new(None);
-        for character in "/usage".chars() {
+        for character in "/context".chars() {
             usage.push_input(character);
         }
         assert_eq!(
@@ -10002,7 +10159,7 @@ mod tests {
 
     #[test]
     fn local_commands_reject_extra_arguments_without_becoming_sdk_prompts() {
-        for (input, command) in [("/status extra", "/status"), ("/usage\tmore", "/usage")] {
+        for (input, command) in [("/status extra", "/status"), ("/context\tmore", "/context")] {
             let mut app = App::new(None);
             for character in input.chars() {
                 app.push_input(character);
@@ -10223,7 +10380,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_metrics_are_static_transcript_output() {
+    fn usage_metrics_open_context_without_a_picker() {
         let mut app = App::new(None);
         app.set_usage(
             crate::events::UsageMetricsSnapshot {
@@ -10249,7 +10406,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_transcript_echoes_once_and_commits_one_immutable_output_block() {
+    fn context_usage_updates_in_place_without_transcript_entries() {
         let mut app = App::new(None);
         app.apply(EventUpdate::Usage(UsageSnapshot {
             current_tokens: 12_345,
@@ -10270,10 +10427,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(app.entries().len(), 2);
-        assert_eq!(app.entries()[0], ChatEntry::User("/usage".to_string()));
-        let output = app.entries()[1].clone();
-        assert!(matches!(output, ChatEntry::LocalOutput(_)));
+        assert!(app.entries().is_empty());
+        assert!(rendered_rows(&app, 100, 18)
+            .iter()
+            .any(|row| row.contains("Requests: 4")));
 
         app.set_usage_metrics(UsageMetricsSnapshot {
             total_nano_aiu: Some(9.0),
@@ -10282,11 +10439,14 @@ mod tests {
             total_api_duration_ms: 2500,
             current_model: Some("gpt-5".to_string()),
         });
-        assert_eq!(app.entries()[1], output);
+        assert!(app.entries().is_empty());
+        assert!(rendered_rows(&app, 100, 18)
+            .iter()
+            .any(|row| row.contains("Requests: 8")));
     }
 
     #[test]
-    fn usage_body_is_dimmed_without_losing_context_attribution_fields() {
+    fn context_retains_session_metrics_and_compaction_count() {
         let mut app = App::new(None);
         app.apply(EventUpdate::Usage(UsageSnapshot {
             current_tokens: 12_345,
@@ -10316,17 +10476,16 @@ mod tests {
             }),
         );
 
-        let lines = super::usage_detail_lines(&app);
-        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
+        app.dismiss_startup_surface();
+        app.show_context = true;
+        let rendered = rendered_rows(&app, 120, 35);
 
         assert!(rendered.iter().any(|line| line.contains("Session cost:")));
         assert!(rendered
             .iter()
-            .any(|line| line.contains("Context window: 12,345 / 100,000 tokens")));
-        assert!(rendered.iter().any(|line| line.contains("Attribution:")));
+            .any(|line| line.contains("12,345/100,000 tokens")));
+        assert!(rendered.iter().any(|line| line.contains("Context Usage")));
         assert!(rendered.iter().any(|line| line.contains("Compactions: 0")));
-        assert!(lines[0].spans[0].style.fg == Some(palette::INACTIVE));
-        assert!(lines[0].spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

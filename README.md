@@ -77,14 +77,22 @@ Built-in commands are:
 | Command | What it does |
 | --- | --- |
 | `/status` | Shows the active session, model, reasoning level, context tier, tools, and skills. Takes no arguments. |
-| `/usage` | Shows session usage and context attribution. Takes no arguments. |
+| `/context` | Shows measured context categories, used/free grid, and separate Session usage metrics. Ctrl+U also opens it. PageUp/PageDown scroll; Esc closes. Takes no arguments. |
 | `/resume` | Opens the previous-conversation picker. Use `Up`/`Down` or `j`/`k` to select, `Enter` to load, or `Esc` to cancel. Takes no arguments. |
 | `/fleet PROMPT` | Starts a Fleet run for `PROMPT`. A non-empty prompt is required. |
 
 Use `Up`/`Down` to choose a completion, `Tab` to place it in the prompt while
 keeping any trailing arguments, `Enter` to run or send it, and `Esc` to close
 completion. Unknown slash commands and skills that are not user-invocable are
-sent as ordinary prompts.
+sent as ordinary prompts, except the removed `/usage`, which reports an unknown command.
+
+The context screen uses a 10x10 grid below a 1M-token limit and 20x10 at
+1M or above. Below 80 columns, it uses 5x5 or 5x10 and stacks the legend.
+This is the valid measured-data baseline. Missing/conflicting data and
+`/context all` are not delivered yet; the live footer meter is separate work.
+The visual reference is Claude source revision
+`6f6f12b37f529488b10e53928dd5508bb93535c7`, not a current Claude binary
+comparison. Pixel-perfect parity is not claimed.
 
 ## Local model providers (experimental)
 

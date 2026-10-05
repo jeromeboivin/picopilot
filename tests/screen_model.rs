@@ -98,6 +98,354 @@ fn type_input(app: &mut App, input: &str) {
     }
 }
 
+#[test]
+fn context_command_replaces_usage_and_ctrl_u_opens_the_same_view() {
+    let mut app = App::new(None);
+    type_input(&mut app, "/context");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LoadUsageCommand
+    );
+    assert_eq!(
+        picopilot::tui::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)
+        ),
+        picopilot::tui::UiAction::LoadUsage
+    );
+    type_input(&mut app, "/usage");
+    assert_eq!(
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        picopilot::tui::UiAction::LocalCommandError("Unknown command: /usage".into())
+    );
+    type_input(&mut app, "/");
+    let terminal = draw_startup(&app, 80, 22);
+    assert!(terminal_text(&terminal).contains("/context"));
+    assert!(!terminal_text(&terminal).contains("/usage"));
+}
+
+fn measured_context_app() -> App {
+    use picopilot::events::{
+        ContextAttributionSnapshot, ContextCategorySnapshot, UsageMetricsSnapshot, UsageSnapshot,
+    };
+    let mut app = App::new(Some("test-model".into()));
+    app.apply(EventUpdate::Usage(UsageSnapshot {
+        current_tokens: 40000,
+        token_limit: 200000,
+        messages: 4,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+    app.set_usage(
+        UsageMetricsSnapshot {
+            total_nano_aiu: Some(2000000000.0),
+            total_premium_request_cost: 3.0,
+            total_user_requests: 4,
+            total_api_duration_ms: 500,
+            current_model: Some("test-model".into()),
+        },
+        Some(ContextAttributionSnapshot {
+            model_id: "test-model".into(),
+            total_tokens: 40000,
+            prompt_token_limit: 200000,
+            categories: [
+                ("System instructions", 10000),
+                ("Custom instructions", 10000),
+                ("Tool definitions", 10000),
+                ("MCP tool definitions", 0),
+                ("Messages and tool results", 10000),
+            ]
+            .into_iter()
+            .map(|(label, tokens)| ContextCategorySnapshot {
+                label: label.into(),
+                tokens,
+            })
+            .collect(),
+            compactions: 2,
+        }),
+    );
+    app
+}
+
+#[test]
+fn context_view_renders_measured_categories_and_live_usage_without_history() {
+    use picopilot::events::UsageSnapshot;
+    let mut app = measured_context_app();
+    let mut terminal = Terminal::new(TestBackend::new(120, 35)).unwrap();
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    let text = terminal_text(&terminal);
+    for expected in [
+        "Context Usage",
+        "40,000/200,000",
+        "MCP tool definitions: 0",
+        "Session usage",
+        "Session cost: 2.000 AIU",
+        "Requests: 4",
+        "API time: 500 ms",
+        "Compactions: 2",
+        "Free space",
+    ] {
+        assert!(text.contains(expected), "missing {expected}");
+    }
+    assert_eq!(cell_at_text(&terminal, "⛁").fg, palette::PROMPT_BORDER);
+    assert!(app.entries().is_empty());
+    app.apply(EventUpdate::Usage(UsageSnapshot {
+        current_tokens: 50000,
+        token_limit: 200000,
+        messages: 5,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal_text(&terminal).contains("50,000/200,000"));
+}
+
+#[test]
+fn context_grid_uses_reference_breakpoints_and_preserves_constrained_input() {
+    use picopilot::events::{
+        ContextAttributionSnapshot, ContextCategorySnapshot, UsageMetricsSnapshot, UsageSnapshot,
+    };
+    for limit in [200_000, 1_000_000] {
+        for width in [20, 40, 79, 80, 120] {
+            let mut app = App::new(None);
+            app.apply(EventUpdate::Usage(UsageSnapshot {
+                current_tokens: limit / 5,
+                token_limit: limit,
+                messages: 1,
+                conversation_tokens: None,
+                system_tokens: None,
+                tool_definitions_tokens: None,
+            }));
+            app.set_usage(
+                UsageMetricsSnapshot {
+                    total_nano_aiu: Some(1e9),
+                    total_premium_request_cost: 1.0,
+                    total_user_requests: 1,
+                    total_api_duration_ms: 100,
+                    current_model: Some("model".into()),
+                },
+                Some(ContextAttributionSnapshot {
+                    model_id: "model".into(),
+                    total_tokens: limit / 5,
+                    prompt_token_limit: limit,
+                    compactions: 0,
+                    categories: [
+                        ("System instructions", limit / 25),
+                        ("Custom instructions", limit / 25),
+                        ("Tool definitions", limit / 25),
+                        ("MCP tool definitions", 0),
+                        ("Messages and tool results", limit * 2 / 25),
+                    ]
+                    .into_iter()
+                    .map(|(label, tokens)| ContextCategorySnapshot {
+                        label: label.into(),
+                        tokens,
+                    })
+                    .collect(),
+                }),
+            );
+            let mut terminal = Terminal::new(TestBackend::new(width, 60)).unwrap();
+            terminal
+                .draw(|frame| picopilot::tui::draw(frame, &app))
+                .unwrap();
+            let rows = buffer_rows(&terminal);
+            let grid: Vec<_> = rows
+                .iter()
+                .filter(|row| row.starts_with('⛁') || row.starts_with('⛀') || row.starts_with('⛶'))
+                .filter(|row| row.chars().filter(|c| matches!(c, '⛁' | '⛀' | '⛶')).count() > 1)
+                .collect();
+            let (columns, height) = match (width < 80, limit >= 1_000_000) {
+                (true, false) => (5, 5),
+                (true, true) => (5, 10),
+                (false, false) => (10, 10),
+                (false, true) => (20, 10),
+            };
+            assert_eq!(grid.len(), height, "width={width} limit={limit}");
+            if width >= 80 {
+                let first = rows.iter().position(|row| row.starts_with('⛁')).unwrap();
+                assert!(
+                    rows[first].contains("model"),
+                    "reference metadata belongs beside the wide grid"
+                );
+                for row in &rows[first..first + height] {
+                    assert!(
+                        row.starts_with('⛁') || row.starts_with('⛀') || row.starts_with('⛶'),
+                        "legend displaced the grid: {row:?}"
+                    );
+                }
+            }
+            let mut used = 0;
+            for row in &grid {
+                let symbols: Vec<_> = row
+                    .chars()
+                    .take(columns * 2)
+                    .filter(|c| matches!(c, '⛁' | '⛀' | '⛶'))
+                    .collect();
+                assert_eq!(symbols.len(), columns);
+                used += symbols.iter().filter(|&&symbol| symbol != '⛶').count();
+            }
+            assert_eq!(
+                used,
+                columns * height / 5,
+                "20% used grid at width={width} limit={limit}"
+            );
+            let buffer = terminal.backend().buffer();
+            let grid_start = rows.iter().position(|row| row.starts_with('⛁')).unwrap();
+            for y in grid_start..grid_start + height {
+                for x in 0..columns * 2 {
+                    assert_ne!(
+                        buffer[(x as u16, y as u16)].fg,
+                        palette::CYAN_FOR_SUBAGENTS_ONLY,
+                        "measured-zero MCP must have no grid cells"
+                    );
+                }
+            }
+            let text = terminal_text(&terminal);
+            assert!(text.contains("Session usage"));
+            assert!(!text.contains("Autocompact buffer"));
+            for (symbol, color) in [
+                ("⛁ Custom", palette::CLAUDE),
+                ("⛁ Tool", palette::INACTIVE),
+                ("⛁ MCP", palette::CYAN_FOR_SUBAGENTS_ONLY),
+                ("⛁ Messages", palette::PURPLE_FOR_SUBAGENTS_ONLY),
+            ] {
+                assert_eq!(cell_at_text(&terminal, symbol).fg, color);
+            }
+            type_input(&mut app, "draft");
+            let mut short = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            short
+                .draw(|frame| picopilot::tui::draw(frame, &app))
+                .unwrap();
+            assert!(terminal_text(&short).contains("draft"));
+            assert_eq!(app.input(), "draft");
+        }
+    }
+}
+
+#[test]
+fn context_scroll_is_bounded_and_picker_keys_take_precedence() {
+    let mut app = measured_context_app();
+    app.apply(EventUpdate::Banner {
+        severity: picopilot::events::BannerSeverity::Warning,
+        message: "return to chat marker".into(),
+        url: None,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal_text(&terminal).contains("Context Usage"));
+    for _ in 0..100 {
+        picopilot::tui::handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        );
+        terminal
+            .draw(|frame| picopilot::tui::draw(frame, &app))
+            .unwrap();
+    }
+    let bottom = terminal_text(&terminal);
+    assert!(bottom.contains("Compactions: 2"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert_ne!(
+        terminal_text(&terminal),
+        bottom,
+        "PageUp must respond immediately after reaching the bottom"
+    );
+    for _ in 0..100 {
+        picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+    }
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal_text(&terminal).contains("Context Usage"));
+    app.open_tool_picker();
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    let picker_top = terminal_text(&terminal);
+    picopilot::tui::handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+    );
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert_ne!(
+        terminal_text(&terminal),
+        picker_top,
+        "PageDown must page the picker"
+    );
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        !app.picker_is_open(),
+        "Esc must cancel the active picker first"
+    );
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal_text(&terminal).contains("Context Usage"));
+    picopilot::tui::handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    terminal
+        .draw(|frame| picopilot::tui::draw(frame, &app))
+        .unwrap();
+    assert!(terminal_text(&terminal).contains("return to chat marker"));
+    assert!(!terminal_text(&terminal).contains("Context Usage"));
+}
+
+#[test]
+fn context_partial_cells_use_reference_threshold_and_dim_free_legend() {
+    use picopilot::events::{ContextAttributionSnapshot, ContextCategorySnapshot, UsageSnapshot};
+    let mut app = measured_context_app();
+    app.apply(EventUpdate::Usage(UsageSnapshot {
+        current_tokens: 3500,
+        token_limit: 100000,
+        messages: 1,
+        conversation_tokens: None,
+        system_tokens: None,
+        tool_definitions_tokens: None,
+    }));
+    app.set_context_attribution(Some(ContextAttributionSnapshot {
+        model_id: "model".into(),
+        total_tokens: 3500,
+        prompt_token_limit: 100000,
+        compactions: 0,
+        categories: [
+            ("System instructions", 699),
+            ("Custom instructions", 700),
+            ("Tool definitions", 1000),
+            ("MCP tool definitions", 0),
+            ("Messages and tool results", 1101),
+        ]
+        .into_iter()
+        .map(|(label, tokens)| ContextCategorySnapshot {
+            label: label.into(),
+            tokens,
+        })
+        .collect(),
+    }));
+    let terminal = draw_startup(&app, 80, 35);
+    assert!(
+        buffer_rows(&terminal)[1].starts_with("⛀ ⛁ ⛁ ⛁ ⛀ ⛶"),
+        "699/1000 partial; 700/1000 filled; 1101 has one full and one partial cell"
+    );
+    let free = cell_at_text(&terminal, "⛶ Free space");
+    assert_eq!(free.fg, palette::PROMPT_BORDER);
+    assert!(free.modifier.contains(Modifier::DIM));
+    let value = cell_at_text(&terminal, "96,500 (96.5%)");
+    assert_eq!(value.fg, palette::INACTIVE);
+    assert!(value.modifier.contains(Modifier::DIM));
+}
+
 fn draw_startup(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
@@ -331,7 +679,7 @@ fn typing_slash_dismisses_startup_surface_while_showing_command_completion() {
     assert!(output.contains("/fleet"));
     assert!(output.contains("/resume"));
     assert!(output.contains("/status"));
-    assert!(output.contains("/usage"));
+    assert!(output.contains("/context"));
 }
 
 #[test]
@@ -731,7 +1079,7 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
     for (input, expected) in [
         ("/resume", picopilot::tui::UiAction::LoadSessions),
         ("/status", picopilot::tui::UiAction::LoadStatus),
-        ("/usage", picopilot::tui::UiAction::LoadUsageCommand),
+        ("/context", picopilot::tui::UiAction::LoadUsageCommand),
         (
             "/fleet inspect",
             picopilot::tui::UiAction::StartFleet("inspect".to_string()),
@@ -752,7 +1100,7 @@ fn accepted_startup_inputs_dismiss_and_rejected_or_quit_paths_do_not_create_hist
     }
 
     let mut rejected = App::new(None);
-    for character in "/usage extra".chars() {
+    for character in "/context extra".chars() {
         picopilot::tui::handle_key(
             &mut rejected,
             KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
