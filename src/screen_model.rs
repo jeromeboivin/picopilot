@@ -2138,10 +2138,9 @@ fn assistant_nested_wrap_spec(columns: usize) -> WrapSpec {
 }
 
 fn assistant_dot_with_space() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "⏺ "
-    } else {
-        "● "
+    match ToolPlatform::current() {
+        ToolPlatform::MacOs => "⏺ ",
+        ToolPlatform::WindowsLinux => "● ",
     }
 }
 

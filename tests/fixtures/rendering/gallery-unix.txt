@@ -1,0 +1,1089 @@
+[app name=picker-tools height=14]
+width=20 rows=14
+row=0 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="Select tools (1 of 1"
+cell_span=0..20 text="Select tools (1 of 1" fg=#ffffff bg=reset modifiers=BOLD/NONE
+row=6 text="❯   1.  [✓]  bash   "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="    2.  [✓]  list_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="list_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=8 text="    3.  [✓]  read_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="read_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=9 text="    4.  [✓]  stop_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="stop_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=10 text="↓   5.  [✓]  write_b"
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="write_b" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=11 text="  ↑/↓ to select · En"
+cell_span=0..20 text="  ↑/↓ to select · En" fg=#999999 bg=reset modifiers=NONE/NONE
+row=12 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+width=40 rows=14
+row=0 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="Select tools (1 of 17):                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="❯   1.  [✓]  bash                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="    2.  [✓]  list_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="    3.  [✓]  read_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="    4.  [✓]  stop_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="↓   5.  [✓]  write_bash                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  ↑/↓ to select · Enter to confirm · Esc"
+cell_span=0..40 text="  ↑/↓ to select · Enter to confirm · Esc" fg=#999999 bg=reset modifiers=NONE/NONE
+row=12 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+width=80 rows=14
+row=0 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="Select tools (1 of 17):                                                         "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="❯   1.  [✓]  bash                                                               "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="    2.  [✓]  list_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="    3.  [✓]  read_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="    4.  [✓]  stop_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="↓   5.  [✓]  write_bash                                                         "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                              "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..80 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+width=120 rows=14
+row=0 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="Select tools (1 of 17):                                                                                                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="❯   1.  [✓]  bash                                                                                                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="    2.  [✓]  list_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="    3.  [✓]  read_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="    4.  [✓]  stop_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="↓   5.  [✓]  write_bash                                                                                                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                                                                      "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..120 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+row=12 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=13 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+
+[app name=context-constrained-picker height=12]
+width=20 rows=12
+row=0 text="Context Usage       "
+cell_span=0..13 text="Context Usage" fg=reset bg=reset modifiers=BOLD/NONE
+cell_span=13..20 text="       " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="⛁ ⛁ ⛁ ⛁ ⛁           "
+cell_span=0..2 text="⛁ " fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=2..4 text="⛁ " fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=4..6 text="⛁ " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..10 text="⛁ ⛁ " fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=10..20 text="          " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 1"
+cell_span=0..20 text="Select tools (1 of 1" fg=#ffffff bg=reset modifiers=BOLD/NONE
+row=3 text="❯   1.  [✓]  bash   "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="list_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="read_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="stop_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_b"
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="write_b" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · En"
+cell_span=0..20 text="  ↑/↓ to select · En" fg=#999999 bg=reset modifiers=NONE/NONE
+row=9 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc      20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..15 text="      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=15..20 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=40 rows=12
+row=0 text="Context Usage                           "
+cell_span=0..13 text="Context Usage" fg=reset bg=reset modifiers=BOLD/NONE
+cell_span=13..40 text="                           " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="⛁ ⛁ ⛁ ⛁ ⛁                               "
+cell_span=0..2 text="⛁ " fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=2..4 text="⛁ " fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=4..6 text="⛁ " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..10 text="⛁ ⛁ " fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=10..40 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc"
+cell_span=0..40 text="  ↑/↓ to select · Enter to confirm · Esc" fg=#999999 bg=reset modifiers=NONE/NONE
+row=9 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..14 text="     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=14..15 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=15..16 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=16..17 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=17..18 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=18..34 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=34..35 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=35..40 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=80 rows=12
+row=0 text="Context Usage                                                                   "
+cell_span=0..13 text="Context Usage" fg=reset bg=reset modifiers=BOLD/NONE
+cell_span=13..80 text="                                                                   " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   gpt-5 · 40,000/200,000 tokens (20.0%)                     "
+cell_span=0..8 text="⛁ ⛁ ⛁ ⛁ " fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=8..16 text="⛁ ⛁ ⛁ ⛁ " fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=16..20 text="⛁ ⛁ " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=20..22 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=22..59 text="gpt-5 · 40,000/200,000 tokens (20.0%)" fg=#999999 bg=reset modifiers=DIM/NONE
+cell_span=59..80 text="                     " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                                                         "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                                                               "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                                                         "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                              "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..80 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc                                             ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..54 text="                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=54..55 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=55..56 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=56..57 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=57..58 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=58..74 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=74..75 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=75..80 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=120 rows=12
+row=0 text="Context Usage                                                                                                           "
+cell_span=0..13 text="Context Usage" fg=reset bg=reset modifiers=BOLD/NONE
+cell_span=13..120 text="                                                                                                           " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁ ⛁   gpt-5 · 40,000/200,000 tokens (20.0%)                                                             "
+cell_span=0..8 text="⛁ ⛁ ⛁ ⛁ " fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=8..16 text="⛁ ⛁ ⛁ ⛁ " fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=16..20 text="⛁ ⛁ " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=20..22 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=22..59 text="gpt-5 · 40,000/200,000 tokens (20.0%)" fg=#999999 bg=reset modifiers=DIM/NONE
+cell_span=59..120 text="                                                             " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                                                                                                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                                                                                                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                                                                                                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                                                                      "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..120 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc                                                                                     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..94 text="                                                                                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=94..95 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=95..96 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=96..97 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=97..98 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=98..114 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=114..115 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=115..120 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+
+[app name=footer-picker height=12]
+width=20 rows=12
+row=0 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 1"
+cell_span=0..20 text="Select tools (1 of 1" fg=#ffffff bg=reset modifiers=BOLD/NONE
+row=3 text="❯   1.  [✓]  bash   "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="list_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="read_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="stop_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_b"
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="write_b" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · En"
+cell_span=0..20 text="  ↑/↓ to select · En" fg=#999999 bg=reset modifiers=NONE/NONE
+row=9 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc      20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..15 text="      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=15..20 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=40 rows=12
+row=0 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc"
+cell_span=0..40 text="  ↑/↓ to select · Enter to confirm · Esc" fg=#999999 bg=reset modifiers=NONE/NONE
+row=9 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..14 text="     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=14..15 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=15..16 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=16..17 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=17..18 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=18..34 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=34..35 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=35..40 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=80 rows=12
+row=0 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                                                         "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                                                               "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                                                         "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                              "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..80 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc                                             ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..54 text="                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=54..55 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=55..56 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=56..57 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=57..58 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=58..74 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=74..75 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=75..80 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=120 rows=12
+row=0 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="Select tools (1 of 17):                                                                                                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="❯   1.  [✓]  bash                                                                                                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    2.  [✓]  list_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="    3.  [✓]  read_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="    4.  [✓]  stop_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="↓   5.  [✓]  write_bash                                                                                                 "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 5." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..23 text="write_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=8 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                                                                      "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..120 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+row=9 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=10 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=11 text="Enter/Esc                                                                                     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..94 text="                                                                                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=94..95 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=95..96 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=96..97 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=97..98 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=98..114 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=114..115 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=115..120 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+
+[app name=footer-picker-height-3 height=3]
+width=20 rows=3
+row=0 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 1"
+cell_span=0..20 text="Select tools (1 of 1" fg=#ffffff bg=reset modifiers=BOLD/NONE
+row=2 text="❯   1.  [✓]  bash   "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+width=40 rows=3
+row=0 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+width=80 rows=3
+row=0 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                                                         "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                                                               "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+width=120 rows=3
+row=0 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                                                                                                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                                                                                                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+
+[app name=footer-picker-height-8 height=8]
+width=20 rows=8
+row=0 text="                    "
+cell_span=0..20 text="                    " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 1"
+cell_span=0..20 text="Select tools (1 of 1" fg=#ffffff bg=reset modifiers=BOLD/NONE
+row=2 text="❯   1.  [✓]  bash   "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..20 text="   " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="    2.  [✓]  list_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="list_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=4 text="    3.  [✓]  read_ba"
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="read_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=5 text="↓   4.  [✓]  stop_ba"
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..20 text="stop_ba" fg=#ffffff bg=reset modifiers=NONE/NONE
+row=6 text="  ↑/↓ to select · En"
+cell_span=0..20 text="  ↑/↓ to select · En" fg=#999999 bg=reset modifiers=NONE/NONE
+row=7 text="Enter/Esc      20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..15 text="      " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=15..20 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=40 rows=8
+row=0 text="                                        "
+cell_span=0..40 text="                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..40 text="                 " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..40 text="                       " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="    2.  [✓]  list_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    3.  [✓]  read_bash                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="↓   4.  [✓]  stop_bash                  "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..40 text="                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="  ↑/↓ to select · Enter to confirm · Esc"
+cell_span=0..40 text="  ↑/↓ to select · Enter to confirm · Esc" fg=#999999 bg=reset modifiers=NONE/NONE
+row=7 text="Enter/Esc     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..14 text="     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=14..15 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=15..16 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=16..17 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=17..18 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=18..34 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=34..35 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=35..40 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=80 rows=8
+row=0 text="                                                                                "
+cell_span=0..80 text="                                                                                " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                                                         "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..80 text="                                                         " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                                                               "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..80 text="                                                               " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="    2.  [✓]  list_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    3.  [✓]  read_bash                                                          "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="↓   4.  [✓]  stop_bash                                                          "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..80 text="                                                          " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                              "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..80 text="                              " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="Enter/Esc                                             ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..54 text="                                             " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=54..55 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=55..56 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=56..57 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=57..58 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=58..74 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=74..75 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=75..80 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE
+width=120 rows=8
+row=0 text="                                                                                                                        "
+cell_span=0..120 text="                                                                                                                        " fg=reset bg=reset modifiers=NONE/NONE
+row=1 text="Select tools (1 of 17):                                                                                                 "
+cell_span=0..23 text="Select tools (1 of 17):" fg=#ffffff bg=reset modifiers=BOLD/NONE
+cell_span=23..120 text="                                                                                                 " fg=reset bg=reset modifiers=NONE/NONE
+row=2 text="❯   1.  [✓]  bash                                                                                                       "
+cell_span=0..1 text="❯" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 1." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..17 text="bash" fg=#b1b9f9 bg=reset modifiers=NONE/NONE
+cell_span=17..120 text="                                                                                                       " fg=reset bg=reset modifiers=NONE/NONE
+row=3 text="    2.  [✓]  list_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 2." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="list_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=4 text="    3.  [✓]  read_bash                                                                                                  "
+cell_span=0..1 text=" " fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 3." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="read_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=5 text="↓   4.  [✓]  stop_bash                                                                                                  "
+cell_span=0..1 text="↓" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=1..3 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=3..6 text=" 4." fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=6..8 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=8..11 text="[✓]" fg=#4eba65 bg=reset modifiers=NONE/NONE
+cell_span=11..13 text="  " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=13..22 text="stop_bash" fg=#ffffff bg=reset modifiers=NONE/NONE
+cell_span=22..120 text="                                                                                                  " fg=reset bg=reset modifiers=NONE/NONE
+row=6 text="  ↑/↓ to select · Enter to confirm · Esc to cancel                                                                      "
+cell_span=0..50 text="  ↑/↓ to select · Enter to confirm · Esc to cancel" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=50..120 text="                                                                      " fg=reset bg=reset modifiers=NONE/NONE
+row=7 text="Enter/Esc                                                                                     ⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶ 20.0%"
+cell_span=0..9 text="Enter/Esc" fg=reset bg=reset modifiers=DIM/NONE
+cell_span=9..94 text="                                                                                     " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=94..95 text="⛁" fg=#888888 bg=reset modifiers=NONE/NONE
+cell_span=95..96 text="⛁" fg=#d77757 bg=reset modifiers=NONE/NONE
+cell_span=96..97 text="⛁" fg=#999999 bg=reset modifiers=NONE/NONE
+cell_span=97..98 text="⛁" fg=#9333ea bg=reset modifiers=NONE/NONE
+cell_span=98..114 text="⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶" fg=#888888 bg=reset modifiers=DIM/NONE
+cell_span=114..115 text=" " fg=reset bg=reset modifiers=NONE/NONE
+cell_span=115..120 text="20.0%" fg=reset bg=reset modifiers=DIM/NONE

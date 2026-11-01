@@ -34,8 +34,30 @@ pub enum ToolPlatform {
     WindowsLinux,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_TOOL_PLATFORM: std::cell::Cell<Option<ToolPlatform>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_tool_platform<T>(platform: ToolPlatform, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<ToolPlatform>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_TOOL_PLATFORM.with(|current| current.set(self.0));
+        }
+    }
+    let previous = TEST_TOOL_PLATFORM.with(|current| current.replace(Some(platform)));
+    let _reset = Reset(previous);
+    f()
+}
+
 impl ToolPlatform {
     pub fn current() -> Self {
+        #[cfg(test)]
+        if let Some(platform) = TEST_TOOL_PLATFORM.with(std::cell::Cell::get) {
+            return platform;
+        }
         if cfg!(target_os = "macos") {
             Self::MacOs
         } else {
@@ -473,6 +495,21 @@ mod tests {
     use std::path::Path;
 
     use super::{tool_summary, tool_user_facing_name};
+
+    #[test]
+    fn test_platform_override_is_scoped_and_restored() {
+        use super::{with_test_tool_platform, ToolPlatform};
+
+        let original = ToolPlatform::current();
+        with_test_tool_platform(ToolPlatform::MacOs, || {
+            assert_eq!(ToolPlatform::current(), ToolPlatform::MacOs);
+            with_test_tool_platform(ToolPlatform::WindowsLinux, || {
+                assert_eq!(ToolPlatform::current(), ToolPlatform::WindowsLinux);
+            });
+            assert_eq!(ToolPlatform::current(), ToolPlatform::MacOs);
+        });
+        assert_eq!(ToolPlatform::current(), original);
+    }
 
     #[test]
     fn edit_summary_keeps_a_cwd_relative_path() {

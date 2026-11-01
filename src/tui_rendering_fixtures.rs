@@ -28,7 +28,15 @@ use super::{
 
 const WIDTHS: &[usize] = &[20, 40, 80, 120];
 const GALLERY_PATH: &str = "tests/fixtures/rendering/gallery.txt";
+const UNIX_GALLERY_PATH: &str = "tests/fixtures/rendering/gallery-unix.txt";
 const REGENERATE_ENV: &str = "PICOPILOT_REGENERATE_RENDERING_FIXTURES";
+const PLATFORM_APP_FIXTURES: &[&str] = &[
+    "picker-tools",
+    "context-constrained-picker",
+    "footer-picker",
+    "footer-picker-height-3",
+    "footer-picker-height-8",
+];
 
 #[derive(Debug)]
 struct TranscriptFixture {
@@ -42,11 +50,17 @@ struct TranscriptFixture {
 
 #[test]
 fn committed_rendering_gallery_matches_production_renderer() {
-    let expected = include_str!("../tests/fixtures/rendering/gallery.txt");
+    let windows_gallery = include_str!("../tests/fixtures/rendering/gallery.txt");
+    let unix_fixtures = include_str!("../tests/fixtures/rendering/gallery-unix.txt");
+    let expected = if cfg!(windows) {
+        windows_gallery.to_string()
+    } else {
+        replace_platform_app_fixtures(windows_gallery, unix_fixtures)
+    };
     let actual = rendering_gallery();
 
     if actual != expected {
-        let diff = similar::TextDiff::from_lines(expected, &actual)
+        let diff = similar::TextDiff::from_lines(&expected, &actual)
             .unified_diff()
             .context_radius(3)
             .header("committed gallery", "production rendering")
@@ -57,7 +71,22 @@ fn committed_rendering_gallery_matches_production_renderer() {
 
 #[test]
 fn rendering_gallery_generation_is_deterministic() {
-    assert_eq!(rendering_gallery(), rendering_gallery());
+    let gallery = rendering_gallery();
+    crate::tool_rendering::with_test_tool_platform(ToolPlatform::MacOs, || {
+        assert_eq!(gallery, rendering_gallery());
+        assert_eq!(ToolPlatform::current(), ToolPlatform::MacOs);
+    });
+}
+
+#[test]
+fn platform_picker_fixtures_preserve_the_shared_gallery() {
+    let windows = include_str!("../tests/fixtures/rendering/gallery.txt");
+    let unix = include_str!("../tests/fixtures/rendering/gallery-unix.txt");
+    let unix_gallery = replace_platform_app_fixtures(windows, unix);
+
+    assert!(app_fixture(windows, "picker-tools").contains("powershell"));
+    assert!(app_fixture(&unix_gallery, "picker-tools").contains("bash"));
+    assert_eq!(replace_platform_app_fixtures(&unix_gallery, windows), windows);
 }
 
 #[test]
@@ -68,11 +97,61 @@ fn regenerate_rendering_gallery() {
         Some("1"),
         "set {REGENERATE_ENV}=1 to regenerate {GALLERY_PATH}"
     );
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(GALLERY_PATH);
-    fs::write(path, rendering_gallery()).expect("rendering gallery should be writable");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let gallery_path = root.join(GALLERY_PATH);
+    let actual = rendering_gallery();
+    if cfg!(windows) {
+        fs::write(gallery_path, actual).expect("rendering gallery should be writable");
+    } else {
+        let windows_gallery =
+            fs::read_to_string(&gallery_path).expect("Windows rendering gallery should exist");
+        let shared_gallery = replace_platform_app_fixtures(&actual, &windows_gallery);
+        let mut unix_fixtures: String = PLATFORM_APP_FIXTURES
+            .iter()
+            .map(|name| app_fixture(&actual, name))
+            .collect();
+        if unix_fixtures.ends_with("\n\n") {
+            unix_fixtures.pop();
+        }
+        fs::write(gallery_path, shared_gallery).expect("rendering gallery should be writable");
+        fs::write(root.join(UNIX_GALLERY_PATH), unix_fixtures)
+            .expect("Unix rendering fixtures should be writable");
+    }
+}
+
+fn app_fixture<'a>(gallery: &'a str, name: &str) -> &'a str {
+    let header = format!("[app name={name} ");
+    let start = gallery
+        .find(&header)
+        .unwrap_or_else(|| panic!("missing app fixture {name}"));
+    let end = gallery[start..]
+        .find("\n[app name=")
+        .map_or(gallery.len(), |offset| start + offset + 1);
+    &gallery[start..end]
+}
+
+fn replace_platform_app_fixtures(gallery: &str, replacement: &str) -> String {
+    let mut result = gallery.to_string();
+    for name in PLATFORM_APP_FIXTURES {
+        let old = app_fixture(&result, name);
+        let new = app_fixture(replacement, name);
+        let new = if old.ends_with("\n\n") && !new.ends_with("\n\n") {
+            format!("{new}\n")
+        } else {
+            new.to_string()
+        };
+        result = result.replacen(old, &new, 1);
+    }
+    result
 }
 
 fn rendering_gallery() -> String {
+    crate::tool_rendering::with_test_tool_platform(ToolPlatform::WindowsLinux, || {
+        rendering_gallery_for_fixed_platform()
+    })
+}
+
+fn rendering_gallery_for_fixed_platform() -> String {
     let mut output = String::new();
     writeln!(output, "picopilot-rendering-gallery-v1").unwrap();
     writeln!(output, "widths={}", join_widths()).unwrap();
