@@ -458,9 +458,9 @@ mod tests {
     use github_copilot_sdk::types::{Model, ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, apply_model_switch_to_config,
-        apply_optional_active_model_options, apply_provider_registry, apply_toolset,
-        client_options_for, default_toolset_for_model, discover_provider_registry,
+        apply_active_model_options, apply_documented_openai_model_metadata,
+        apply_model_switch_to_config, apply_optional_active_model_options, apply_provider_registry,
+        apply_toolset, client_options_for, default_toolset_for_model, discover_provider_registry,
         merge_hosted_model_metadata, model_from_history, models_from_session_catalog,
         provider_owning_model, recovery_backoff, recovery_message, remembered_model_options,
         restored_model, should_recompute_default_toolset, toolset_transition,
@@ -736,6 +736,171 @@ mod tests {
         assert_eq!(prices.input_price, Some(2.5));
         assert_eq!(prices.output_price, Some(15.0));
         assert!(merged.iter().any(|model| model.id == "ollama/qwen3"));
+    }
+
+    #[test]
+    fn openai_documented_reasoning_options_reach_the_model_picker() {
+        use crate::tui::{handle_key, App, ModelSelection, UiAction};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut profile = ProviderProfile::new("https://api.openai.com/v1");
+        profile.wire_api = "responses".to_string();
+        let mut config = ProviderConfigFile::new("OpenAI");
+        config.providers.insert("OpenAI".to_string(), profile);
+        let settings =
+            ProviderSettings::new("OpenAI", "https://api.openai.com/v1", "responses", None)
+                .unwrap();
+        let registry =
+            ProviderRegistry::from_model_ids(&settings, ["gpt-6-luna", "gpt-6.1-terra"]).unwrap();
+        let mut models = models_from_session_catalog(vec![
+            serde_json::json!({"id": "OpenAI/gpt-6-luna"}),
+            serde_json::json!({"id": "OpenAI/gpt-6.1-terra"}),
+        ])
+        .unwrap();
+        apply_documented_openai_model_metadata(&mut models, &registry, &config);
+
+        for model in models {
+            for arrow in [KeyCode::Left, KeyCode::Right] {
+                let mut app = App::new(Some(model.id.clone()));
+                app.set_models(vec![model.clone()]);
+                handle_key(&mut app, KeyEvent::new(arrow, KeyModifiers::NONE));
+                assert_eq!(
+                    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                    UiAction::SwitchModel(ModelSelection {
+                        model: model.id.clone(),
+                        reasoning_effort: Some("low".to_string()),
+                        context_tier: None,
+                    })
+                );
+
+                app.set_models(vec![model.clone()]);
+                for _ in 0..6 {
+                    handle_key(&mut app, KeyEvent::new(arrow, KeyModifiers::NONE));
+                }
+                assert_eq!(
+                    handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                    UiAction::SwitchModel(ModelSelection {
+                        model: model.id.clone(),
+                        reasoning_effort: Some("none".to_string()),
+                        context_tier: None,
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn documented_openai_metadata_respects_provider_and_catalog_boundaries() {
+        for (url, wire_api, model_id, registered, expected) in [
+            (
+                "https://api.openai.com/v1/",
+                "responses",
+                "gpt-6-luna",
+                true,
+                true,
+            ),
+            (
+                "https://api.openai.com/v1",
+                "responses",
+                "gpt-6.1-terra",
+                true,
+                true,
+            ),
+            (
+                "https://api.openai.com/v1",
+                "completions",
+                "gpt-6-luna",
+                true,
+                false,
+            ),
+            (
+                "https://example.com/v1",
+                "responses",
+                "gpt-6-luna",
+                true,
+                false,
+            ),
+            (
+                "https://api.openai.com/v1",
+                "responses",
+                "gpt-6-other",
+                true,
+                false,
+            ),
+            (
+                "https://api.openai.com/v1",
+                "responses",
+                "gpt-6-luna",
+                false,
+                false,
+            ),
+        ] {
+            let mut config = ProviderConfigFile::new("provider");
+            let mut profile = ProviderProfile::new(url);
+            profile.wire_api = wire_api.to_string();
+            config.providers.insert("provider".to_string(), profile);
+            let settings = ProviderSettings::new("provider", url, wire_api, None).unwrap();
+            let registered_id = if registered {
+                model_id
+            } else {
+                "another-model"
+            };
+            let registry = ProviderRegistry::from_model_ids(&settings, [registered_id]).unwrap();
+            let mut models = models_from_session_catalog(vec![
+                serde_json::json!({"id": format!("provider/{model_id}")}),
+            ])
+            .unwrap();
+
+            apply_documented_openai_model_metadata(&mut models, &registry, &config);
+
+            assert_eq!(
+                models[0].supported_reasoning_efforts.is_some(),
+                expected,
+                "{url} {wire_api} {model_id} registered={registered}"
+            );
+            assert_eq!(
+                models[0].default_reasoning_effort.as_deref(),
+                expected.then_some("medium")
+            );
+        }
+    }
+
+    #[test]
+    fn documented_openai_metadata_preserves_catalog_efforts_and_defaults() {
+        let mut config = ProviderConfigFile::new("openai");
+        let mut profile = ProviderProfile::new("https://api.openai.com/v1");
+        profile.wire_api = "responses".to_string();
+        config.providers.insert("openai".to_string(), profile);
+        let settings =
+            ProviderSettings::new("openai", "https://api.openai.com/v1", "responses", None)
+                .unwrap();
+        let registry =
+            ProviderRegistry::from_model_ids(&settings, ["gpt-6-luna", "gpt-6.1-terra"]).unwrap();
+        let mut models = models_from_session_catalog(vec![
+            serde_json::json!({
+                "id": "openai/gpt-6-luna",
+                "supportedReasoningEfforts": ["high"],
+                "defaultReasoningEffort": "high"
+            }),
+            serde_json::json!({
+                "id": "openai/gpt-6.1-terra",
+                "defaultReasoningEffort": "high"
+            }),
+        ])
+        .unwrap();
+
+        apply_documented_openai_model_metadata(&mut models, &registry, &config);
+
+        assert_eq!(
+            models[0].supported_reasoning_efforts.as_deref(),
+            Some(&["high".to_string()][..])
+        );
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            models[1].supported_reasoning_efforts.as_deref(),
+            Some(&["low", "medium", "high", "xhigh", "max", "none"].map(str::to_string)[..])
+        );
     }
 
     #[test]
@@ -2145,6 +2310,41 @@ fn merge_hosted_model_metadata(
     session_models
 }
 
+fn apply_documented_openai_model_metadata(
+    models: &mut [Model],
+    registry: &ProviderRegistry,
+    config: &ProviderConfigFile,
+) {
+    for registered in registry.models() {
+        let Some(profile) = config.providers.get(&registered.provider) else {
+            continue;
+        };
+        if profile.wire_api != "responses"
+            || !matches!(
+                crate::provider::normalize_base_url(&profile.base_url),
+                Ok(url) if url == "https://api.openai.com/v1"
+            )
+            || !matches!(registered.id.as_str(), "gpt-6-luna" | "gpt-6.1-terra")
+        {
+            continue;
+        }
+        let qualified_id = format!("{}/{}", registered.provider, registered.id);
+        if let Some(model) = models.iter_mut().find(|model| model.id == qualified_id) {
+            if model.supported_reasoning_efforts.is_none() {
+                model.supported_reasoning_efforts = Some(
+                    ["low", "medium", "high", "xhigh", "max", "none"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                );
+                if model.default_reasoning_effort.is_none() {
+                    model.default_reasoning_effort = Some("medium".to_string());
+                }
+            }
+        }
+    }
+}
+
 fn decode_session_model(index: usize, entry: &mut Value) -> Result<Model, CatalogError> {
     let Some(object) = entry.as_object_mut() else {
         let source = serde_json::from_value::<Model>(entry.clone()).unwrap_err();
@@ -2351,7 +2551,7 @@ async fn connect_inner(
                 .map_err(StartupError::SessionCatalog)?;
             let models = models_from_session_catalog(catalog.list)
                 .map_err(StartupError::InvalidSessionCatalog)?;
-            let models = merge_hosted_model_metadata(models, &hosted_models);
+            let mut models = merge_hosted_model_metadata(models, &hosted_models);
             for model_id in registry.qualified_model_ids() {
                 if !models.iter().any(|model| model.id == model_id) {
                     return Err(StartupError::InvalidSessionCatalog(
@@ -2359,6 +2559,7 @@ async fn connect_inner(
                     ));
                 }
             }
+            apply_documented_openai_model_metadata(&mut models, registry, provider_config);
             models
         }
         None => hosted_models,

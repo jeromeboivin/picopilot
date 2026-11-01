@@ -1305,10 +1305,23 @@ impl App {
         self.local_model_ids.contains(model_id)
     }
 
-    fn cycle_picker_option(&mut self, reasoning: bool) {
+    fn cycle_picker_option(&mut self, mut reasoning: bool) {
         let Some(model) = self.models.get(self.selected_item) else {
             return;
         };
+        let reasoning_available = model
+            .supported_reasoning_efforts
+            .as_ref()
+            .is_some_and(|values| !values.is_empty());
+        let context_values: Vec<_> = crate::config::supported_context_tiers(model)
+            .into_iter()
+            .filter(|tier| matches!(tier.as_str(), "default" | "long_context"))
+            .collect();
+        if reasoning && !reasoning_available && !context_values.is_empty() {
+            reasoning = false;
+        } else if !reasoning && context_values.is_empty() && reasoning_available {
+            reasoning = true;
+        }
         let mut values = vec![None];
         if reasoning {
             values.extend(
@@ -1320,14 +1333,7 @@ impl App {
                     .map(Some),
             );
         } else {
-            values.extend(
-                crate::config::supported_context_tiers(model)
-                    .into_iter()
-                    .filter_map(|tier| match tier.as_str() {
-                        "default" | "long_context" => Some(Some(tier)),
-                        _ => None,
-                    }),
-            );
+            values.extend(context_values.into_iter().map(Some));
         }
 
         let current = if reasoning {
@@ -10605,6 +10611,28 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_arrows_adjust_the_only_available_option_category() {
+        for arrow in [KeyCode::Left, KeyCode::Right] {
+            let mut app = App::new(None);
+            app.set_models(vec![Model {
+                id: "context-only".to_string(),
+                name: "Context only".to_string(),
+                supported_context_tiers: Some(vec!["long_context".to_string()]),
+                ..Model::default()
+            }]);
+            handle_key(&mut app, key(arrow, KeyEventKind::Press));
+            assert_eq!(
+                handle_key(&mut app, key(KeyCode::Enter, KeyEventKind::Press)),
+                UiAction::SwitchModel(ModelSelection {
+                    model: "context-only".to_string(),
+                    reasoning_effort: None,
+                    context_tier: Some("long_context".to_string()),
+                })
+            );
+        }
+    }
+
+    #[test]
     fn picker_cancellation_commits_a_truthful_local_outcome() {
         let mut app = App::new(Some("gpt-5".to_string()));
         app.set_reasoning_effort(Some("high".to_string()));
@@ -10640,6 +10668,16 @@ mod tests {
 
         assert_eq!(options.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(options.context_tier, Some(ContextTier::LongContext));
+
+        let disabled = ModelSelection {
+            model: "gpt-5".to_string(),
+            reasoning_effort: Some("none".to_string()),
+            context_tier: None,
+        }
+        .sdk_options()
+        .expect("disabled reasoning should convert")
+        .expect("disabled reasoning should be an explicit option");
+        assert_eq!(disabled.reasoning_effort.as_deref(), Some("none"));
     }
 
     #[test]

@@ -185,6 +185,14 @@ support the OpenAI-compatible tool-calling protocol for file and shell work;
 a text-only model may be selectable but cannot complete the normal coding-agent
 workflow.
 
+For `responses` providers at `https://api.openai.com/v1`, picopilot supplies
+maintained reasoning options for `gpt-6-luna` and `gpt-6.1-terra` when catalog
+metadata is absent. These options follow the [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna)
+and [GPT-6.1 Terra](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+documentation, including `none` to disable reasoning. They are not discovered
+from a model capability API. In the picker, either arrow adjusts the available
+category when only reasoning or context options are available.
+
 Provider settings are flags and environment variables only; picopilot does not
 create a configuration file. Provider definitions are session-scoped. To
 resume a local-model session in a later picopilot process, provide the same
