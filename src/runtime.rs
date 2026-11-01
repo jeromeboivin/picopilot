@@ -790,6 +790,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_profile_reaches_new_and_resumed_sessions_with_reasoning_and_tools() {
+        let (base_url, server) =
+            delayed_mock_models_server(std::time::Duration::ZERO, r#"{"data":[{"id":"gpt-test"}]}"#);
+        let yaml = format!(
+            "default_provider: OpenAI\nproviders:\n  OpenAI:\n    base_url: {base_url}\n    wire_api: responses\n    default_model: OpenAI/gpt-test\n    default_reasoning_effort: high\n"
+        );
+        let config: ProviderConfigFile = serde_yaml::from_str(&yaml).expect("profile should parse");
+        crate::provider_config::validate(&config).expect("profile should validate");
+
+        let (registry, banners) = discover_provider_registry(&config.providers).await;
+        server.join().expect("mock server should finish");
+        assert!(banners.is_empty());
+        let registry = registry.expect("provider should be discovered");
+        let options = remembered_model_options(&config).expect("model options should be restored");
+        validate_remembered_model(&options, &[], Some(&registry))
+            .expect("discovered model should validate");
+
+        let app_config = crate::config::AppConfig::try_parse_from(["picopilot"]).unwrap();
+        let toolset = default_toolset_for_model(options.model.as_deref(), Some(&registry));
+        let mut session =
+            app_config.session_config_with_registry_and_toolset(Some(&registry), toolset);
+        session.model = options.model.clone();
+        session.reasoning_effort = options.reasoning_effort.clone();
+        assert_eq!(
+            session.providers.as_ref().unwrap()[0].wire_api.as_deref(),
+            Some("responses")
+        );
+        assert_eq!(session.model.as_deref(), Some("OpenAI/gpt-test"));
+        assert_eq!(session.reasoning_effort.as_deref(), Some("high"));
+        assert!(!session.available_tools.as_ref().unwrap().is_empty());
+
+        let mut resumed = apply_toolset(
+            apply_provider_registry(
+                ResumeSessionConfig::new(SessionId::from("session-1")),
+                Some(&registry),
+            ),
+            toolset,
+        );
+        apply_active_model_options(&mut resumed, &options);
+        assert_eq!(
+            resumed.providers.as_ref().unwrap()[0].wire_api.as_deref(),
+            Some("responses")
+        );
+        assert_eq!(resumed.model.as_deref(), Some("OpenAI/gpt-test"));
+        assert_eq!(resumed.reasoning_effort.as_deref(), Some("high"));
+        assert!(!resumed.available_tools.as_ref().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn discovery_merges_successes_and_banners_every_failure_with_the_exact_message_shape() {
         let (openrouter_url, openrouter_handle) =
             delayed_mock_models_server(std::time::Duration::ZERO, r#"{"data":[{"id":"model-a"}]}"#);
