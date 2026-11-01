@@ -1918,7 +1918,10 @@ fn render_agent_launch(
         (platform.dot(), Style::default().fg(palette::SUCCESS))
     };
     let count = launch.agents.len();
-    let title = format!("{count} {} launched", if count == 1 { "agent" } else { "agents" });
+    let title = format!(
+        "{count} {} launched",
+        if count == 1 { "agent" } else { "agents" }
+    );
     let header = tool_header_prefix(dot, dot_style, &title);
     let mut lines = vec![Line::default(), truncate_line(Line::from(header), width)];
 
@@ -1998,7 +2001,10 @@ fn render_agent_launch(
                 lines.push(Line::from(vec![
                     Span::styled(stem, dim),
                     Span::styled(
-                        format!("   (+{hidden} {})", if hidden == 1 { "line" } else { "lines" }),
+                        format!(
+                            "   (+{hidden} {})",
+                            if hidden == 1 { "line" } else { "lines" }
+                        ),
                         dim,
                     ),
                 ]));

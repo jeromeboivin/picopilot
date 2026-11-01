@@ -582,7 +582,10 @@ impl Default for WizardState {
 /// Name validation (spec §3.7): non-empty, no `/`, not already used by another profile in this
 /// pass, and not the reserved word `copilot`. Reuses `provider.rs::validate_provider_name` for the
 /// non-empty/no-`/` rule rather than reimplementing it.
-fn validate_name(raw: &str, existing: &BTreeMap<String, ProviderProfile>) -> Result<String, String> {
+fn validate_name(
+    raw: &str,
+    existing: &BTreeMap<String, ProviderProfile>,
+) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("name is required".to_string());
@@ -726,10 +729,7 @@ fn reset_visible_viewport<W: io::Write>(writer: &mut W) -> io::Result<()> {
     )
 }
 
-fn restore_terminal(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    raw_mode_enabled: bool,
-) {
+fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, raw_mode_enabled: bool) {
     if raw_mode_enabled {
         let _ = disable_raw_mode();
     }
@@ -742,7 +742,9 @@ fn restore_terminal(
 /// what actually issues the RPC that requires the bundled CLI to be signed in, so awaiting it is
 /// what makes this call "resolve" once sign-in completes.
 async fn connect_to_copilot(config: &AppConfig) -> Result<(), String> {
-    let working_directory = config.working_directory().map_err(|error| error.to_string())?;
+    let working_directory = config
+        .working_directory()
+        .map_err(|error| error.to_string())?;
     let client_options = config.client_options_in(&working_directory);
     let client = github_copilot_sdk::Client::start(client_options)
         .await
@@ -806,7 +808,12 @@ fn draw_pick_provider_preset(frame: &mut Frame, state: &WizardState) {
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     frame.render_widget(
@@ -823,7 +830,9 @@ fn draw_pick_provider_preset(frame: &mut Frame, state: &WizardState) {
         .collect();
     let mut list_state = ListState::default();
     list_state.select(Some(state.preset_selection()));
-    let list = List::new(items).highlight_style(focus_style()).highlight_symbol("\u{2771} ");
+    let list = List::new(items)
+        .highlight_style(focus_style())
+        .highlight_symbol("\u{2771} ");
     frame.render_stateful_widget(list, chunks[2], &mut list_state);
 
     frame.render_widget(
@@ -881,7 +890,9 @@ fn draw_entry(frame: &mut Frame, state: &WizardState) {
         .unwrap_or(0);
     let mut list_state = ListState::default();
     list_state.select(Some(selected_index));
-    let list = List::new(items).highlight_style(focus_style()).highlight_symbol("\u{2771} ");
+    let list = List::new(items)
+        .highlight_style(focus_style())
+        .highlight_symbol("\u{2771} ");
     frame.render_stateful_widget(list, chunks[2], &mut list_state);
 
     let mut summary_lines: Vec<Line> = Vec::new();
@@ -913,7 +924,10 @@ fn draw_entry(frame: &mut Frame, state: &WizardState) {
             error_style(),
         ));
     }
-    frame.render_widget(Paragraph::new(summary_lines).wrap(Wrap { trim: false }), chunks[4]);
+    frame.render_widget(
+        Paragraph::new(summary_lines).wrap(Wrap { trim: false }),
+        chunks[4],
+    );
 
     frame.render_widget(
         Paragraph::new(Line::styled(
@@ -928,7 +942,11 @@ fn draw_entry(frame: &mut Frame, state: &WizardState) {
 /// focused, subdued otherwise, so focus is actually visible — this is the missing feedback that
 /// made Tab look broken.
 fn field_block(title: &str, focused: bool) -> Block<'static> {
-    let style = if focused { focus_style() } else { subtle_style() };
+    let style = if focused {
+        focus_style()
+    } else {
+        subtle_style()
+    };
     Block::default()
         .borders(Borders::ALL)
         .border_style(style)
@@ -956,7 +974,14 @@ fn draw_add_provider(frame: &mut Frame, state: &WizardState) {
     frame.render_widget(Paragraph::new("Add a provider"), chunks[0]);
 
     let name_focused = draft.focus == Field::Name;
-    render_text_field(frame, chunks[2], "Name", &draft.name, errors.name.as_deref(), name_focused);
+    render_text_field(
+        frame,
+        chunks[2],
+        "Name",
+        &draft.name,
+        errors.name.as_deref(),
+        name_focused,
+    );
 
     let base_url_focused = draft.focus == Field::BaseUrl;
     render_text_field(
@@ -995,7 +1020,10 @@ fn draw_add_provider(frame: &mut Frame, state: &WizardState) {
     frame.render_widget(api_key_block, chunks[5]);
     frame.render_widget(Paragraph::new(api_key_display), api_key_inner);
     if api_key_focused {
-        frame.set_cursor_position((api_key_inner.x + masked_key.chars().count() as u16, api_key_inner.y));
+        frame.set_cursor_position((
+            api_key_inner.x + masked_key.chars().count() as u16,
+            api_key_inner.y,
+        ));
     }
 
     frame.render_widget(
@@ -1029,7 +1057,10 @@ fn render_text_field(
 
     frame.render_widget(Paragraph::new(value), layout[0]);
     if let Some(error) = error {
-        frame.render_widget(Paragraph::new(Span::styled(error, error_style())), layout[1]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(error, error_style())),
+            layout[1],
+        );
     }
     if focused {
         frame.set_cursor_position((layout[0].x + value.chars().count() as u16, layout[0].y));
@@ -1045,11 +1076,16 @@ fn draw_connecting_copilot(frame: &mut Frame) {
         Line::from("  builds no custom login screen — whatever that process shows or asks"),
         Line::from("  for happens here, unmodified."),
     ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), frame.area());
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        frame.area(),
+    );
 }
 
 fn draw_finish(frame: &mut Frame, state: &WizardState) {
-    let default_provider = state.default_provider().unwrap_or(RESERVED_COPILOT_PROVIDER_NAME);
+    let default_provider = state
+        .default_provider()
+        .unwrap_or(RESERVED_COPILOT_PROVIDER_NAME);
     let lines = vec![
         Line::from("Setup complete."),
         Line::from(""),
@@ -1058,7 +1094,10 @@ fn draw_finish(frame: &mut Frame, state: &WizardState) {
         Line::from(""),
         Line::from("  Press Enter to continue."),
     ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), frame.area());
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        frame.area(),
+    );
 }
 
 #[cfg(test)]
@@ -1177,7 +1216,11 @@ mod tests {
             state.preset_selection = index;
             state.handle_pick_preset_key(KeyCode::Enter);
 
-            assert_eq!(state.screen(), Screen::AddProvider, "preset {expected_name}");
+            assert_eq!(
+                state.screen(),
+                Screen::AddProvider,
+                "preset {expected_name}"
+            );
             assert_eq!(state.draft().name, expected_name, "preset {expected_name}");
             assert_eq!(
                 state.draft().base_url,
@@ -1301,9 +1344,10 @@ mod tests {
     #[test]
     fn duplicate_name_this_pass_is_rejected() {
         let mut state = WizardState::new();
-        state
-            .providers
-            .insert("ollama".to_string(), provider_with_url("http://localhost:11434/v1"));
+        state.providers.insert(
+            "ollama".to_string(),
+            provider_with_url("http://localhost:11434/v1"),
+        );
         state.go_to_add_provider();
         state.draft.name = "ollama".to_string();
         state.draft.base_url = "http://localhost:11435/v1".to_string();
@@ -1462,9 +1506,10 @@ mod tests {
             default_model: Some("gpt-5".to_string()),
             ..CopilotDefaults::default()
         });
-        existing
-            .providers
-            .insert("openrouter".to_string(), provider_with_url("https://openrouter.ai/api/v1"));
+        existing.providers.insert(
+            "openrouter".to_string(),
+            provider_with_url("https://openrouter.ai/api/v1"),
+        );
 
         let state = WizardState::seeded_from(&existing);
 
@@ -1526,8 +1571,9 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn rendered_rows(state: &WizardState, width: u16, height: u16) -> Vec<String> {
-        let mut terminal = Terminal::with_options(TestBackend::new(width, height), terminal_options())
-            .expect("test terminal should initialize");
+        let mut terminal =
+            Terminal::with_options(TestBackend::new(width, height), terminal_options())
+                .expect("test terminal should initialize");
         terminal
             .draw(|frame| draw(frame, state))
             .expect("draw should succeed");

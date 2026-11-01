@@ -257,7 +257,11 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("picopilot-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        let name = if cfg!(windows) { "copilot.exe" } else { "copilot" };
+        let name = if cfg!(windows) {
+            "copilot.exe"
+        } else {
+            "copilot"
+        };
         let empty = std::env::join_paths([directory.join("missing")]).unwrap();
         assert_eq!(super::find_copilot_on_path(&empty), None);
         std::fs::write(directory.join(name), "").unwrap();
@@ -292,17 +296,51 @@ mod tests {
         assert_eq!(session.streaming, Some(true));
         assert_eq!(session.enable_config_discovery, Some(true));
         let shell_tool = if cfg!(windows) { "powershell" } else { "bash" };
-        let list_tool = if cfg!(windows) { "list_powershell" } else { "list_bash" };
-        let read_tool = if cfg!(windows) { "read_powershell" } else { "read_bash" };
-        let stop_tool = if cfg!(windows) { "stop_powershell" } else { "stop_bash" };
-        let write_tool = if cfg!(windows) { "write_powershell" } else { "write_bash" };
+        let list_tool = if cfg!(windows) {
+            "list_powershell"
+        } else {
+            "list_bash"
+        };
+        let read_tool = if cfg!(windows) {
+            "read_powershell"
+        } else {
+            "read_bash"
+        };
+        let stop_tool = if cfg!(windows) {
+            "stop_powershell"
+        } else {
+            "stop_bash"
+        };
+        let write_tool = if cfg!(windows) {
+            "write_powershell"
+        } else {
+            "write_bash"
+        };
         assert_eq!(
             session.available_tools,
             Some(
-                [shell_tool, list_tool, read_tool, stop_tool, write_tool, "view", "edit", "create", "apply_patch", "grep", "glob", "task", "list_agents", "read_agent", "write_agent", "ask_user", "skill"]
-                    .into_iter()
-                    .map(String::from)
-                    .collect()
+                [
+                    shell_tool,
+                    list_tool,
+                    read_tool,
+                    stop_tool,
+                    write_tool,
+                    "view",
+                    "edit",
+                    "create",
+                    "apply_patch",
+                    "grep",
+                    "glob",
+                    "task",
+                    "list_agents",
+                    "read_agent",
+                    "write_agent",
+                    "ask_user",
+                    "skill"
+                ]
+                .into_iter()
+                .map(String::from)
+                .collect()
             )
         );
         assert_eq!(
@@ -384,8 +422,8 @@ mod tests {
     fn applies_a_registry_to_session_creation_without_changing_hosted_defaults() {
         let config =
             AppConfig::try_parse_from(["picopilot"]).expect("default options should parse");
-        let settings = crate::provider::ProviderSettings::default_for("http://localhost:11434/v1")
-            .unwrap();
+        let settings =
+            crate::provider::ProviderSettings::default_for("http://localhost:11434/v1").unwrap();
         let registry = ProviderRegistry::from_model_ids(&settings, ["qwen:7b"]).unwrap();
 
         let session = config.session_config_with_registry(Some(&registry));

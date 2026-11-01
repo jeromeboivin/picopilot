@@ -151,7 +151,8 @@ async fn context_budget_stays_empty_and_toolsets_remain_bounded(
     // into this harness, this check always runs against hosted Copilot models only.
     let local_model: Option<String> = None;
     let provider_config = ProviderConfigFile::new("copilot");
-    let provider_config_path = std::env::temp_dir().join("picopilot-context-budget-test-config.yaml");
+    let provider_config_path =
+        std::env::temp_dir().join("picopilot-context-budget-test-config.yaml");
     let mut runtime = connect(&config, &provider_config, &provider_config_path).await?;
 
     if let Some(local_model) = local_model.clone() {
@@ -167,8 +168,13 @@ async fn context_budget_stays_empty_and_toolsets_remain_bounded(
     runtime.mark_conversation_started();
     let created = context_budget(&runtime).await?;
 
-    let mut all_runtime =
-        connect_with_toolset(&config, &provider_config, &provider_config_path, Toolset::all()).await?;
+    let mut all_runtime = connect_with_toolset(
+        &config,
+        &provider_config,
+        &provider_config_path,
+        Toolset::all(),
+    )
+    .await?;
     all_runtime.set_toolset(Toolset::all()).await?;
     if let Some(local_model) = local_model.clone() {
         all_runtime

@@ -272,7 +272,10 @@ fn validate_remembered_model(
         return Ok(());
     }
 
-    let Some(model) = known_models.iter().find(|candidate| candidate.id == model_id) else {
+    let Some(model) = known_models
+        .iter()
+        .find(|candidate| candidate.id == model_id)
+    else {
         return Err(RememberedModelError::ModelNotFound {
             model: model_id.to_string(),
             available: known_models
@@ -455,15 +458,15 @@ mod tests {
     use github_copilot_sdk::types::{Model, ResumeSessionConfig, SessionId};
 
     use super::{
-        apply_active_model_options, apply_model_switch_to_config, apply_optional_active_model_options,
-        apply_provider_registry, apply_toolset, client_options_for, default_toolset_for_model,
-        discover_provider_registry,
+        apply_active_model_options, apply_model_switch_to_config,
+        apply_optional_active_model_options, apply_provider_registry, apply_toolset,
+        client_options_for, default_toolset_for_model, discover_provider_registry,
         merge_hosted_model_metadata, model_from_history, models_from_session_catalog,
-        provider_owning_model, recovery_backoff,
-        recovery_message, remembered_model_options, restored_model, should_recompute_default_toolset,
-        toolset_transition, validate_remembered_model, verify_session_identity, ActiveModelOptions,
-        CatalogError, RememberedModelError, SessionIdentity, ToolsetTransition,
-        RECOVERY_DISPLAY_PROMPT, RECOVERY_INSTRUCTION,
+        provider_owning_model, recovery_backoff, recovery_message, remembered_model_options,
+        restored_model, should_recompute_default_toolset, toolset_transition,
+        validate_remembered_model, verify_session_identity, ActiveModelOptions, CatalogError,
+        RememberedModelError, SessionIdentity, ToolsetTransition, RECOVERY_DISPLAY_PROMPT,
+        RECOVERY_INSTRUCTION,
     };
     use crate::events::EventUpdate;
     use crate::provider::{ProviderRegistry, ProviderSettings};
@@ -474,9 +477,10 @@ mod tests {
     fn named_default_keeps_the_hosted_copilot_catalog_when_copilot_is_configured() {
         let mut config = ProviderConfigFile::new("ollama");
         config.copilot = Some(CopilotDefaults::default());
-        config
-            .providers
-            .insert("ollama".to_string(), ProviderProfile::new("http://localhost:11434/v1"));
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderProfile::new("http://localhost:11434/v1"),
+        );
 
         let options = client_options_for(
             &crate::config::AppConfig::try_parse_from(["picopilot"]).unwrap(),
@@ -494,9 +498,10 @@ mod tests {
     #[test]
     fn local_only_configuration_keeps_copilot_optional() {
         let mut config = ProviderConfigFile::new("ollama");
-        config
-            .providers
-            .insert("ollama".to_string(), ProviderProfile::new("http://localhost:11434/v1"));
+        config.providers.insert(
+            "ollama".to_string(),
+            ProviderProfile::new("http://localhost:11434/v1"),
+        );
 
         let options = client_options_for(
             &crate::config::AppConfig::try_parse_from(["picopilot"]).unwrap(),
@@ -767,8 +772,7 @@ mod tests {
         body: &str,
     ) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
-        let listener =
-            std::net::TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
         let address = listener
             .local_addr()
             .expect("mock server address should be available");
@@ -791,8 +795,10 @@ mod tests {
 
     #[tokio::test]
     async fn responses_profile_reaches_new_and_resumed_sessions_with_reasoning_and_tools() {
-        let (base_url, server) =
-            delayed_mock_models_server(std::time::Duration::ZERO, r#"{"data":[{"id":"gpt-test"}]}"#);
+        let (base_url, server) = delayed_mock_models_server(
+            std::time::Duration::ZERO,
+            r#"{"data":[{"id":"gpt-test"}]}"#,
+        );
         let yaml = format!(
             "default_provider: OpenAI\nproviders:\n  OpenAI:\n    base_url: {base_url}\n    wire_api: responses\n    default_model: OpenAI/gpt-test\n    default_reasoning_effort: high\n"
         );
@@ -843,7 +849,10 @@ mod tests {
         let (openrouter_url, openrouter_handle) =
             delayed_mock_models_server(std::time::Duration::ZERO, r#"{"data":[{"id":"model-a"}]}"#);
         let mut providers = std::collections::BTreeMap::new();
-        providers.insert("openrouter".to_string(), ProviderProfile::new(openrouter_url));
+        providers.insert(
+            "openrouter".to_string(),
+            ProviderProfile::new(openrouter_url),
+        );
         let (ollama_name, ollama_profile) = unreachable_provider("ollama");
         providers.insert(ollama_name, ollama_profile);
 
@@ -851,13 +860,14 @@ mod tests {
         openrouter_handle.join().expect("mock server should finish");
 
         let registry = registry.expect("the one successful provider should populate a registry");
-        assert_eq!(
-            registry.qualified_model_ids(),
-            vec!["openrouter/model-a"]
-        );
+        assert_eq!(registry.qualified_model_ids(), vec!["openrouter/model-a"]);
         assert_eq!(banners.len(), 1);
         match &banners[0] {
-            EventUpdate::Banner { severity, message, url } => {
+            EventUpdate::Banner {
+                severity,
+                message,
+                url,
+            } => {
                 assert_eq!(*severity, crate::events::BannerSeverity::Warning);
                 assert!(
                     message.starts_with("provider 'ollama' is unreachable and was skipped: "),
@@ -915,7 +925,13 @@ mod tests {
         handle_c.join().unwrap();
 
         assert!(banners.is_empty());
-        assert_eq!(registry.expect("all three should succeed").providers().len(), 3);
+        assert_eq!(
+            registry
+                .expect("all three should succeed")
+                .providers()
+                .len(),
+            3
+        );
         assert!(
             elapsed < delay * 2,
             "3 discoveries each delayed {delay:?} took {elapsed:?} — looks serialized, not concurrent"
@@ -932,8 +948,9 @@ mod tests {
     // `provider_config::save`/`load` to confirm the on-disk effect ticket 5 asks for.
 
     fn registry_with_one_model(provider: &str, model_id: &str) -> ProviderRegistry {
-        let settings = ProviderSettings::new(provider, "http://localhost:11434/v1", "completions", None)
-            .expect("valid settings");
+        let settings =
+            ProviderSettings::new(provider, "http://localhost:11434/v1", "completions", None)
+                .expect("valid settings");
         ProviderRegistry::from_model_ids(&settings, [model_id]).expect("non-empty model ids")
     }
 
@@ -971,7 +988,9 @@ mod tests {
         });
         let mut openrouter = ProviderProfile::new("https://openrouter.ai/api/v1");
         openrouter.default_model = Some("anthropic/claude-3.5-sonnet".to_string());
-        config.providers.insert("openrouter".to_string(), openrouter);
+        config
+            .providers
+            .insert("openrouter".to_string(), openrouter);
         let ollama = ProviderProfile::new("http://localhost:11434/v1");
         config.providers.insert("ollama".to_string(), ollama);
         config
@@ -992,10 +1011,15 @@ mod tests {
         );
 
         assert_eq!(config.default_provider, "copilot");
-        let copilot = config.copilot.expect("copilot defaults should still be present");
+        let copilot = config
+            .copilot
+            .expect("copilot defaults should still be present");
         assert_eq!(copilot.default_model.as_deref(), Some("gpt-5"));
         assert_eq!(copilot.default_reasoning_effort.as_deref(), Some("high"));
-        assert_eq!(copilot.default_context_tier.as_deref(), Some("long_context"));
+        assert_eq!(
+            copilot.default_context_tier.as_deref(),
+            Some("long_context")
+        );
         assert_eq!(config.providers["openrouter"], before_openrouter);
         assert_eq!(config.providers["ollama"], before_ollama);
     }
@@ -1036,7 +1060,10 @@ mod tests {
         apply_model_switch_to_config(&mut config, "ollama", "ollama/llama3", None, None);
 
         assert_eq!(config.default_provider, "ollama");
-        assert_eq!(config.providers["ollama"].default_model.as_deref(), Some("ollama/llama3"));
+        assert_eq!(
+            config.providers["ollama"].default_model.as_deref(),
+            Some("ollama/llama3")
+        );
     }
 
     // -- reading remembered defaults back at startup (bugfix: nothing previously consulted what
@@ -1057,7 +1084,8 @@ mod tests {
     fn remembered_model_options_reads_the_copilot_block_when_it_is_the_default_provider() {
         let config = config_with_copilot_and_two_providers();
 
-        let options = remembered_model_options(&config).expect("copilot block has a remembered model");
+        let options =
+            remembered_model_options(&config).expect("copilot block has a remembered model");
 
         assert_eq!(options.model.as_deref(), Some("gpt-4o"));
         assert_eq!(options.reasoning_effort.as_deref(), Some("medium"));
@@ -1069,9 +1097,13 @@ mod tests {
         let mut config = config_with_copilot_and_two_providers();
         config.default_provider = "openrouter".to_string();
 
-        let options = remembered_model_options(&config).expect("openrouter block has a remembered model");
+        let options =
+            remembered_model_options(&config).expect("openrouter block has a remembered model");
 
-        assert_eq!(options.model.as_deref(), Some("anthropic/claude-3.5-sonnet"));
+        assert_eq!(
+            options.model.as_deref(),
+            Some("anthropic/claude-3.5-sonnet")
+        );
         assert_eq!(options.reasoning_effort, None);
         assert_eq!(options.context_tier, None);
     }
@@ -2096,7 +2128,10 @@ fn models_from_session_catalog(entries: Vec<Value>) -> Result<Vec<Model>, Catalo
         .collect()
 }
 
-fn merge_hosted_model_metadata(mut session_models: Vec<Model>, hosted_models: &[Model]) -> Vec<Model> {
+fn merge_hosted_model_metadata(
+    mut session_models: Vec<Model>,
+    hosted_models: &[Model],
+) -> Vec<Model> {
     for hosted_model in hosted_models {
         if let Some(session_model) = session_models
             .iter_mut()
@@ -2164,7 +2199,10 @@ pub async fn connect_with_toolset(
 /// Profiles are already validated at config-load time (`provider_config::validate`), so a
 /// construction failure here is treated the same as a discovery failure (spec §4.2): skip with a
 /// banner rather than aborting startup.
-fn provider_settings_for(name: &str, profile: &ProviderProfile) -> Result<ProviderSettings, String> {
+fn provider_settings_for(
+    name: &str,
+    profile: &ProviderProfile,
+) -> Result<ProviderSettings, String> {
     ProviderSettings::new(
         name,
         profile.base_url.clone(),

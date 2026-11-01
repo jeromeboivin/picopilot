@@ -126,13 +126,13 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{backup_path_for, resolve_startup, warn_backup_and_rerun_wizard, StartupOutcome};
-    use crate::provider_config::{load, save, ProviderConfigError, ProviderConfigFile, ProviderProfile};
+    use crate::provider_config::{
+        load, save, ProviderConfigError, ProviderConfigFile, ProviderProfile,
+    };
 
     fn temp_directory(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "picopilot-startup-{name}-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("picopilot-startup-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("temp directory should be created");
         path
@@ -172,7 +172,10 @@ mod tests {
         let original_bytes = fs::read(&path).unwrap();
 
         let outcome = resolve_startup(&path, false, |existing| {
-            assert_eq!(existing, None, "an unparseable file has nothing to seed the wizard with");
+            assert_eq!(
+                existing, None,
+                "an unparseable file has nothing to seed the wizard with"
+            );
             async move { ProviderConfigFile::new("copilot") }
         })
         .await
@@ -286,24 +289,32 @@ mod tests {
             default_provider: "does-not-exist".to_string(),
         };
 
-        let produced = warn_backup_and_rerun_wizard(&path, &error, Some(existing.clone()), |seed| {
-            // The backup must already exist by the time the wizard is invoked, and the wizard
-            // must be seeded with exactly what the caller passed in.
-            assert!(
-                backup_path_for(&path).exists(),
-                ".bak must be written before the wizard runs"
-            );
-            assert_eq!(seed, Some(existing.clone()));
-            async move { ProviderConfigFile::new("copilot") }
-        })
-        .await
-        .expect("the helper should back up, run the wizard, and save its output");
+        let produced =
+            warn_backup_and_rerun_wizard(&path, &error, Some(existing.clone()), |seed| {
+                // The backup must already exist by the time the wizard is invoked, and the wizard
+                // must be seeded with exactly what the caller passed in.
+                assert!(
+                    backup_path_for(&path).exists(),
+                    ".bak must be written before the wizard runs"
+                );
+                assert_eq!(seed, Some(existing.clone()));
+                async move { ProviderConfigFile::new("copilot") }
+            })
+            .await
+            .expect("the helper should back up, run the wizard, and save its output");
 
         assert_eq!(produced, ProviderConfigFile::new("copilot"));
         let backup_bytes = fs::read(backup_path_for(&path)).unwrap();
-        assert_eq!(backup_bytes, original_bytes, "the backup must hold the pre-wizard content");
+        assert_eq!(
+            backup_bytes, original_bytes,
+            "the backup must hold the pre-wizard content"
+        );
         let saved = load(&path).unwrap().unwrap();
-        assert_eq!(saved, ProviderConfigFile::new("copilot"), "the wizard's output must be saved");
+        assert_eq!(
+            saved,
+            ProviderConfigFile::new("copilot"),
+            "the wizard's output must be saved"
+        );
     }
 
     #[tokio::test]
@@ -316,7 +327,10 @@ mod tests {
         };
 
         let produced = warn_backup_and_rerun_wizard(&path, &error, None, |seed| {
-            assert_eq!(seed, None, "an unparseable file has nothing to seed the wizard with");
+            assert_eq!(
+                seed, None,
+                "an unparseable file has nothing to seed the wizard with"
+            );
             async move { ProviderConfigFile::new("copilot") }
         })
         .await

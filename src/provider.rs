@@ -529,14 +529,18 @@ mod tests {
 
     #[test]
     fn merges_two_registries_by_concatenating_providers_and_models() {
-        let openrouter =
-            ProviderSettings::new("openrouter", "https://openrouter.ai/api/v1", "completions", None)
-                .unwrap();
+        let openrouter = ProviderSettings::new(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "completions",
+            None,
+        )
+        .unwrap();
         let ollama =
             ProviderSettings::new("ollama", "http://localhost:11434/v1", "completions", None)
                 .unwrap();
-        let a = ProviderRegistry::from_model_ids(&openrouter, ["anthropic/claude-3.5-sonnet"])
-            .unwrap();
+        let a =
+            ProviderRegistry::from_model_ids(&openrouter, ["anthropic/claude-3.5-sonnet"]).unwrap();
         let b = ProviderRegistry::from_model_ids(&ollama, ["qwen2.5-coder:14b"]).unwrap();
 
         let merged = a.merge(b);
@@ -553,9 +557,13 @@ mod tests {
 
     #[test]
     fn from_iter_combines_n_registries_sharing_no_names() {
-        let settings_a =
-            ProviderSettings::new("openrouter", "https://openrouter.ai/api/v1", "completions", None)
-                .unwrap();
+        let settings_a = ProviderSettings::new(
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "completions",
+            None,
+        )
+        .unwrap();
         let settings_b =
             ProviderSettings::new("ollama", "http://localhost:11434/v1", "completions", None)
                 .unwrap();

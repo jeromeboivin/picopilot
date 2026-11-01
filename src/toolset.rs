@@ -23,7 +23,7 @@ pub const CANONICAL_TOOLS: &[&str] = &[
     "read_agent",
     "write_agent",
     "ask_user",
-    "skill"
+    "skill",
 ];
 
 #[cfg(not(windows))]
@@ -44,7 +44,7 @@ pub const CANONICAL_TOOLS: &[&str] = &[
     "read_agent",
     "write_agent",
     "ask_user",
-    "skill"
+    "skill",
 ];
 
 pub const EXCLUDED_TOOLS: &[&str] = &["web_fetch", "web_search"];

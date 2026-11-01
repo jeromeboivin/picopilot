@@ -148,11 +148,16 @@ pub enum ProviderConfigError {
     Io(io::Error),
     Parse(serde_yaml::Error),
     /// `default_provider` names neither `"copilot"` nor a key present in `providers`.
-    UnresolvedDefaultProvider { default_provider: String },
+    UnresolvedDefaultProvider {
+        default_provider: String,
+    },
     /// `providers` contains a `"copilot"` key, which is reserved (spec §1.2/§2.3).
     ReservedProviderName,
     /// A provider profile failed one of `provider.rs`'s validators.
-    InvalidProvider { name: String, source: ProviderError },
+    InvalidProvider {
+        name: String,
+        source: ProviderError,
+    },
 }
 
 impl fmt::Display for ProviderConfigError {
@@ -250,11 +255,10 @@ pub fn validate(config: &ProviderConfigFile) -> Result<(), ProviderConfigError> 
     }
 
     for (name, profile) in &config.providers {
-        validate_provider_name(name)
-            .map_err(|source| ProviderConfigError::InvalidProvider {
-                name: name.clone(),
-                source,
-            })?;
+        validate_provider_name(name).map_err(|source| ProviderConfigError::InvalidProvider {
+            name: name.clone(),
+            source,
+        })?;
         normalize_base_url(&profile.base_url).map_err(|source| {
             ProviderConfigError::InvalidProvider {
                 name: name.clone(),
@@ -349,7 +353,9 @@ mod tests {
         let mut openrouter = ProviderProfile::new("https://openrouter.ai/api/v1");
         openrouter.api_key = Some("sk-or-v1-secret".to_string());
         openrouter.default_model = Some("anthropic/claude-3.5-sonnet".to_string());
-        config.providers.insert("openrouter".to_string(), openrouter);
+        config
+            .providers
+            .insert("openrouter".to_string(), openrouter);
         let ollama = ProviderProfile::new("http://localhost:11434/v1");
         config.providers.insert("ollama".to_string(), ollama);
         config
@@ -430,9 +436,10 @@ mod tests {
     #[test]
     fn rejects_a_reserved_copilot_key_under_providers() {
         let mut config = ProviderConfigFile::new("copilot");
-        config
-            .providers
-            .insert("copilot".to_string(), ProviderProfile::new("https://example.test"));
+        config.providers.insert(
+            "copilot".to_string(),
+            ProviderProfile::new("https://example.test"),
+        );
 
         let error = validate(&config).expect_err("a providers.copilot key should be rejected");
 
@@ -442,9 +449,10 @@ mod tests {
     #[test]
     fn rejects_a_bad_provider_name_surfaced_from_provider_rs() {
         let mut config = ProviderConfigFile::new("bad/name");
-        config
-            .providers
-            .insert("bad/name".to_string(), ProviderProfile::new("https://example.test"));
+        config.providers.insert(
+            "bad/name".to_string(),
+            ProviderProfile::new("https://example.test"),
+        );
 
         let error = validate(&config).expect_err("a provider name containing '/' should fail");
 
@@ -462,7 +470,8 @@ mod tests {
             ProviderProfile::new("http://user:pass@example.test/v1"),
         );
 
-        let error = validate(&config).expect_err("a base_url with embedded credentials should fail");
+        let error =
+            validate(&config).expect_err("a base_url with embedded credentials should fail");
 
         assert!(matches!(
             error,

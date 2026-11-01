@@ -86,7 +86,10 @@ fn platform_picker_fixtures_preserve_the_shared_gallery() {
 
     assert!(app_fixture(windows, "picker-tools").contains("powershell"));
     assert!(app_fixture(&unix_gallery, "picker-tools").contains("bash"));
-    assert_eq!(replace_platform_app_fixtures(&unix_gallery, windows), windows);
+    assert_eq!(
+        replace_platform_app_fixtures(&unix_gallery, windows),
+        windows
+    );
 }
 
 #[test]
